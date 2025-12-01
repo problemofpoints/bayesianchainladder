@@ -1,0 +1,66 @@
+[tool.poetry]
+name = "bayesianchainladder"
+version = "0.1.0"
+description = "Bayesian stochastic loss reserving using generalized linear models with Bambi and PyMC"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+license = "MIT"
+keywords = ["actuarial", "insurance", "loss reserving", "chain ladder", "bayesian", "GLM"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+bambi = ">=0.13.0"
+pymc = ">=5.10.0"
+arviz = ">=0.17.0"
+pandas = ">=2.0.0"
+numpy = ">=1.24.0"
+xarray = ">=2023.1.0"
+chainladder = ">=0.8.0"
+formulae = ">=0.5.0"
+ipython = ">=8.0.0"
+matplotlib = ">=3.7.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-cov = ">=4.0.0"
+black = ">=23.0.0"
+ruff = ">=0.1.0"
+mypy = ">=1.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::FutureWarning",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
