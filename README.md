@@ -32,7 +32,7 @@ import chainladder as cl
 from bayesianchainladder import BayesianChainLadderGLM
 
 # Load a sample triangle
-triangle = cl.load_sample("GenIns")
+triangle = cl.load_sample("clrd").loc[("New Jersey Manufacturers Grp", "wkcomp"), "CumPaidLoss"]
 
 # Fit the Bayesian chain ladder model
 model = BayesianChainLadderGLM(

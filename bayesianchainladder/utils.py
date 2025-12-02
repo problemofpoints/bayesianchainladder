@@ -289,9 +289,12 @@ def prepare_model_data(
 def add_categorical_columns(
     df: pd.DataFrame,
     columns: list[str] | None = None,
+    formula: str | None = None,
 ) -> pd.DataFrame:
     """
     Convert specified columns to categorical type for Bambi.
+
+    Columns used in spline terms (bs(), cr()) are kept as numeric.
 
     Parameters
     ----------
@@ -300,20 +303,37 @@ def add_categorical_columns(
     columns : list[str], optional
         Columns to convert to categorical. If None, converts
         origin, dev, and calendar columns.
+    formula : str, optional
+        Model formula. If provided, columns used in spline terms like
+        bs() or cr() will be kept as numeric instead of categorical.
 
     Returns
     -------
     pd.DataFrame
-        DataFrame with categorical columns.
+        DataFrame with appropriate column types.
     """
     df = df.copy()
 
     if columns is None:
         columns = ["origin", "dev", "calendar"]
 
+    # Detect columns used in spline terms
+    spline_columns: set[str] = set()
+    if formula is not None:
+        import re
+        # Match bs(...) or cr(...) and extract the first argument (column name)
+        spline_pattern = r'\b(?:bs|cr)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        matches = re.findall(spline_pattern, formula)
+        spline_columns = set(matches)
+
     for col in columns:
         if col in df.columns:
-            df[col] = df[col].astype("category")
+            if col in spline_columns:
+                # Keep as numeric for spline terms
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            else:
+                # Convert to categorical
+                df[col] = df[col].astype("category")
 
     return df
 

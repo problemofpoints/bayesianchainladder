@@ -353,6 +353,11 @@ def fit_model(
         if init_kwargs is None:
             init_kwargs = "adapt_diag"
 
+        # Ensure log_likelihood is computed for model comparison (LOO, WAIC)
+        idata_kwargs = kwargs.pop("idata_kwargs", {})
+        if "log_likelihood" not in idata_kwargs:
+            idata_kwargs["log_likelihood"] = True
+
         idata = model.fit(
             draws=draws,
             tune=tune,
@@ -360,6 +365,7 @@ def fit_model(
             target_accept=target_accept,
             random_seed=random_seed,
             init=init_kwargs,
+            idata_kwargs=idata_kwargs,
             **kwargs,
         )
     else:
@@ -372,6 +378,7 @@ def fit_model(
                 target_accept=target_accept,
                 random_seed=random_seed,
                 return_inferencedata=True,
+                idata_kwargs={"log_likelihood": True},
                 **kwargs,
             )
 

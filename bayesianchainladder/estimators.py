@@ -205,9 +205,9 @@ class BayesianChainLadderGLM:
             exposure_column=self.exposure if self.exposure else "exposure",
         )
 
-        # Add categorical encoding
-        self.data_ = add_categorical_columns(self.data_)
-        self.future_data_ = add_categorical_columns(self.future_data_)
+        # Add categorical encoding (spline columns stay numeric)
+        self.data_ = add_categorical_columns(self.data_, formula=self.formula)
+        self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
 
         # Validate data compatibility with chosen family
         self._validate_data_family_compatibility()
