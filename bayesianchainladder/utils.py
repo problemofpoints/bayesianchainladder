@@ -317,19 +317,65 @@ def add_categorical_columns(
     if columns is None:
         columns = ["origin", "dev", "calendar"]
 
-    # Detect columns used in spline terms
-    spline_columns: set[str] = set()
+    # Detect columns that should stay numeric and/or need indexed versions
+    numeric_columns: set[str] = set()
+    indexed_columns: set[str] = set()
+
     if formula is not None:
         import re
-        # Match bs(...) or cr(...) and extract the first argument (column name)
+        # Match bs(...) or cr(...) - spline terms
         spline_pattern = r'\b(?:bs|cr)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)'
-        matches = re.findall(spline_pattern, formula)
-        spline_columns = set(matches)
+        numeric_columns.update(re.findall(spline_pattern, formula))
+
+        # Match column**N or pow(column, N) - polynomial terms
+        power_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\*\*\s*\d'
+        numeric_columns.update(re.findall(power_pattern, formula))
+        pow_pattern = r'\bpow\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        numeric_columns.update(re.findall(pow_pattern, formula))
+
+        # Match np.log(), np.sqrt(), np.maximum(), etc. - numpy transforms
+        # Handles both np.func(col) and np.func(val, col) patterns
+        np_pattern = r'\bnp\.\w+\s*\([^)]*\b([a-zA-Z_][a-zA-Z0-9_]*_idx)\b'
+        numeric_columns.update(re.findall(np_pattern, formula))
+        np_pattern_simple = r'\bnp\.\w+\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[,)]'
+        numeric_columns.update(re.findall(np_pattern_simple, formula))
+
+        # Match {expr} syntax with column names inside (e.g., {origin**2})
+        brace_pattern = r'\{[^}]*\b([a-zA-Z_][a-zA-Z0-9_]*)\b[^}]*\}'
+        numeric_columns.update(re.findall(brace_pattern, formula))
+
+        # Match bare column name (not wrapped in C()) used directly in formula
+        # This catches "origin + ..." but not "C(origin) + ..."
+        # Split by common operators and check each term
+        terms = re.split(r'[~+\-*/(),\s]+', formula)
+        for term in terms:
+            # If a column appears as a bare term (not empty, not a number, not a function)
+            if term and term in columns and not re.match(r'^\d+\.?\d*$', term):
+                # Check if this column is NOT wrapped in C() in the formula
+                c_wrapped = re.search(rf'\bC\s*\(\s*{re.escape(term)}\s*\)', formula)
+                if not c_wrapped:
+                    numeric_columns.add(term)
+
+        # Check for _idx suffix usage - these need indexed versions
+        # Match origin_idx, dev_idx, calendar_idx anywhere in formula
+        idx_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)_idx\b'
+        indexed_columns.update(re.findall(idx_pattern, formula))
+
+        # Also add _idx columns to numeric_columns so they stay numeric
+        for col in re.findall(idx_pattern, formula):
+            numeric_columns.add(f"{col}_idx")
 
     for col in columns:
         if col in df.columns:
-            if col in spline_columns:
-                # Keep as numeric for spline terms
+            # Create indexed version (1, 2, 3, ...) if needed for _idx references
+            if col in indexed_columns:
+                # Sort unique values and create mapping to 1-based index
+                unique_vals = sorted(df[col].unique())
+                val_to_idx = {v: i + 1 for i, v in enumerate(unique_vals)}
+                df[f"{col}_idx"] = df[col].map(val_to_idx)
+
+            if col in numeric_columns:
+                # Keep as numeric for spline/polynomial/transform terms
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             else:
                 # Convert to categorical
