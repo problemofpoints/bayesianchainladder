@@ -6,7 +6,7 @@ import pytest
 
 import chainladder as cl
 
-from bayesianchainladder.estimators import BayesianChainLadderGLM
+from bayesianchainladder.estimators import BayesianChainLadderGLM, BayesianCSR
 
 
 @pytest.fixture
@@ -342,3 +342,256 @@ class TestBayesianChainLadderGLMNegativeBinomial:
         assert model.ibnr_ is not None
         assert model.ultimate_ is not None
         assert model.reserves_posterior_ is not None
+
+
+# ============================================================================
+# BayesianCSR Tests
+# ============================================================================
+
+
+class TestBayesianCSRInit:
+    """Tests for BayesianCSR initialization."""
+
+    def test_default_initialization(self):
+        """Test default parameter initialization."""
+        model = BayesianCSR()
+
+        assert model.priors is None
+        assert model.draws == 2000
+        assert model.tune == 1000
+        assert model.chains == 4
+        assert model.target_accept == 0.9
+        assert not model._is_fitted
+
+    def test_custom_initialization(self):
+        """Test custom parameter initialization."""
+        model = BayesianCSR(
+            draws=1000,
+            tune=500,
+            chains=2,
+            random_seed=42,
+        )
+
+        assert model.draws == 1000
+        assert model.tune == 500
+        assert model.chains == 2
+        assert model.random_seed == 42
+
+
+class TestBayesianCSRFit:
+    """Tests for BayesianCSR fit method."""
+
+    @pytest.mark.slow
+    def test_fit_runs_with_premium_value(self, positive_triangle):
+        """Test that fit completes with premium_value."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+
+        result = model.fit(positive_triangle, premium_value=10000)
+
+        assert result is model
+        assert model._is_fitted
+        assert model.idata is not None
+
+    @pytest.mark.slow
+    def test_fit_populates_attributes(self, positive_triangle):
+        """Test that fit populates expected attributes."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+
+        model.fit(positive_triangle, premium_value=10000)
+
+        # Check data attributes
+        assert model.data_ is not None
+        assert model.future_data_ is not None
+        assert model.triangle_ is not None
+
+        # Check posterior attributes
+        assert model.elr_posterior_ is not None
+        assert model.gamma_posterior_ is not None
+
+    @pytest.mark.slow
+    def test_fit_computes_reserves(self, positive_triangle):
+        """Test that fit computes reserve distributions."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+
+        model.fit(positive_triangle, premium_value=10000)
+
+        # Check reserve attributes
+        assert model.ibnr_ is not None
+        assert model.ultimate_ is not None
+        assert model.reserves_posterior_ is not None
+
+    def test_fit_without_premium_raises(self, positive_triangle):
+        """Test that fit without premium raises error."""
+        model = BayesianCSR()
+
+        with pytest.raises(ValueError, match="premium"):
+            model.fit(positive_triangle)
+
+
+class TestBayesianCSRSummary:
+    """Tests for BayesianCSR summary methods."""
+
+    @pytest.mark.slow
+    def test_summary_structure(self, positive_triangle):
+        """Test summary returns expected structure."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        model.fit(positive_triangle, premium_value=10000)
+
+        summary = model.summary()
+
+        assert isinstance(summary, pd.DataFrame)
+        assert "Ultimate" in summary.columns.get_level_values(0)
+        assert "IBNR" in summary.columns.get_level_values(0)
+
+    @pytest.mark.slow
+    def test_summary_with_totals(self, positive_triangle):
+        """Test summary includes total row."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        model.fit(positive_triangle, premium_value=10000)
+
+        summary = model.summary(include_totals=True)
+
+        assert "Total" in summary.index
+
+    @pytest.mark.slow
+    def test_get_expected_loss_ratio(self, positive_triangle):
+        """Test getting expected loss ratio summary."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        model.fit(positive_triangle, premium_value=10000)
+
+        elr_summary = model.get_expected_loss_ratio()
+
+        assert isinstance(elr_summary, pd.DataFrame)
+        assert "mean" in elr_summary.columns
+        assert "ELR" in elr_summary.index
+
+    @pytest.mark.slow
+    def test_get_speedup_parameter(self, positive_triangle):
+        """Test getting speedup parameter summary."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        model.fit(positive_triangle, premium_value=10000)
+
+        gamma_summary = model.get_speedup_parameter()
+
+        assert isinstance(gamma_summary, pd.DataFrame)
+        assert "mean" in gamma_summary.columns
+        assert "gamma" in gamma_summary.index
+
+
+class TestBayesianCSRSampleReserves:
+    """Tests for BayesianCSR sample_reserves method."""
+
+    @pytest.mark.slow
+    def test_sample_reserves(self, positive_triangle):
+        """Test sampling from reserve distribution."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        model.fit(positive_triangle, premium_value=10000)
+
+        samples = model.sample_reserves(n_samples=500)
+
+        assert isinstance(samples, np.ndarray)
+        assert len(samples) == 500
+
+    @pytest.mark.slow
+    def test_sample_reserves_reproducibility(self, positive_triangle):
+        """Test that random seed produces reproducible samples."""
+        model = BayesianCSR(
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        model.fit(positive_triangle, premium_value=10000)
+
+        samples1 = model.sample_reserves(n_samples=100, random_seed=123)
+        samples2 = model.sample_reserves(n_samples=100, random_seed=123)
+
+        np.testing.assert_array_equal(samples1, samples2)
+
+
+class TestBayesianCSRRepr:
+    """Tests for BayesianCSR string representation."""
+
+    def test_repr_not_fitted(self):
+        """Test repr before fitting."""
+        model = BayesianCSR()
+        repr_str = repr(model)
+
+        assert "BayesianCSR" in repr_str
+        assert "not fitted" in repr_str
+
+    @pytest.mark.slow
+    def test_repr_fitted(self, positive_triangle):
+        """Test repr after fitting."""
+        model = BayesianCSR(
+            draws=50,
+            tune=25,
+            chains=1,
+            random_seed=42,
+        )
+        model.fit(positive_triangle, premium_value=10000)
+
+        repr_str = repr(model)
+
+        assert "fitted" in repr_str
+        assert "not fitted" not in repr_str
+
+
+class TestBayesianCSRValidation:
+    """Tests for BayesianCSR validation."""
+
+    def test_methods_before_fit_raise(self):
+        """Test that methods raise error before fit."""
+        model = BayesianCSR()
+
+        with pytest.raises(ValueError, match="not been fitted"):
+            model.summary()
+
+        with pytest.raises(ValueError, match="not been fitted"):
+            model.sample_reserves()
+
+        with pytest.raises(ValueError, match="not been fitted"):
+            model.get_expected_loss_ratio()
+
+        with pytest.raises(ValueError, match="not been fitted"):
+            model.get_speedup_parameter()

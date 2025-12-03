@@ -463,6 +463,141 @@ def create_design_info(
     }
 
 
+def prepare_csr_data(
+    triangle: cl.Triangle,
+    premium_triangle: cl.Triangle | None = None,
+    premium_value: float | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Prepare data for the Changing Settlement Rate (CSR) model.
+
+    The CSR model works on log cumulative paid loss with log premium as an offset.
+    This function converts triangles to the appropriate format.
+
+    Parameters
+    ----------
+    triangle : chainladder.Triangle
+        The claims triangle (cumulative paid loss). If incremental, will be
+        converted to cumulative.
+    premium_triangle : chainladder.Triangle, optional
+        Premium triangle (earned premium by origin). If provided, premium values
+        are extracted and matched to each origin year.
+    premium_value : float, optional
+        Single premium value to use for all origin years (if premium_triangle
+        is not provided). Required if premium_triangle is None.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        A tuple of (observed_df, future_df) DataFrames with columns:
+        - origin: Origin period
+        - dev: Development period
+        - cumulative: Cumulative paid loss
+        - logloss: Log of cumulative paid loss
+        - premium: Premium amount
+        - logprem: Log of premium
+
+    Raises
+    ------
+    ValueError
+        If neither premium_triangle nor premium_value is provided.
+
+    Examples
+    --------
+    >>> import chainladder as cl
+    >>> from bayesianchainladder.utils import prepare_csr_data
+    >>> tri = cl.load_sample("raa")
+    >>> observed, future = prepare_csr_data(tri, premium_value=10000)
+    """
+    if premium_triangle is None and premium_value is None:
+        raise ValueError(
+            "Either premium_triangle or premium_value must be provided for CSR model"
+        )
+
+    tri = triangle.copy()
+
+    # Ensure cumulative
+    if not tri.is_cumulative:
+        tri = tri.incr_to_cum()
+
+    # Get observed data
+    origins = tri.origin
+    developments = tri.development
+    values = tri.values
+
+    # Squeeze singleton dimensions
+    while values.ndim > 2:
+        if values.shape[0] == 1:
+            values = values[0]
+        else:
+            break
+
+    # Build observed DataFrame
+    observed_rows = []
+    future_rows = []
+
+    for i, origin in enumerate(origins):
+        origin_val = _extract_period_value(origin)
+
+        for j, dev in enumerate(developments):
+            dev_val = _extract_period_value(dev)
+            val = values[i, j]
+
+            row = {
+                "origin": origin_val,
+                "dev": dev_val,
+            }
+
+            if np.isnan(val):
+                # Future cell
+                row["cumulative"] = np.nan
+                row["logloss"] = np.nan
+                future_rows.append(row)
+            else:
+                # Observed cell - only include if positive (for log transform)
+                if val > 0:
+                    row["cumulative"] = val
+                    row["logloss"] = np.log(val)
+                    observed_rows.append(row)
+
+    observed_df = pd.DataFrame(observed_rows)
+    future_df = pd.DataFrame(future_rows)
+
+    # Add premium
+    if premium_triangle is not None:
+        # Extract premium values by origin
+        prem_df = triangle_to_dataframe(premium_triangle, value_column="premium")
+        # Take first dev period's premium value for each origin
+        if "dev" in prem_df.columns:
+            prem_first = prem_df[prem_df["dev"] == prem_df["dev"].min()][
+                ["origin", "premium"]
+            ]
+        else:
+            prem_first = prem_df[["origin", "premium"]]
+
+        observed_df = observed_df.merge(prem_first, on="origin", how="left")
+        if len(future_df) > 0:
+            future_df = future_df.merge(prem_first, on="origin", how="left")
+    else:
+        # Use constant premium value
+        observed_df["premium"] = premium_value
+        if len(future_df) > 0:
+            future_df["premium"] = premium_value
+
+    # Add log premium
+    observed_df["logprem"] = np.log(observed_df["premium"])
+    if len(future_df) > 0:
+        future_df["logprem"] = np.log(future_df["premium"])
+
+    # Ensure proper dtypes
+    for df in [observed_df, future_df]:
+        if len(df) > 0:
+            df["origin"] = df["origin"].astype(int)
+            df["dev"] = df["dev"].astype(int)
+
+    return observed_df, future_df
+
+
 def validate_triangle(triangle: cl.Triangle) -> None:
     """
     Validate that a triangle is suitable for Bayesian chain ladder modeling.

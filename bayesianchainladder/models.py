@@ -646,6 +646,190 @@ def compute_loo(idata: az.InferenceData) -> az.ELPDData:
     return az.loo(idata)
 
 
+def build_csr_model(
+    data: pd.DataFrame,
+    logprem_col: str = "logprem",
+    logloss_col: str = "logloss",
+    origin_col: str = "origin",
+    dev_col: str = "dev",
+    priors: dict[str, Any] | None = None,
+) -> pm.Model:
+    """
+    Build a PyMC model for the Changing Settlement Rate (CSR) method.
+
+    This implements the CSR stochastic loss reserving method from Glenn Meyers'
+    "Stochastic Loss Reserving Using Bayesian MCMC Models" (2015). The CSR model
+    allows for changing development patterns over time, where newer accident years
+    may settle at different rates than older ones.
+
+    Model Structure
+    ---------------
+    The mean structure is:
+
+        E[log(loss)] = logprem + logelr + alpha[origin] + beta[dev] * speedup[origin]
+
+    where:
+    - logprem is log premium (offset)
+    - logelr is the log expected loss ratio
+    - alpha[origin] are origin year effects (first constrained to 0)
+    - beta[dev] are development effects (last constrained to 0)
+    - speedup[origin] is a cumulative factor: speedup[1]=1, speedup[i]=speedup[i-1]*(1-gamma)
+
+    The variance structure allows for heteroscedasticity across development periods,
+    with variance typically decreasing as claims mature.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long-format DataFrame with columns for log premium, log loss,
+        origin period, and development period.
+    logprem_col : str, optional
+        Name of the log premium column. Default is "logprem".
+    logloss_col : str, optional
+        Name of the log loss column. Default is "logloss".
+    origin_col : str, optional
+        Name of the origin period column. Default is "origin".
+    dev_col : str, optional
+        Name of the development period column. Default is "dev".
+    priors : dict, optional
+        Custom prior specifications. Keys can include:
+        - "alpha": dict with "sigma" for origin effects prior
+        - "beta": dict with "sigma" for development effects prior
+        - "logelr": dict with "mu" and "sigma" for log ELR prior
+        - "gamma": dict with "mu" and "sigma" for speedup parameter prior
+        - "a_ig": dict with "alpha" and "beta" for inverse gamma prior on variance
+
+    Returns
+    -------
+    pm.Model
+        A PyMC model object ready for sampling.
+
+    References
+    ----------
+    Meyers, G. (2015). Stochastic Loss Reserving Using Bayesian MCMC Models.
+    CAS Monograph Series Number 1.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> from bayesianchainladder.models import build_csr_model
+    >>> data = pd.DataFrame({
+    ...     "logprem": [10.0, 10.0, 10.0, 10.1, 10.1, 10.2],
+    ...     "logloss": [8.0, 8.5, 8.8, 8.1, 8.6, 8.2],
+    ...     "origin": [1, 1, 1, 2, 2, 3],
+    ...     "dev": [1, 2, 3, 1, 2, 1],
+    ... })
+    >>> model = build_csr_model(data)
+    """
+    priors = priors or {}
+
+    # Get data arrays
+    logloss = data[logloss_col].values.astype(np.float64)
+    logprem = data[logprem_col].values.astype(np.float64)
+    n_obs = len(logloss)
+
+    # Encode categorical variables (1-indexed to match Stan)
+    origin_codes, origin_levels = pd.factorize(data[origin_col], sort=True)
+    dev_codes, dev_levels = pd.factorize(data[dev_col], sort=True)
+
+    n_origin = len(origin_levels)
+    n_dev = len(dev_levels)
+
+    coords = {
+        "origin": origin_levels,
+        "dev": dev_levels,
+        "obs": np.arange(n_obs),
+        "origin_raw": origin_levels[1:],  # For r_alpha (n_origin - 1)
+        "dev_raw": dev_levels[:-1],  # For r_beta (n_dev - 1)
+    }
+
+    # Prior specifications
+    alpha_sigma = priors.get("alpha", {}).get("sigma", 3.162)
+    beta_sigma = priors.get("beta", {}).get("sigma", 3.162)
+    logelr_mu = priors.get("logelr", {}).get("mu", -0.4)
+    logelr_sigma = priors.get("logelr", {}).get("sigma", 3.162)
+    gamma_mu = priors.get("gamma", {}).get("mu", 0.0)
+    gamma_sigma = priors.get("gamma", {}).get("sigma", 0.05)
+    a_ig_alpha = priors.get("a_ig", {}).get("alpha", 1.0)
+    a_ig_beta = priors.get("a_ig", {}).get("beta", 1.0)
+
+    with pm.Model(coords=coords) as model:
+        # Data containers
+        origin_idx = pm.Data("origin_idx", origin_codes, dims="obs")
+        dev_idx = pm.Data("dev_idx", dev_codes, dims="obs")
+        logprem_data = pm.Data("logprem", logprem, dims="obs")
+
+        # ===== Parameters =====
+
+        # Raw origin effects (n_origin - 1), first is constrained to 0
+        r_alpha = pm.Normal("r_alpha", mu=0, sigma=alpha_sigma, dims="origin_raw")
+
+        # Raw development effects (n_dev - 1), last is constrained to 0
+        r_beta = pm.Normal("r_beta", mu=0, sigma=beta_sigma, dims="dev_raw")
+
+        # Log expected loss ratio (constrained to [-4, 4] in Stan)
+        # Using a normal with moderate sigma, or could use pm.Truncated
+        logelr = pm.Normal("logelr", mu=logelr_mu, sigma=logelr_sigma)
+
+        # Speedup parameter gamma
+        gamma = pm.Normal("gamma", mu=gamma_mu, sigma=gamma_sigma)
+
+        # Inverse gamma parameters for variance (one per development period)
+        a_ig = pm.InverseGamma("a_ig", alpha=a_ig_alpha, beta=a_ig_beta, dims="dev")
+
+        # ===== Transformed Parameters =====
+
+        # alpha: first is 0, rest are r_alpha
+        # alpha[0] = 0, alpha[1:] = r_alpha
+        alpha = pt.concatenate([pt.zeros(1), r_alpha])
+        alpha = pm.Deterministic("alpha", alpha, dims="origin")
+
+        # beta: last is 0, rest are r_beta
+        # beta[:-1] = r_beta, beta[-1] = 0
+        beta = pt.concatenate([r_beta, pt.zeros(1)])
+        beta = pm.Deterministic("beta", beta, dims="dev")
+
+        # speedup: speedup[0] = 1, speedup[i] = speedup[i-1] * (1 - gamma)
+        # This is a geometric sequence: speedup[i] = (1 - gamma)^i
+        speedup_values = pt.power(1 - gamma, pt.arange(n_origin))
+        speedup = pm.Deterministic("speedup", speedup_values, dims="origin")
+
+        # Variance structure from Stan:
+        # sig2[n_dev] = gamma_cdf(1/a_ig[n_dev], 1, 1)
+        # sig2[n_dev-i] = sig2[n_dev+1-i] + gamma_cdf(1/a_ig[i], 1, 1)
+        # This creates decreasing variance as development progresses
+
+        # In PyMC, we use the Gamma distribution CDF
+        # gamma_cdf(x, alpha=1, beta=1) = 1 - exp(-x) for alpha=beta=1
+        # Note: Stan's gamma_cdf uses shape-rate parameterization
+
+        # Compute cumulative variance from the last dev period backwards
+        # First compute the individual contributions
+        sig2_contrib = 1.0 - pt.exp(-1.0 / a_ig)  # gamma_cdf(1/a_ig, 1, 1)
+
+        # Cumulative sum in reverse (from last dev to first)
+        sig2_reversed = pt.cumsum(sig2_contrib[::-1])
+        sig2 = sig2_reversed[::-1]
+        sig = pm.Deterministic("sig", pt.sqrt(sig2), dims="dev")
+
+        # ===== Mean Structure =====
+        # mu[i] = logprem[i] + logelr + alpha[origin[i]] + beta[dev[i]] * speedup[origin[i]]
+
+        mu = (
+            logprem_data
+            + logelr
+            + alpha[origin_idx]
+            + beta[dev_idx] * speedup[origin_idx]
+        )
+        mu = pm.Deterministic("mu", mu, dims="obs")
+
+        # ===== Likelihood =====
+        # logloss ~ Normal(mu, sig[dev_lag])
+        pm.Normal("logloss", mu=mu, sigma=sig[dev_idx], observed=logloss, dims="obs")
+
+    return model
+
+
 def extract_parameter_summary(
     idata: az.InferenceData,
     var_names: list[str] | None = None,

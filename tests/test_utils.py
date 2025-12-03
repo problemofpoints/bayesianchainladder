@@ -11,6 +11,7 @@ from bayesianchainladder.utils import (
     compute_log_exposure_offset,
     create_design_info,
     get_future_dataframe,
+    prepare_csr_data,
     prepare_model_data,
     triangle_to_dataframe,
     validate_triangle,
@@ -221,3 +222,93 @@ class TestValidateTriangle:
         # Create a minimal triangle - this test depends on cl behavior
         # Skip if we can't easily create a too-small triangle
         pass
+
+
+class TestPrepareCSRData:
+    """Tests for prepare_csr_data function."""
+
+    @pytest.fixture
+    def positive_triangle(self):
+        """Load a triangle with positive cumulative values."""
+        return cl.load_sample("genins")
+
+    def test_returns_two_dataframes(self, positive_triangle):
+        """Test that function returns observed and future dataframes."""
+        observed, future = prepare_csr_data(positive_triangle, premium_value=10000)
+
+        assert isinstance(observed, pd.DataFrame)
+        assert isinstance(future, pd.DataFrame)
+
+    def test_observed_has_required_columns(self, positive_triangle):
+        """Test observed data has all required columns."""
+        observed, _ = prepare_csr_data(positive_triangle, premium_value=10000)
+
+        assert "origin" in observed.columns
+        assert "dev" in observed.columns
+        assert "cumulative" in observed.columns
+        assert "logloss" in observed.columns
+        assert "premium" in observed.columns
+        assert "logprem" in observed.columns
+
+    def test_future_has_required_columns(self, positive_triangle):
+        """Test future data has all required columns."""
+        _, future = prepare_csr_data(positive_triangle, premium_value=10000)
+
+        if len(future) > 0:
+            assert "origin" in future.columns
+            assert "dev" in future.columns
+            assert "premium" in future.columns
+            assert "logprem" in future.columns
+
+    def test_logloss_is_log_of_cumulative(self, positive_triangle):
+        """Test that logloss is the log of cumulative."""
+        observed, _ = prepare_csr_data(positive_triangle, premium_value=10000)
+
+        expected_logloss = np.log(observed["cumulative"])
+        np.testing.assert_array_almost_equal(
+            observed["logloss"].values,
+            expected_logloss.values,
+        )
+
+    def test_logprem_is_log_of_premium(self, positive_triangle):
+        """Test that logprem is the log of premium."""
+        observed, _ = prepare_csr_data(positive_triangle, premium_value=10000)
+
+        expected_logprem = np.log(observed["premium"])
+        np.testing.assert_array_almost_equal(
+            observed["logprem"].values,
+            expected_logprem.values,
+        )
+
+    def test_premium_value_applied(self, positive_triangle):
+        """Test that premium_value is applied to all rows."""
+        observed, future = prepare_csr_data(positive_triangle, premium_value=5000)
+
+        assert (observed["premium"] == 5000).all()
+        if len(future) > 0:
+            assert (future["premium"] == 5000).all()
+
+    def test_missing_premium_raises(self, positive_triangle):
+        """Test that missing premium raises error."""
+        with pytest.raises(ValueError, match="premium"):
+            prepare_csr_data(positive_triangle)
+
+    def test_converts_incremental_to_cumulative(self, positive_triangle):
+        """Test that incremental triangles are converted to cumulative."""
+        # Get incremental triangle
+        incr_tri = positive_triangle.incr_to_cum().cum_to_incr()
+
+        observed, _ = prepare_csr_data(incr_tri, premium_value=10000)
+
+        # Should still have valid cumulative values
+        assert not observed["cumulative"].isna().any()
+        assert (observed["cumulative"] > 0).all()
+
+    def test_only_positive_values_included(self, sample_triangle):
+        """Test that only positive cumulative values are included."""
+        # RAA may have some negative cumulative values in early cells
+        observed, _ = prepare_csr_data(sample_triangle, premium_value=10000)
+
+        # All included values should be positive (for valid log transform)
+        if len(observed) > 0:
+            assert (observed["cumulative"] > 0).all()

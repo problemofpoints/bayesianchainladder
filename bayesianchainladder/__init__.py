@@ -46,12 +46,13 @@ try:
 except PackageNotFoundError:
     __version__ = "0.1.0"
 
-# Main estimator
-from .estimators import BayesianChainLadderGLM
+# Main estimators
+from .estimators import BayesianChainLadderGLM, BayesianCSR
 
 # Model building functions
 from .models import (
     build_bambi_model,
+    build_csr_model,
     build_pymc_model,
     compute_loo,
     compute_waic,
@@ -83,6 +84,7 @@ from .utils import (
     compute_log_exposure_offset,
     create_design_info,
     get_future_dataframe,
+    prepare_csr_data,
     prepare_model_data,
     triangle_to_dataframe,
     validate_triangle,
@@ -91,10 +93,12 @@ from .utils import (
 __all__ = [
     # Version
     "__version__",
-    # Main estimator
+    # Main estimators
     "BayesianChainLadderGLM",
+    "BayesianCSR",
     # Model functions
     "build_bambi_model",
+    "build_csr_model",
     "build_pymc_model",
     "fit_model",
     "predict_posterior",
@@ -119,6 +123,7 @@ __all__ = [
     "triangle_to_dataframe",
     "get_future_dataframe",
     "prepare_model_data",
+    "prepare_csr_data",
     "add_categorical_columns",
     "compute_log_exposure_offset",
     "create_design_info",
