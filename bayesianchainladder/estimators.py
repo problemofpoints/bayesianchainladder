@@ -809,6 +809,12 @@ class BayesianCSR:
         Target acceptance probability for NUTS sampler. Default is 0.9.
     random_seed : int, optional
         Random seed for reproducibility.
+    include_process_variance : bool, optional
+        Whether to include process variance in reserve predictions.
+        If True (default), samples from the full posterior predictive
+        distribution (including both parameter and process uncertainty).
+        If False, uses only parameter uncertainty (mean prediction on
+        original scale using the lognormal correction exp(mu + sigma²/2)).
 
     Attributes
     ----------
@@ -867,6 +873,7 @@ class BayesianCSR:
         chains: int = 4,
         target_accept: float = 0.9,
         random_seed: int | None = None,
+        include_process_variance: bool = True,
     ):
         self.priors = priors
         self.draws = draws
@@ -874,6 +881,7 @@ class BayesianCSR:
         self.chains = chains
         self.target_accept = target_accept
         self.random_seed = random_seed
+        self.include_process_variance = include_process_variance
 
         # Fitted attributes (set by fit())
         self.model_: pm.Model | None = None
@@ -962,7 +970,18 @@ class BayesianCSR:
         return self
 
     def _compute_predictions(self) -> None:
-        """Compute reserve predictions from the fitted model."""
+        """Compute reserve predictions from the fitted model.
+
+        The CSR model predicts log(cumulative loss) ~ Normal(mu, sigma).
+        For reserve estimation:
+        - loss = exp(logloss) follows a lognormal distribution
+        - E[loss] = exp(mu + sigma²/2) for the expected (mean) cumulative loss
+        - For posterior predictive: sample logloss ~ Normal(mu, sigma), then exp()
+
+        We compute the posterior predictive distribution by sampling from
+        Normal(mu, sigma) for each posterior parameter sample, which gives
+        the full distribution including both parameter and process uncertainty.
+        """
         if len(self.future_data_) == 0:
             # No future cells to predict
             return
@@ -975,6 +994,7 @@ class BayesianCSR:
         beta = posterior["beta"].values  # (chains, draws, n_dev)
         speedup = posterior["speedup"].values  # (chains, draws, n_origin)
         logelr = posterior["logelr"].values  # (chains, draws)
+        sig = posterior["sig"].values  # (chains, draws, n_dev)
 
         n_chains, n_draws = alpha.shape[:2]
 
@@ -982,8 +1002,16 @@ class BayesianCSR:
         origin_levels = list(self.model_.coords["origin"])
         dev_levels = list(self.model_.coords["dev"])
 
+        # The ultimate development period is the maximum dev in the triangle
+        ultimate_dev = max(dev_levels)
+        ultimate_dev_idx = dev_levels.index(ultimate_dev)
+
         # For each future cell, compute predicted cumulative loss
         future_predictions = {}
+
+        # Set random seed for reproducibility if provided
+        if self.random_seed is not None:
+            np.random.seed(self.random_seed + 1000)  # Offset to differ from sampling
 
         for origin in self.future_data_["origin"].unique():
             origin_idx = origin_levels.index(origin)
@@ -992,50 +1020,44 @@ class BayesianCSR:
             if len(origin_future) == 0:
                 continue
 
-            # Get log premium for this origin
-            logprem = origin_future["logprem"].iloc[0]
-
-            # Get the last observed cumulative loss for this origin
+            # Get log premium for this origin (from observed data to ensure consistency)
             origin_observed = self.data_[self.data_["origin"] == origin]
             if len(origin_observed) == 0:
                 continue
 
+            logprem = origin_observed["logprem"].iloc[0]
+
+            # Get the last observed cumulative loss for this origin
             last_observed_dev = origin_observed["dev"].max()
             last_observed_logloss = origin_observed[
                 origin_observed["dev"] == last_observed_dev
             ]["logloss"].iloc[0]
             last_observed_cumulative = np.exp(last_observed_logloss)
 
-            # Predict future development periods
-            future_devs = sorted(origin_future["dev"].unique())
-            predictions_by_dev = {}
+            # Compute mu at ultimate development period
+            # mu = logprem + logelr + alpha[origin] + beta[ultimate_dev] * speedup[origin]
+            mu_ultimate = (
+                logprem
+                + logelr
+                + alpha[:, :, origin_idx]
+                + beta[:, :, ultimate_dev_idx] * speedup[:, :, origin_idx]
+            )
 
-            for dev in future_devs:
-                dev_idx = dev_levels.index(dev)
+            # Get sigma at ultimate development period
+            sig_ultimate = sig[:, :, ultimate_dev_idx]
 
-                # Mean on log scale:
-                # mu = logprem + logelr + alpha[origin] + beta[dev] * speedup[origin]
-                mu = (
-                    logprem
-                    + logelr
-                    + alpha[:, :, origin_idx]
-                    + beta[:, :, dev_idx] * speedup[:, :, origin_idx]
+            # Generate predictions for ultimate cumulative loss
+            if self.include_process_variance:
+                # Sample from Normal(mu, sigma) and exponentiate for lognormal
+                # This includes both parameter uncertainty and process variance
+                logloss_samples = mu_ultimate + sig_ultimate * np.random.standard_normal(
+                    mu_ultimate.shape
                 )
-
-                # Get sigma for this dev period
-                sig = posterior["sig"].values[:, :, dev_idx]
-
-                # Sample predicted log loss (adding noise would be for posterior predictive)
-                # For reserve estimates, we typically use the mean prediction
-                pred_logloss = mu  # Could add: + np.random.normal(0, sig)
-
-                # Convert to cumulative loss
-                pred_cumulative = np.exp(pred_logloss)
-                predictions_by_dev[dev] = pred_cumulative
-
-            # Ultimate cumulative = prediction at last dev period
-            ultimate_dev = max(future_devs)
-            ultimate_cumulative = predictions_by_dev[ultimate_dev]
+                ultimate_cumulative = np.exp(logloss_samples)
+            else:
+                # Use expected value without process variance
+                # For lognormal: E[exp(X)] = exp(mu + sigma²/2)
+                ultimate_cumulative = np.exp(mu_ultimate + 0.5 * sig_ultimate**2)
 
             # IBNR = Ultimate - Paid to date
             ibnr = ultimate_cumulative - last_observed_cumulative
@@ -1354,6 +1376,7 @@ class BayesianCSR:
             f"    draws={self.draws},\n"
             f"    tune={self.tune},\n"
             f"    chains={self.chains},\n"
+            f"    include_process_variance={self.include_process_variance},\n"
             f"    status={fitted_str}\n"
             f")"
         )
