@@ -981,11 +981,10 @@ class BayesianCSR:
         We compute the posterior predictive distribution by sampling from
         Normal(mu, sigma) for each posterior parameter sample, which gives
         the full distribution including both parameter and process uncertainty.
-        """
-        if len(self.future_data_) == 0:
-            # No future cells to predict
-            return
 
+        Note: For fully developed origins (no future cells), Ultimate = Paid,
+        StdErr = 0, and IBNR = 0 with no uncertainty.
+        """
         # Get posterior samples of model parameters
         posterior = self.idata.posterior
 
@@ -997,6 +996,7 @@ class BayesianCSR:
         sig = posterior["sig"].values  # (chains, draws, n_dev)
 
         n_chains, n_draws = alpha.shape[:2]
+        n_samples = n_chains * n_draws
 
         # Get coordinate mappings
         origin_levels = list(self.model_.coords["origin"])
@@ -1006,21 +1006,25 @@ class BayesianCSR:
         ultimate_dev = max(dev_levels)
         ultimate_dev_idx = dev_levels.index(ultimate_dev)
 
-        # For each future cell, compute predicted cumulative loss
-        future_predictions = {}
+        # Get origins with future cells
+        origins_with_future = set()
+        if len(self.future_data_) > 0:
+            origins_with_future = set(self.future_data_["origin"].unique())
+
+        # All origins from observed data
+        all_origins = sorted(self.data_["origin"].unique())
+
+        # For each origin, compute predicted cumulative loss
+        all_predictions = {}
 
         # Set random seed for reproducibility if provided
         if self.random_seed is not None:
             np.random.seed(self.random_seed + 1000)  # Offset to differ from sampling
 
-        for origin in self.future_data_["origin"].unique():
+        for origin in all_origins:
             origin_idx = origin_levels.index(origin)
-            origin_future = self.future_data_[self.future_data_["origin"] == origin]
 
-            if len(origin_future) == 0:
-                continue
-
-            # Get log premium for this origin (from observed data to ensure consistency)
+            # Get observed data for this origin
             origin_observed = self.data_[self.data_["origin"] == origin]
             if len(origin_observed) == 0:
                 continue
@@ -1034,43 +1038,56 @@ class BayesianCSR:
             ]["logloss"].iloc[0]
             last_observed_cumulative = np.exp(last_observed_logloss)
 
-            # Compute mu at ultimate development period
-            # mu = logprem + logelr + alpha[origin] + beta[ultimate_dev] * speedup[origin]
-            mu_ultimate = (
-                logprem
-                + logelr
-                + alpha[:, :, origin_idx]
-                + beta[:, :, ultimate_dev_idx] * speedup[:, :, origin_idx]
-            )
-
-            # Get sigma at ultimate development period
-            sig_ultimate = sig[:, :, ultimate_dev_idx]
-
-            # Generate predictions for ultimate cumulative loss
-            if self.include_process_variance:
-                # Sample from Normal(mu, sigma) and exponentiate for lognormal
-                # This includes both parameter uncertainty and process variance
-                logloss_samples = mu_ultimate + sig_ultimate * np.random.standard_normal(
-                    mu_ultimate.shape
+            if origin in origins_with_future:
+                # Origin has future cells - compute posterior predictive
+                # Compute mu at ultimate development period
+                # mu = logprem + logelr + alpha[origin] + beta[ultimate_dev] * speedup[origin]
+                mu_ultimate = (
+                    logprem
+                    + logelr
+                    + alpha[:, :, origin_idx]
+                    + beta[:, :, ultimate_dev_idx] * speedup[:, :, origin_idx]
                 )
-                ultimate_cumulative = np.exp(logloss_samples)
+
+                # Get sigma at ultimate development period
+                sig_ultimate = sig[:, :, ultimate_dev_idx]
+
+                # Generate predictions for ultimate cumulative loss
+                if self.include_process_variance:
+                    # Sample from Normal(mu, sigma) and exponentiate for lognormal
+                    # This includes both parameter uncertainty and process variance
+                    logloss_samples = mu_ultimate + sig_ultimate * np.random.standard_normal(
+                        mu_ultimate.shape
+                    )
+                    ultimate_cumulative = np.exp(logloss_samples)
+                else:
+                    # Use expected value without process variance
+                    # For lognormal: E[exp(X)] = exp(mu + sigma²/2)
+                    ultimate_cumulative = np.exp(mu_ultimate + 0.5 * sig_ultimate**2)
+
+                # IBNR = Ultimate - Paid to date
+                ibnr = ultimate_cumulative - last_observed_cumulative
+
+                all_predictions[origin] = {
+                    "paid_to_date": last_observed_cumulative,
+                    "ultimate_samples": ultimate_cumulative,
+                    "ibnr_samples": ibnr,
+                }
             else:
-                # Use expected value without process variance
-                # For lognormal: E[exp(X)] = exp(mu + sigma²/2)
-                ultimate_cumulative = np.exp(mu_ultimate + 0.5 * sig_ultimate**2)
+                # Fully developed origin - Ultimate = Paid, no uncertainty
+                # Create constant arrays for consistency in downstream processing
+                ultimate_cumulative = np.full(n_samples, last_observed_cumulative)
+                ibnr = np.zeros(n_samples)
 
-            # IBNR = Ultimate - Paid to date
-            ibnr = ultimate_cumulative - last_observed_cumulative
-
-            future_predictions[origin] = {
-                "paid_to_date": last_observed_cumulative,
-                "ultimate_samples": ultimate_cumulative,
-                "ibnr_samples": ibnr,
-            }
+                all_predictions[origin] = {
+                    "paid_to_date": last_observed_cumulative,
+                    "ultimate_samples": ultimate_cumulative,
+                    "ibnr_samples": ibnr,
+                }
 
         # Create reserve summaries
-        if future_predictions:
-            self._compute_reserve_summaries(future_predictions)
+        if all_predictions:
+            self._compute_reserve_summaries(all_predictions)
 
     def _compute_reserve_summaries(
         self, future_predictions: dict[Any, dict[str, np.ndarray]]
