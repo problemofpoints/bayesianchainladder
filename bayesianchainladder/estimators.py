@@ -1331,7 +1331,7 @@ class BayesianChainLadderGLM:
         Compute log likelihood of simulated losses for a calendar year.
 
         Used for Bayesian updating in risk margin calculations.
-        For GLM models, this depends on the chosen family (NB, Poisson, Gamma).
+        Uses the actual family from the fitted model (NB, Poisson, Gamma, Gaussian).
 
         Parameters
         ----------
@@ -1357,20 +1357,77 @@ class BayesianChainLadderGLM:
 
         ll = np.zeros(num_samples)
 
-        # For negative binomial, we need the dispersion parameter
-        # For simplicity, we'll use a Poisson approximation
+        # Get family-specific dispersion parameters from posterior
+        family_lower = self.family.lower()
+        posterior = self.idata.posterior
+
+        # Extract dispersion/scale parameters based on family
+        if family_lower in ("negativebinomial", "negative_binomial", "negbinom"):
+            # Bambi stores NB dispersion as 'alpha' or '{response}_alpha'
+            response_name = self.model_.response_component.response.name
+            alpha_name = f"{response_name}_alpha"
+            if alpha_name in posterior:
+                alpha = posterior[alpha_name].values.flatten()
+            elif "alpha" in posterior:
+                alpha = posterior["alpha"].values.flatten()
+            else:
+                # Fall back to a default if not found
+                alpha = np.ones(num_samples) * 1.0
+
+        elif family_lower in ("gamma",):
+            # Gamma shape parameter
+            response_name = self.model_.response_component.response.name
+            alpha_name = f"{response_name}_alpha"
+            if alpha_name in posterior:
+                shape = posterior[alpha_name].values.flatten()
+            elif "alpha" in posterior:
+                shape = posterior["alpha"].values.flatten()
+            else:
+                shape = np.ones(num_samples) * 1.0
+
+        elif family_lower in ("gaussian", "normal"):
+            # Gaussian sigma
+            response_name = self.model_.response_component.response.name
+            sigma_name = f"{response_name}_sigma"
+            if sigma_name in posterior:
+                sigma = posterior[sigma_name].values.flatten()
+            elif "sigma" in posterior:
+                sigma = posterior["sigma"].values.flatten()
+            else:
+                sigma = np.ones(num_samples) * 1.0
+
+        # Compute log-likelihood for each cell in the calendar year diagonal
         for w in range(calendar_year, n_origins):
             d = n_dev - 1 + calendar_year - w
             if 0 <= d < n_dev:
                 observed = simulated_losses[w, d]
                 expected = mu_p[:, w, d]
 
-                # Use Poisson log-likelihood as approximation
-                # For a full implementation, use the actual family
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    ll += stats.poisson.logpmf(
-                        int(max(0, observed)), expected
-                    )
+                    if family_lower in ("negativebinomial", "negative_binomial", "negbinom"):
+                        # Negative binomial: parameterized by n (alpha) and p
+                        # mean = n * (1-p) / p, so p = alpha / (alpha + mu)
+                        p = alpha / (alpha + expected)
+                        ll += stats.nbinom.logpmf(int(max(0, observed)), n=alpha, p=p)
+
+                    elif family_lower == "poisson":
+                        ll += stats.poisson.logpmf(int(max(0, observed)), expected)
+
+                    elif family_lower == "gamma":
+                        # Gamma: shape=alpha, scale=mu/alpha
+                        if observed > 0:
+                            scale = expected / shape
+                            ll += stats.gamma.logpdf(observed, a=shape, scale=scale)
+                        else:
+                            ll += -1e10  # Gamma doesn't support zero
+
+                    elif family_lower in ("gaussian", "normal"):
+                        ll += stats.norm.logpdf(observed, expected, sigma)
+
+                    else:
+                        # Default to Poisson for unknown families
+                        ll += stats.poisson.logpmf(int(max(0, observed)), expected)
+
                     ll = np.nan_to_num(ll, nan=-1e10, neginf=-1e10)
 
         return ll
