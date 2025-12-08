@@ -357,7 +357,7 @@ class RiskMarginCalculator:
 
     def _simulate_future_losses(
         self, params: dict[str, np.ndarray]
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Simulate log cumulative losses for future (lower triangle) cells.
 
@@ -368,8 +368,9 @@ class RiskMarginCalculator:
 
         Returns
         -------
-        np.ndarray
-            Simulated log losses, shape (num_samples, n_origins, n_dev).
+        tuple[np.ndarray, np.ndarray]
+            (logloss_p, mu_p) - Simulated log losses and mu values,
+            each of shape (num_samples, n_origins, n_dev).
         """
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
@@ -384,14 +385,15 @@ class RiskMarginCalculator:
         logloss_p = np.zeros((self.num_samples, self.n_origins, self.n_dev))
 
         # Generate simulated losses for future cells (lower triangle)
-        for d in range(1, self.n_dev):  # dev period 1 to n_dev-1
-            for w in range(self.n_origins - d, self.n_origins):  # origin years
+        # R code: for (d in 2:10) for (w in (12-d):10)
+        # In 0-indexed: d = 1 to n_dev-1, w = n_dev-d to n_dev-1
+        for d in range(1, self.n_dev):  # dev period 1 to n_dev-1 (2 to 10 in R)
+            for w in range(self.n_dev - d, self.n_origins):  # origin years
                 # mu = logprem + logelr + alpha[w] + beta[d]
-                # Note: In ultimate horizon, speedup factor is often 1 for simplicity
                 mu_p[:, w, d] = self.logprem[w] + logelr + alpha[:, w] + beta[:, d]
                 logloss_p[:, w, d] = np.random.normal(mu_p[:, w, d], sig[:, d])
 
-        return logloss_p
+        return logloss_p, mu_p
 
     def _compute_ultimate_by_origin(
         self, params: dict[str, np.ndarray], trpaid: np.ndarray
@@ -590,19 +592,10 @@ class RiskMarginCalculator:
         ultall = mean_ult.sum(axis=1)  # Total ultimate by sample
         expected_ultimate = np.mean(ultall)
 
-        # Simulate future losses
-        logloss_p = self._simulate_future_losses(params)
+        # Simulate future losses and get mu_p for likelihood calculation
+        logloss_p, mu_p = self._simulate_future_losses(params)
 
-        # Compute mu for future cells (for likelihood calculation)
-        alpha = params["alpha"]
-        beta = params["beta"]
-        logelr = params["logelr"]
         sig = params["sig"]
-
-        mu_p = np.zeros((self.num_samples, self.n_origins, self.n_dev))
-        for d in range(1, self.n_dev):
-            for w in range(self.n_origins - d, self.n_origins):
-                mu_p[:, w, d] = self.logprem[w] + logelr + alpha[:, w] + beta[:, d]
 
         # Initialize output arrays
         n_periods = self.n_dev
@@ -612,37 +605,47 @@ class RiskMarginCalculator:
         if self.random_seed is not None:
             np.random.seed(self.random_seed + 1)
 
-        # Process each scenario
+        # Process each scenario - following R code structure
+        # R: for (i in 1:num.mcmc) { x_p = logloss_p[i,,]; ... }
         for i in range(self.num_samples):
             if progress_callback is not None:
                 progress_callback(i, self.num_samples)
 
             # Get simulated losses for this scenario
-            x_p = logloss_p[i]
+            x_p = logloss_p[i]  # Shape (n_origins, n_dev)
 
             # Initial (unconditional) estimates
+            # R: p.mean[1]=mean(ultall); p.assets[1]=mean(sort(ultall)[TVaR.Range])
             pred_mean[i, 0] = np.mean(ultall)
             pred_assets[i, 0] = self._compute_tvar(ultall)
 
             # Accumulate log likelihood as we observe more calendar years
+            # R: loglike=rep(0,num.mcmc)
             loglike = np.zeros(self.num_samples)
 
+            # R: for each calendar year, accumulate likelihood and update posterior
             for cy in range(1, n_periods):
                 # Add likelihood of observing calendar year cy data
+                # R: loglike=loglike+llike(x_p,cy,num.mcmc)
+                # R llike: for (w in (1+cy):10) ll=ll+dnorm(x_p[w,11+cy-w],...)
+                # In 0-indexed: w from cy to n_origins-1, d = n_dev-1+cy-w
                 for w in range(cy, self.n_origins):
                     d = self.n_dev - 1 + cy - w
-                    if d < self.n_dev and d > 0:
-                        x = x_p[w, d]
-                        mu = mu_p[:, w, d]
-                        sigma = sig[:, d]
-                        loglike += stats.norm.logpdf(x, mu, sigma)
+                    # Access x_p[w, d] and compare to mu_p[:, w, d]
+                    x = x_p[w, d]
+                    mu = mu_p[:, w, d]
+                    sigma = sig[:, d]
+                    loglike += stats.norm.logpdf(x, mu, sigma)
 
                 # Compute posterior weights (stabilized)
+                # R: loglike2=loglike-max(loglike); postint=sum(exp(loglike2));
+                #    posterior=exp(loglike2)/postint
                 loglike_shifted = loglike - np.max(loglike)
                 weights = np.exp(loglike_shifted)
                 weights = weights / np.sum(weights)
 
                 # Compute posterior mean and TVaR
+                # R: call.pa=post_assets(posterior,ultall)
                 mean, tvar = self._compute_posterior_assets(weights, ultall)
                 pred_mean[i, cy] = mean
                 pred_assets[i, cy] = tvar
@@ -734,17 +737,7 @@ class RiskMarginCalculator:
         ultall = mean_ult.sum(axis=1)
         expected_ultimate = np.mean(ultall)
 
-        # Compute mu for future cells
-        alpha = params["alpha"]
-        beta = params["beta"]
-        logelr = params["logelr"]
         sig = params["sig"]
-
-        mu_p = np.zeros((self.num_samples, self.n_origins, self.n_dev))
-        for d in range(1, self.n_dev):
-            for w in range(self.n_origins - d, self.n_origins):
-                mu_p[:, w, d] = self.logprem[w] + logelr + alpha[:, w] + beta[:, d]
-
         n_periods = self.n_dev
 
         # Estimate one-year-ahead expected ultimate for each calendar year
@@ -759,7 +752,7 @@ class RiskMarginCalculator:
                 progress_callback(m, n_averaging)
 
             # Simulate new future losses
-            logloss_p = self._simulate_future_losses(params)
+            logloss_p, mu_p = self._simulate_future_losses(params)
 
             # For each scenario, compute conditional expectations
             for i in range(self.num_samples):
@@ -770,11 +763,10 @@ class RiskMarginCalculator:
                     # Add likelihood for this calendar year
                     for w in range(cy, self.n_origins):
                         d = self.n_dev - 1 + cy - w
-                        if d < self.n_dev and d > 0:
-                            x = x_p[w, d]
-                            mu = mu_p[:, w, d]
-                            sigma = sig[:, d]
-                            loglike += stats.norm.logpdf(x, mu, sigma)
+                        x = x_p[w, d]
+                        mu = mu_p[:, w, d]
+                        sigma = sig[:, d]
+                        loglike += stats.norm.logpdf(x, mu, sigma)
 
                     # Compute posterior weights
                     loglike_shifted = loglike - np.max(loglike)
@@ -794,7 +786,7 @@ class RiskMarginCalculator:
         pred_assets = np.zeros((self.num_samples, n_periods))
 
         # Simulate fresh losses for capital calculation
-        logloss_p = self._simulate_future_losses(params)
+        logloss_p, mu_p = self._simulate_future_losses(params)
 
         for i in range(self.num_samples):
             x_p = logloss_p[i]
@@ -809,11 +801,10 @@ class RiskMarginCalculator:
                 # Add likelihood for this calendar year
                 for w in range(cy, self.n_origins):
                     d = self.n_dev - 1 + cy - w
-                    if d < self.n_dev and d > 0:
-                        x = x_p[w, d]
-                        mu = mu_p[:, w, d]
-                        sigma = sig[:, d]
-                        loglike += stats.norm.logpdf(x, mu, sigma)
+                    x = x_p[w, d]
+                    mu = mu_p[:, w, d]
+                    sigma = sig[:, d]
+                    loglike += stats.norm.logpdf(x, mu, sigma)
 
                 # Compute posterior weights
                 loglike_shifted = loglike - np.max(loglike)
