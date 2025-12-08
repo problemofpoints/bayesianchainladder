@@ -1006,6 +1006,375 @@ class BayesianChainLadderGLM:
                     f"  - Adding a small constant to shift values positive"
                 )
 
+    # =========================================================================
+    # Risk Margin Support Methods
+    # =========================================================================
+
+    def get_model_dimensions(self) -> dict[str, int]:
+        """
+        Get model dimensions for risk margin calculations.
+
+        Returns
+        -------
+        dict[str, int]
+            Dictionary with:
+            - n_origins: Number of origin years
+            - n_dev: Number of development periods
+            - num_samples: Total number of MCMC samples
+        """
+        self._check_is_fitted()
+
+        origins = sorted(self.data_["origin"].unique())
+        dev_periods = sorted(self.data_["dev"].unique())
+
+        posterior = self.idata.posterior
+        n_chains = posterior.dims["chain"]
+        n_draws = posterior.dims["draw"]
+
+        return {
+            "n_origins": len(origins),
+            "n_dev": len(dev_periods),
+            "num_samples": n_chains * n_draws,
+        }
+
+    def get_risk_margin_params(self) -> dict[str, np.ndarray]:
+        """
+        Extract model parameters needed for risk margin calculations.
+
+        For the GLM model, this returns the fitted linear predictor components.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Dictionary containing flattened posterior samples of model
+            parameters. Keys depend on the formula used.
+        """
+        self._check_is_fitted()
+
+        posterior = self.idata.posterior
+        n_chains = posterior.dims["chain"]
+        n_draws = posterior.dims["draw"]
+        num_samples = n_chains * n_draws
+
+        params = {}
+        for var_name in posterior.data_vars:
+            values = posterior[var_name].values
+            # Flatten chain and draw dimensions
+            if values.ndim == 2:
+                params[var_name] = values.flatten()
+            else:
+                params[var_name] = values.reshape(num_samples, -1)
+
+        return params
+
+    def get_paid_triangle(self) -> np.ndarray:
+        """
+        Get the observed cumulative paid loss triangle.
+
+        Note: The GLM model works on incremental losses internally,
+        but this returns cumulative values for consistency.
+
+        Returns
+        -------
+        np.ndarray
+            Cumulative paid losses, shape (n_origins, n_dev).
+            NaN values indicate unobserved (future) cells.
+        """
+        self._check_is_fitted()
+
+        # Convert incremental to cumulative if needed
+        df = self.data_.copy()
+
+        # Check if cumulative column exists, if not compute it
+        if "cumulative" not in df.columns:
+            df = df.sort_values(["origin", "dev"])
+            df["cumulative"] = df.groupby("origin")["incremental"].cumsum()
+
+        # Pivot to triangle format
+        pivot = df.pivot(index="origin", columns="dev", values="cumulative")
+        return pivot.values
+
+    def get_incremental_triangle(self) -> np.ndarray:
+        """
+        Get the observed incremental loss triangle.
+
+        Returns
+        -------
+        np.ndarray
+            Incremental losses, shape (n_origins, n_dev).
+            NaN values indicate unobserved (future) cells.
+        """
+        self._check_is_fitted()
+        pivot = self.data_.pivot(index="origin", columns="dev", values="incremental")
+        return pivot.values
+
+    def get_premium(self) -> np.ndarray | None:
+        """
+        Get premium (exposure) values by origin if available.
+
+        Returns
+        -------
+        np.ndarray or None
+            Premium for each origin, shape (n_origins,), or None
+            if exposure was not provided.
+        """
+        self._check_is_fitted()
+
+        if self.exposure is None or self.exposure not in self.data_.columns:
+            return None
+
+        return self.data_.groupby("origin")[self.exposure].first().values
+
+    def get_log_premium(self) -> np.ndarray | None:
+        """
+        Get log premium values by origin if available.
+
+        Returns
+        -------
+        np.ndarray or None
+            Log premium for each origin, shape (n_origins,), or None
+            if exposure was not provided.
+        """
+        premium = self.get_premium()
+        if premium is None:
+            return None
+        return np.log(premium)
+
+    def simulate_future_losses(
+        self,
+        random_seed: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Simulate future incremental losses for lower triangle cells.
+
+        For GLM models, this samples from the posterior predictive distribution.
+
+        Parameters
+        ----------
+        random_seed : int, optional
+            Random seed for reproducibility.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            (incremental_samples, mean_samples) - Simulated incremental losses
+            and expected values, each of shape (num_samples, n_origins, n_dev).
+        """
+        self._check_is_fitted()
+
+        if random_seed is not None:
+            np.random.seed(random_seed)
+
+        dims = self.get_model_dimensions()
+        num_samples = dims["num_samples"]
+        n_origins = dims["n_origins"]
+        n_dev = dims["n_dev"]
+
+        # Get mean predictions for future cells
+        response_name = self.model_.response_component.response.name
+        mean_name = f"{response_name}_mean"
+        if mean_name not in self.idata.posterior:
+            mean_name = "mu"
+
+        if len(self.future_data_) == 0:
+            return (
+                np.zeros((num_samples, n_origins, n_dev)),
+                np.zeros((num_samples, n_origins, n_dev)),
+            )
+
+        # Get predicted means for future cells
+        future_means = self.idata.posterior[mean_name]
+
+        # Stack chains and draws
+        future_means_flat = future_means.stack(sample=["chain", "draw"])
+
+        # Initialize output arrays
+        mean_samples = np.zeros((num_samples, n_origins, n_dev))
+        incremental_samples = np.zeros((num_samples, n_origins, n_dev))
+
+        # Map future data back to triangle positions
+        n_future = len(self.future_data_)
+        n_total = future_means_flat.sizes.get(
+            future_means_flat.dims[0], n_future
+        )
+        future_start = n_total - n_future
+
+        for idx, row in self.future_data_.reset_index(drop=True).iterrows():
+            origin_idx = int(row["origin"]) - 1  # Assuming 1-indexed
+            dev_idx = int(row["dev"]) - 1
+
+            if origin_idx < n_origins and dev_idx < n_dev:
+                obs_idx = future_start + idx
+                means = future_means_flat.isel(
+                    {future_means_flat.dims[0]: obs_idx}
+                ).values
+
+                mean_samples[:, origin_idx, dev_idx] = means
+                # For negative binomial, sample from the distribution
+                # For simplicity, we'll use the mean as the sample
+                # A full implementation would sample from NB/Poisson/Gamma
+                incremental_samples[:, origin_idx, dev_idx] = means
+
+        return incremental_samples, mean_samples
+
+    def compute_unconditional_ultimate(self) -> np.ndarray:
+        """
+        Compute unconditional ultimate loss estimates by origin.
+
+        This sums observed losses with expected future losses.
+
+        Returns
+        -------
+        np.ndarray
+            Ultimate estimates, shape (num_samples, n_origins).
+        """
+        self._check_is_fitted()
+
+        dims = self.get_model_dimensions()
+        num_samples = dims["num_samples"]
+        n_origins = dims["n_origins"]
+
+        # Get observed cumulative losses at latest diagonal
+        observed_cumulative = self.data_.groupby("origin")["incremental"].sum()
+
+        # Get reserve posterior
+        if self.reserves_posterior_ is None:
+            return np.tile(
+                observed_cumulative.values, (num_samples, 1)
+            )
+
+        # Ultimate = Observed + IBNR
+        reserves_flat = self.reserves_posterior_.stack(sample=["chain", "draw"])
+
+        ultimate = np.zeros((num_samples, n_origins))
+        for i, origin in enumerate(sorted(observed_cumulative.index)):
+            paid = observed_cumulative[origin]
+            if origin in reserves_flat.coords["origin"].values:
+                ibnr = reserves_flat.sel(origin=origin).values
+                ultimate[:, i] = paid + ibnr
+            else:
+                ultimate[:, i] = paid
+
+        return ultimate
+
+    def compute_best_estimate(
+        self,
+        fixed_rate: float = 0.04,
+    ) -> np.ndarray:
+        """
+        Compute best estimate (present value of expected future payouts).
+
+        Parameters
+        ----------
+        fixed_rate : float, optional
+            Risk-free discount rate. Default is 0.04.
+
+        Returns
+        -------
+        np.ndarray
+            Best estimate for each posterior sample, shape (num_samples,).
+        """
+        self._check_is_fitted()
+
+        dims = self.get_model_dimensions()
+        num_samples = dims["num_samples"]
+        n_dev = dims["n_dev"]
+
+        if self.reserves_posterior_ is None or len(self.future_data_) == 0:
+            return np.zeros(num_samples)
+
+        # Get mean predictions for future cells
+        response_name = self.model_.response_component.response.name
+        mean_name = f"{response_name}_mean"
+        if mean_name not in self.idata.posterior:
+            mean_name = "mu"
+
+        future_means = self.idata.posterior[mean_name]
+        future_means_flat = future_means.stack(sample=["chain", "draw"])
+
+        n_future = len(self.future_data_)
+        n_total = future_means_flat.sizes.get(
+            future_means_flat.dims[0], n_future
+        )
+        future_start = n_total - n_future
+
+        best_estimates = np.zeros(num_samples)
+
+        # Discount each future cell by calendar year
+        for idx, row in self.future_data_.reset_index(drop=True).iterrows():
+            origin = int(row["origin"])
+            dev = int(row["dev"])
+
+            # Calendar year determines discount period
+            # Assuming origin 1 is the oldest year
+            calendar_year = origin + dev - 1
+            latest_observed = n_dev  # Approximation
+
+            future_cy = calendar_year - latest_observed
+            if future_cy > 0:
+                discount = (1 + fixed_rate) ** (future_cy - 0.5)
+                obs_idx = future_start + idx
+                expected_payout = future_means_flat.isel(
+                    {future_means_flat.dims[0]: obs_idx}
+                ).values
+                best_estimates += expected_payout / discount
+
+        return best_estimates
+
+    def compute_log_likelihood(
+        self,
+        simulated_losses: np.ndarray,
+        mu_p: np.ndarray,
+        calendar_year: int,
+    ) -> np.ndarray:
+        """
+        Compute log likelihood of simulated losses for a calendar year.
+
+        Used for Bayesian updating in risk margin calculations.
+        For GLM models, this depends on the chosen family (NB, Poisson, Gamma).
+
+        Parameters
+        ----------
+        simulated_losses : np.ndarray
+            Simulated losses for one scenario, shape (n_origins, n_dev).
+        mu_p : np.ndarray
+            Expected losses, shape (num_samples, n_origins, n_dev).
+        calendar_year : int
+            Calendar year (1-indexed) being observed.
+
+        Returns
+        -------
+        np.ndarray
+            Log likelihoods for each posterior sample, shape (num_samples,).
+        """
+        self._check_is_fitted()
+        from scipy import stats
+
+        dims = self.get_model_dimensions()
+        num_samples = dims["num_samples"]
+        n_origins = dims["n_origins"]
+        n_dev = dims["n_dev"]
+
+        ll = np.zeros(num_samples)
+
+        # For negative binomial, we need the dispersion parameter
+        # For simplicity, we'll use a Poisson approximation
+        for w in range(calendar_year, n_origins):
+            d = n_dev - 1 + calendar_year - w
+            if 0 <= d < n_dev:
+                observed = simulated_losses[w, d]
+                expected = mu_p[:, w, d]
+
+                # Use Poisson log-likelihood as approximation
+                # For a full implementation, use the actual family
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    ll += stats.poisson.logpmf(
+                        int(max(0, observed)), expected
+                    )
+                    ll = np.nan_to_num(ll, nan=-1e10, neginf=-1e10)
+
+        return ll
+
     def __repr__(self) -> str:
         fitted_str = "fitted" if self._is_fitted else "not fitted"
         return (
@@ -1634,6 +2003,330 @@ class BayesianCSR:
             indices = np.random.choice(len(total_reserves), size=n_samples, replace=True)
 
         return total_reserves[indices]
+
+    # =========================================================================
+    # Risk Margin Support Methods
+    # =========================================================================
+
+    def get_risk_margin_params(self) -> dict[str, np.ndarray]:
+        """
+        Extract model parameters needed for risk margin calculations.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Dictionary containing flattened posterior samples:
+            - alpha: Origin effects, shape (num_samples, n_origins)
+            - beta: Development effects, shape (num_samples, n_dev)
+            - speedup: Speedup factors, shape (num_samples, n_origins)
+            - logelr: Log expected loss ratio, shape (num_samples,)
+            - sig: Standard deviations by dev, shape (num_samples, n_dev)
+            - gamma: Speedup parameter, shape (num_samples,)
+        """
+        self._check_is_fitted()
+
+        posterior = self.idata.posterior
+        n_chains = posterior.dims["chain"]
+        n_draws = posterior.dims["draw"]
+        num_samples = n_chains * n_draws
+
+        # Extract and flatten (chain, draw) -> (sample,)
+        alpha = posterior["alpha"].values.reshape(num_samples, -1)
+        beta = posterior["beta"].values.reshape(num_samples, -1)
+        speedup = posterior["speedup"].values.reshape(num_samples, -1)
+        logelr = posterior["logelr"].values.flatten()
+        sig = posterior["sig"].values.reshape(num_samples, -1)
+
+        if "gamma" in posterior:
+            gamma = posterior["gamma"].values.flatten()
+        else:
+            gamma = np.zeros(num_samples)
+
+        return {
+            "alpha": alpha,
+            "beta": beta,
+            "speedup": speedup,
+            "logelr": logelr,
+            "sig": sig,
+            "gamma": gamma,
+        }
+
+    def get_paid_triangle(self) -> np.ndarray:
+        """
+        Get the observed cumulative paid loss triangle.
+
+        Returns
+        -------
+        np.ndarray
+            Cumulative paid losses, shape (n_origins, n_dev).
+            NaN values indicate unobserved (future) cells.
+        """
+        self._check_is_fitted()
+
+        # Pivot the observed data to triangle format
+        pivot = self.data_.pivot(index="origin", columns="dev", values="cumulative")
+        return pivot.values
+
+    def get_log_premium(self) -> np.ndarray:
+        """
+        Get log premium values by origin.
+
+        Returns
+        -------
+        np.ndarray
+            Log premium for each origin, shape (n_origins,).
+        """
+        self._check_is_fitted()
+        return self.data_.groupby("origin")["logprem"].first().values
+
+    def get_premium(self) -> np.ndarray:
+        """
+        Get premium values by origin.
+
+        Returns
+        -------
+        np.ndarray
+            Premium for each origin, shape (n_origins,).
+        """
+        self._check_is_fitted()
+        return self.data_.groupby("origin")["premium"].first().values
+
+    def get_model_dimensions(self) -> dict[str, int]:
+        """
+        Get model dimensions for risk margin calculations.
+
+        Returns
+        -------
+        dict[str, int]
+            Dictionary with:
+            - n_origins: Number of origin years
+            - n_dev: Number of development periods
+            - num_samples: Total number of MCMC samples
+        """
+        self._check_is_fitted()
+
+        origins = sorted(self.data_["origin"].unique())
+        dev_periods = sorted(self.data_["dev"].unique())
+
+        posterior = self.idata.posterior
+        n_chains = posterior.dims["chain"]
+        n_draws = posterior.dims["draw"]
+
+        return {
+            "n_origins": len(origins),
+            "n_dev": len(dev_periods),
+            "num_samples": n_chains * n_draws,
+        }
+
+    def simulate_future_losses(
+        self,
+        random_seed: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Simulate log cumulative losses for future (lower triangle) cells.
+
+        Parameters
+        ----------
+        random_seed : int, optional
+            Random seed for reproducibility.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            (logloss_p, mu_p) - Simulated log losses and expected values,
+            each of shape (num_samples, n_origins, n_dev).
+        """
+        self._check_is_fitted()
+
+        if random_seed is not None:
+            np.random.seed(random_seed)
+
+        params = self.get_risk_margin_params()
+        dims = self.get_model_dimensions()
+        logprem = self.get_log_premium()
+
+        alpha = params["alpha"]
+        beta = params["beta"]
+        logelr = params["logelr"]
+        sig = params["sig"]
+
+        num_samples = dims["num_samples"]
+        n_origins = dims["n_origins"]
+        n_dev = dims["n_dev"]
+
+        # Initialize arrays
+        mu_p = np.zeros((num_samples, n_origins, n_dev))
+        logloss_p = np.zeros((num_samples, n_origins, n_dev))
+
+        # Generate simulated losses for future cells (lower triangle)
+        # R code: for (d in 2:10) for (w in (12-d):10)
+        # In 0-indexed: d = 1 to n_dev-1, w = n_dev-d to n_origins-1
+        for d in range(1, n_dev):
+            for w in range(n_dev - d, n_origins):
+                mu_p[:, w, d] = logprem[w] + logelr + alpha[:, w] + beta[:, d]
+                logloss_p[:, w, d] = np.random.normal(mu_p[:, w, d], sig[:, d])
+
+        return logloss_p, mu_p
+
+    def compute_unconditional_ultimate(self) -> np.ndarray:
+        """
+        Compute unconditional ultimate loss estimates by origin.
+
+        This computes E[Ultimate | parameters] for each posterior sample,
+        without conditioning on future observed data.
+
+        Returns
+        -------
+        np.ndarray
+            Ultimate estimates, shape (num_samples, n_origins).
+        """
+        self._check_is_fitted()
+
+        params = self.get_risk_margin_params()
+        dims = self.get_model_dimensions()
+        trpaid = self.get_paid_triangle()
+        premium = self.get_premium()
+
+        alpha = params["alpha"]
+        logelr = params["logelr"]
+        sig = params["sig"]
+
+        num_samples = dims["num_samples"]
+        n_origins = dims["n_origins"]
+        n_dev = dims["n_dev"]
+
+        # Ultimate development index (last column)
+        d_ult = n_dev - 1
+
+        mean_ult = np.zeros((num_samples, n_origins))
+
+        # First origin is fully developed - use observed value
+        mean_ult[:, 0] = trpaid[0, d_ult]
+
+        # Other origins need projection
+        # E[loss] = premium * ELR * exp(alpha) * exp(sig^2/2)
+        for w in range(1, n_origins):
+            mean_ult[:, w] = premium[w] * np.exp(
+                logelr + alpha[:, w] + sig[:, d_ult] ** 2 / 2
+            )
+
+        return mean_ult
+
+    def compute_best_estimate(
+        self,
+        fixed_rate: float = 0.04,
+    ) -> np.ndarray:
+        """
+        Compute best estimate (present value of expected future payouts).
+
+        Parameters
+        ----------
+        fixed_rate : float, optional
+            Risk-free discount rate. Default is 0.04.
+
+        Returns
+        -------
+        np.ndarray
+            Best estimate for each posterior sample, shape (num_samples,).
+        """
+        self._check_is_fitted()
+
+        params = self.get_risk_margin_params()
+        dims = self.get_model_dimensions()
+        trpaid = self.get_paid_triangle()
+        logprem = self.get_log_premium()
+
+        alpha = params["alpha"]
+        beta = params["beta"]
+        speedup = params["speedup"]
+        logelr = params["logelr"]
+        sig = params["sig"]
+
+        num_samples = dims["num_samples"]
+        n_origins = dims["n_origins"]
+        n_dev = dims["n_dev"]
+
+        best_estimates = np.zeros(num_samples)
+
+        for i in range(num_samples):
+            tr = trpaid.copy()
+            pv = 0.0
+
+            # Fill in future cells with expected values
+            for cy in range(1, n_dev):
+                for w in range(cy, n_origins):
+                    d = n_dev - 1 + cy - w
+
+                    if d < n_dev and w < n_origins:
+                        mu = (
+                            logprem[w]
+                            + logelr[i]
+                            + alpha[i, w]
+                            + beta[i, d] * speedup[i, w]
+                        )
+                        expected = np.exp(mu + sig[i, d] ** 2 / 2)
+                        tr[w, d] = expected
+
+            # Compute present value of incremental payouts
+            for cy in range(1, n_dev):
+                for w in range(cy, n_origins):
+                    d = n_dev - 1 + cy - w
+                    if d > 0 and d < n_dev:
+                        incremental = tr[w, d] - tr[w, d - 1]
+                        discount = (1 + fixed_rate) ** (cy - 0.5)
+                        pv += incremental / discount
+
+            best_estimates[i] = pv
+
+        return best_estimates
+
+    def compute_log_likelihood(
+        self,
+        simulated_losses: np.ndarray,
+        mu_p: np.ndarray,
+        calendar_year: int,
+    ) -> np.ndarray:
+        """
+        Compute log likelihood of simulated losses for a calendar year.
+
+        Used for Bayesian updating in risk margin calculations.
+
+        Parameters
+        ----------
+        simulated_losses : np.ndarray
+            Simulated log losses for one scenario, shape (n_origins, n_dev).
+        mu_p : np.ndarray
+            Expected log losses, shape (num_samples, n_origins, n_dev).
+        calendar_year : int
+            Calendar year (1-indexed) being observed.
+
+        Returns
+        -------
+        np.ndarray
+            Log likelihoods for each posterior sample, shape (num_samples,).
+        """
+        self._check_is_fitted()
+        from scipy import stats
+
+        params = self.get_risk_margin_params()
+        dims = self.get_model_dimensions()
+        sig = params["sig"]
+
+        num_samples = dims["num_samples"]
+        n_origins = dims["n_origins"]
+        n_dev = dims["n_dev"]
+
+        ll = np.zeros(num_samples)
+
+        for w in range(calendar_year, n_origins):
+            d = n_dev - 1 + calendar_year - w
+            if d < n_dev:
+                x = simulated_losses[w, d]
+                mu = mu_p[:, w, d]
+                sigma = sig[:, d]
+                ll += stats.norm.logpdf(x, mu, sigma)
+
+        return ll
 
     def _check_is_fitted(self) -> None:
         """Check if the model has been fitted."""

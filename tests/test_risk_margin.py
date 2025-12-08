@@ -153,113 +153,101 @@ class TestRiskMarginCalculatorInit:
 
 
 class TestRiskMarginCalculatorWithMockModel:
-    """Tests for RiskMarginCalculator with mocked model."""
+    """Tests for RiskMarginCalculator with mocked model implementing the interface."""
 
     @pytest.fixture
     def mock_csr_model(self, mocker):
-        """Create a mock BayesianCSR model."""
+        """Create a mock model implementing the RiskMarginModel interface."""
 
-        # Create mock posterior data
         n_chains, n_draws = 2, 500
         n_origins, n_dev = 10, 10
+        num_samples = n_chains * n_draws
 
-        # Create mock posterior arrays
-        posterior_data = {
-            "alpha": (["chain", "draw", "origin"],
-                     np.random.normal(0, 0.1, (n_chains, n_draws, n_origins))),
-            "beta": (["chain", "draw", "dev"],
-                    np.linspace(0, -2, n_dev)[np.newaxis, np.newaxis, :].repeat(n_chains, axis=0).repeat(n_draws, axis=1)),
-            "speedup": (["chain", "draw", "origin"],
-                       np.ones((n_chains, n_draws, n_origins))),
-            "logelr": (["chain", "draw"],
-                      np.random.normal(-0.4, 0.1, (n_chains, n_draws))),
-            "sig": (["chain", "draw", "dev"],
-                   np.linspace(0.5, 0.1, n_dev)[np.newaxis, np.newaxis, :].repeat(n_chains, axis=0).repeat(n_draws, axis=1)),
-            "gamma": (["chain", "draw"],
-                     np.random.normal(0, 0.02, (n_chains, n_draws))),
+        # Create mock posterior arrays (stacked)
+        np.random.seed(42)
+        params = {
+            "alpha": np.random.normal(0, 0.1, (num_samples, n_origins)),
+            "beta": np.tile(np.linspace(0, -2, n_dev), (num_samples, 1)),
+            "speedup": np.ones((num_samples, n_origins)),
+            "logelr": np.random.normal(-0.4, 0.1, num_samples),
+            "sig": np.tile(np.linspace(0.5, 0.1, n_dev), (num_samples, 1)),
+            "gamma": np.random.normal(0, 0.02, num_samples),
         }
 
-        posterior = xr.Dataset(
-            posterior_data,
-            coords={
-                "chain": np.arange(n_chains),
-                "draw": np.arange(n_draws),
-                "origin": np.arange(1, n_origins + 1),
-                "dev": np.arange(1, n_dev + 1),
-            }
-        )
-
-        # Create mock InferenceData
-        mock_idata = mocker.Mock()
-        mock_idata.posterior = posterior
-
-        # Create mock data
-        data_rows = []
+        # Create mock paid triangle
         premium = np.array([10000, 11000, 12000, 13000, 14000, 15000, 16000, 17000, 18000, 19000])
-        for w in range(1, n_origins + 1):
-            for d in range(1, min(n_dev + 1, n_origins - w + 2)):
-                cum_loss = premium[w-1] * 0.6 * (1 - np.exp(-0.5 * d))  # Simulated development
-                data_rows.append({
-                    "origin": w,
-                    "dev": d,
-                    "cumulative": cum_loss,
-                    "logloss": np.log(max(cum_loss, 1)),
-                    "premium": premium[w-1],
-                    "logprem": np.log(premium[w-1]),
-                })
+        paid_triangle = np.full((n_origins, n_dev), np.nan)
+        for w in range(n_origins):
+            for d in range(n_origins - w):
+                paid_triangle[w, d] = premium[w] * 0.6 * (1 - np.exp(-0.5 * (d + 1)))
 
-        data_df = pd.DataFrame(data_rows)
-
-        # Create mock model
+        # Create mock model with interface methods
         mock_model = mocker.Mock()
-        mock_model.idata = mock_idata
-        mock_model.data_ = data_df
-        mock_model.future_data_ = pd.DataFrame()  # Empty for simplicity
-        mock_model.reserves_posterior_ = None
         mock_model._check_is_fitted = mocker.Mock()
 
-        # Add model coords
-        mock_model.model_ = mocker.Mock()
-        mock_model.model_.coords = {
-            "origin": list(range(1, n_origins + 1)),
-            "dev": list(range(1, n_dev + 1)),
-        }
+        # Implement get_model_dimensions
+        mock_model.get_model_dimensions = mocker.Mock(return_value={
+            "n_origins": n_origins,
+            "n_dev": n_dev,
+            "num_samples": num_samples,
+        })
+
+        # Implement get_risk_margin_params
+        mock_model.get_risk_margin_params = mocker.Mock(return_value=params)
+
+        # Implement get_paid_triangle
+        mock_model.get_paid_triangle = mocker.Mock(return_value=paid_triangle)
+
+        # Implement get_premium
+        mock_model.get_premium = mocker.Mock(return_value=premium)
+
+        # Implement get_log_premium
+        mock_model.get_log_premium = mocker.Mock(return_value=np.log(premium))
+
+        # Implement simulate_future_losses (returns logloss_p, mu_p)
+        logloss_p = np.random.normal(9, 0.5, (num_samples, n_origins, n_dev))
+        mu_p = np.full((num_samples, n_origins, n_dev), 9.0)
+        mock_model.simulate_future_losses = mocker.Mock(return_value=(logloss_p, mu_p))
+
+        # Implement compute_unconditional_ultimate
+        mock_model.compute_unconditional_ultimate = mocker.Mock(
+            return_value=np.random.lognormal(10, 0.1, (num_samples, n_origins))
+        )
+
+        # Implement compute_best_estimate
+        mock_model.compute_best_estimate = mocker.Mock(return_value=50000.0)
+
+        # Implement compute_log_likelihood
+        mock_model.compute_log_likelihood = mocker.Mock(
+            return_value=np.random.normal(-10, 1, num_samples)
+        )
 
         return mock_model
 
     def test_setup_model_info(self, mock_csr_model):
-        """Test that model info is correctly extracted."""
+        """Test that model info is correctly extracted from interface."""
         calc = RiskMarginCalculator(mock_csr_model)
 
         assert calc.n_origins == 10
         assert calc.n_dev == 10
         assert calc.num_samples == 1000  # 2 chains * 500 draws
 
-    def test_extract_csr_parameters(self, mock_csr_model):
-        """Test parameter extraction."""
+    def test_model_interface_called(self, mock_csr_model):
+        """Test that model interface methods are called during initialization."""
         calc = RiskMarginCalculator(mock_csr_model)
-        params = calc._extract_csr_parameters()
 
-        assert "alpha" in params
-        assert "beta" in params
-        assert "speedup" in params
-        assert "logelr" in params
-        assert "sig" in params
-        assert "gamma" in params
+        # Verify interface methods were called
+        mock_csr_model._check_is_fitted.assert_called_once()
+        mock_csr_model.get_model_dimensions.assert_called_once()
 
-        # Check shapes
-        assert params["alpha"].shape == (1000, 10)
-        assert params["beta"].shape == (1000, 10)
-        assert params["logelr"].shape == (1000,)
-
-    def test_get_paid_triangle(self, mock_csr_model):
-        """Test paid triangle extraction."""
+    def test_get_paid_triangle_via_model(self, mock_csr_model):
+        """Test paid triangle is retrieved via model interface."""
         calc = RiskMarginCalculator(mock_csr_model)
-        trpaid = calc._get_paid_triangle()
+        trpaid = calc.model.get_paid_triangle()
 
         assert trpaid.shape == (10, 10)
-        # First origin should have all 10 dev periods
-        # Last origin should only have first dev period
+        # Check that model method was called
+        mock_csr_model.get_paid_triangle.assert_called()
 
     def test_compute_tvar_method(self, mock_csr_model):
         """Test the _compute_tvar method."""

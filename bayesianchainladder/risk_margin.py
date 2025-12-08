@@ -24,27 +24,66 @@ CAS Monograph Series Number 1, Section 11.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, Literal
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import warnings
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 from scipy import stats
 
 if TYPE_CHECKING:
     from .estimators import BayesianChainLadderGLM, BayesianCSR
 
 
-class LossReserveModel(Protocol):
-    """Protocol defining the interface for loss reserve models."""
+@runtime_checkable
+class RiskMarginModel(Protocol):
+    """
+    Protocol defining the interface for models supporting risk margin calculations.
 
-    idata: Any
-    data_: pd.DataFrame
-    future_data_: pd.DataFrame
-    reserves_posterior_: xr.DataArray | None
+    Any model implementing these methods can be used with RiskMarginCalculator.
+    """
+
+    def get_model_dimensions(self) -> dict[str, int]:
+        """
+        Get model dimensions.
+
+        Returns dict with keys: n_origins, n_dev, num_samples
+        """
+        ...
+
+    def get_risk_margin_params(self) -> dict[str, np.ndarray]:
+        """Get model parameters needed for risk margin calculations."""
+        ...
+
+    def get_paid_triangle(self) -> np.ndarray:
+        """Get observed cumulative paid loss triangle."""
+        ...
+
+    def simulate_future_losses(
+        self, random_seed: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Simulate future losses. Returns (logloss_p, mu_p)."""
+        ...
+
+    def compute_unconditional_ultimate(self) -> np.ndarray:
+        """Compute unconditional ultimate loss estimates by origin."""
+        ...
+
+    def compute_best_estimate(self, fixed_rate: float = 0.04) -> np.ndarray:
+        """Compute best estimate (PV of expected future payouts)."""
+        ...
+
+    def compute_log_likelihood(
+        self,
+        simulated_losses: np.ndarray,
+        mu_p: np.ndarray,
+        calendar_year: int,
+    ) -> np.ndarray:
+        """Compute log likelihood for Bayesian updating."""
+        ...
 
     def _check_is_fitted(self) -> None:
+        """Check if model is fitted."""
         ...
 
 
@@ -142,6 +181,7 @@ class RiskMarginCalculator:
     ----------
     model : BayesianChainLadderGLM or BayesianCSR
         A fitted Bayesian loss reserve model with posterior samples.
+        The model must implement the RiskMarginModel protocol.
     fixed_rate : float, optional
         Risk-free discount rate for present value calculations.
         Default is 0.04 (4%).
@@ -153,19 +193,6 @@ class RiskMarginCalculator:
         using the worst 3% of scenarios). Default is 0.97.
     random_seed : int, optional
         Random seed for reproducibility.
-
-    Attributes
-    ----------
-    model : LossReserveModel
-        The fitted loss reserve model.
-    fixed_rate : float
-        Risk-free discount rate.
-    risky_rate : float
-        Cost of capital rate.
-    tvar_percentile : float
-        TVaR percentile.
-    random_seed : int or None
-        Random seed.
 
     Examples
     --------
@@ -208,231 +235,40 @@ class RiskMarginCalculator:
         # Validate model is fitted
         model._check_is_fitted()
 
+        # Validate model implements required interface
+        self._validate_model_interface()
+
         # Extract model dimensions
-        self._setup_model_info()
+        dims = model.get_model_dimensions()
+        self.n_origins = dims["n_origins"]
+        self.n_dev = dims["n_dev"]
+        self.num_samples = dims["num_samples"]
 
-    def _setup_model_info(self) -> None:
-        """Extract key information from the fitted model."""
-        data = self.model.data_
-        self.origins = sorted(data["origin"].unique())
-        self.n_origins = len(self.origins)
-        self.dev_periods = sorted(data["dev"].unique())
-        self.n_dev = len(self.dev_periods)
+    def _validate_model_interface(self) -> None:
+        """Validate that the model implements the required interface."""
+        required_methods = [
+            "get_model_dimensions",
+            "get_risk_margin_params",
+            "get_paid_triangle",
+            "simulate_future_losses",
+            "compute_unconditional_ultimate",
+            "compute_best_estimate",
+            "compute_log_likelihood",
+        ]
 
-        # Get number of MCMC samples
-        posterior = self.model.idata.posterior
-        n_chains = posterior.dims["chain"]
-        n_draws = posterior.dims["draw"]
-        self.num_samples = n_chains * n_draws
+        missing = []
+        for method in required_methods:
+            if not hasattr(self.model, method) or not callable(
+                getattr(self.model, method)
+            ):
+                missing.append(method)
 
-        # Get premium information if available (for CSR model)
-        self.logprem = None
-        self.premium = None
-        if "logprem" in data.columns:
-            self.logprem = data.groupby("origin")["logprem"].first().values
-            self.premium = np.exp(self.logprem)
-
-    def _extract_csr_parameters(self) -> dict[str, np.ndarray]:
-        """Extract and flatten CSR model parameters."""
-        posterior = self.model.idata.posterior
-
-        # Extract all parameters and flatten (chain, draw) -> (sample,)
-        alpha = posterior["alpha"].values.reshape(self.num_samples, -1)
-        beta = posterior["beta"].values.reshape(self.num_samples, -1)
-        speedup = posterior["speedup"].values.reshape(self.num_samples, -1)
-        logelr = posterior["logelr"].values.flatten()
-        sig = posterior["sig"].values.reshape(self.num_samples, -1)
-
-        # Handle gamma parameter for speedup
-        if "gamma" in posterior:
-            gamma = posterior["gamma"].values.flatten()
-        else:
-            gamma = np.zeros(self.num_samples)
-
-        return {
-            "alpha": alpha,
-            "beta": beta,
-            "speedup": speedup,
-            "logelr": logelr,
-            "sig": sig,
-            "gamma": gamma,
-        }
-
-    def _get_paid_triangle(self) -> np.ndarray:
-        """
-        Get paid loss triangle from observed data.
-
-        Returns
-        -------
-        np.ndarray
-            Cumulative paid losses, shape (n_origins, n_dev).
-        """
-        data = self.model.data_
-
-        # Check if we have cumulative data
-        if "cumulative" in data.columns:
-            value_col = "cumulative"
-        elif "logloss" in data.columns:
-            # CSR model uses log cumulative
-            data = data.copy()
-            data["cumulative"] = np.exp(data["logloss"])
-            value_col = "cumulative"
-        else:
-            # Compute cumulative from incremental
-            data = data.copy()
-            data = data.sort_values(["origin", "dev"])
-            data["cumulative"] = data.groupby("origin")["incremental"].cumsum()
-            value_col = "cumulative"
-
-        # Pivot to triangle format
-        pivot = data.pivot(index="origin", columns="dev", values=value_col)
-        return pivot.values
-
-    def _compute_best_estimate(
-        self, params: dict[str, np.ndarray], trpaid: np.ndarray
-    ) -> np.ndarray:
-        """
-        Compute best estimate (present value of expected future payouts).
-
-        For each MCMC sample, projects the expected cumulative paid loss
-        for each origin to ultimate, then computes present value.
-
-        Parameters
-        ----------
-        params : dict
-            Model parameters from _extract_csr_parameters().
-        trpaid : np.ndarray
-            Observed paid triangle, shape (n_origins, n_dev).
-
-        Returns
-        -------
-        np.ndarray
-            Best estimate for each sample, shape (num_samples,).
-        """
-        alpha = params["alpha"]
-        beta = params["beta"]
-        speedup = params["speedup"]
-        logelr = params["logelr"]
-        sig = params["sig"]
-
-        best_estimates = np.zeros(self.num_samples)
-
-        for i in range(self.num_samples):
-            # Create a copy of observed triangle for this sample
-            tr = trpaid.copy()
-
-            # Fill in future cells with expected values
-            # For each future calendar year
-            pv = 0.0
-            for cy in range(1, self.n_dev):  # cy = 1 to n_dev-1
-                for w in range(cy, self.n_origins):  # origin year (0-indexed)
-                    d = self.n_dev - 1 + cy - w  # development period (0-indexed)
-
-                    if d < self.n_dev and w < self.n_origins:
-                        # Expected cumulative paid at (w, d)
-                        # mu = logprem + logelr + alpha[w] + beta[d] * speedup[w]
-                        mu = (
-                            self.logprem[w]
-                            + logelr[i]
-                            + alpha[i, w]
-                            + beta[i, d] * speedup[i, w]
-                        )
-                        # E[exp(X)] = exp(mu + sig^2/2) for lognormal
-                        expected = np.exp(mu + sig[i, d] ** 2 / 2)
-                        tr[w, d] = expected
-
-            # Compute present value of incremental payouts
-            for cy in range(1, self.n_dev):
-                for w in range(cy, self.n_origins):
-                    d = self.n_dev - 1 + cy - w
-                    if d > 0 and d < self.n_dev:
-                        incremental = tr[w, d] - tr[w, d - 1]
-                        # Discount to present (cy - 0.5 to account for mid-year)
-                        discount = (1 + self.fixed_rate) ** (cy - 0.5)
-                        pv += incremental / discount
-
-            best_estimates[i] = pv
-
-        return best_estimates
-
-    def _simulate_future_losses(
-        self, params: dict[str, np.ndarray]
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Simulate log cumulative losses for future (lower triangle) cells.
-
-        Parameters
-        ----------
-        params : dict
-            Model parameters.
-
-        Returns
-        -------
-        tuple[np.ndarray, np.ndarray]
-            (logloss_p, mu_p) - Simulated log losses and mu values,
-            each of shape (num_samples, n_origins, n_dev).
-        """
-        if self.random_seed is not None:
-            np.random.seed(self.random_seed)
-
-        alpha = params["alpha"]
-        beta = params["beta"]
-        logelr = params["logelr"]
-        sig = params["sig"]
-
-        # Initialize arrays for mu and simulated losses
-        mu_p = np.zeros((self.num_samples, self.n_origins, self.n_dev))
-        logloss_p = np.zeros((self.num_samples, self.n_origins, self.n_dev))
-
-        # Generate simulated losses for future cells (lower triangle)
-        # R code: for (d in 2:10) for (w in (12-d):10)
-        # In 0-indexed: d = 1 to n_dev-1, w = n_dev-d to n_dev-1
-        for d in range(1, self.n_dev):  # dev period 1 to n_dev-1 (2 to 10 in R)
-            for w in range(self.n_dev - d, self.n_origins):  # origin years
-                # mu = logprem + logelr + alpha[w] + beta[d]
-                mu_p[:, w, d] = self.logprem[w] + logelr + alpha[:, w] + beta[:, d]
-                logloss_p[:, w, d] = np.random.normal(mu_p[:, w, d], sig[:, d])
-
-        return logloss_p, mu_p
-
-    def _compute_ultimate_by_origin(
-        self, params: dict[str, np.ndarray], trpaid: np.ndarray
-    ) -> np.ndarray:
-        """
-        Compute unconditional ultimate loss estimates by origin.
-
-        Parameters
-        ----------
-        params : dict
-            Model parameters.
-        trpaid : np.ndarray
-            Observed paid triangle.
-
-        Returns
-        -------
-        np.ndarray
-            Ultimate estimates, shape (num_samples, n_origins).
-        """
-        alpha = params["alpha"]
-        logelr = params["logelr"]
-        sig = params["sig"]
-
-        # Ultimate development index (last column)
-        d_ult = self.n_dev - 1
-
-        mean_ult = np.zeros((self.num_samples, self.n_origins))
-
-        # First origin is fully developed
-        mean_ult[:, 0] = trpaid[0, d_ult]
-
-        # Other origins need projection
-        for w in range(1, self.n_origins):
-            # E[loss] = premium * ELR * exp(alpha) * exp(sig^2/2)
-            mean_ult[:, w] = self.premium[w] * np.exp(
-                logelr + alpha[:, w] + sig[:, d_ult] ** 2 / 2
+        if missing:
+            raise TypeError(
+                f"Model must implement risk margin interface. "
+                f"Missing methods: {', '.join(missing)}. "
+                f"Consider using BayesianCSR which implements the full interface."
             )
-
-        return mean_ult
 
     def _compute_tvar(
         self, samples: np.ndarray, percentile: float | None = None
@@ -503,47 +339,8 @@ class RiskMarginCalculator:
 
         return mean, tvar
 
-    def _log_likelihood(
-        self,
-        simulated_losses: np.ndarray,
-        mu_p: np.ndarray,
-        sig: np.ndarray,
-        calendar_year: int,
-    ) -> np.ndarray:
-        """
-        Compute log likelihood of simulated losses for a calendar year.
-
-        Parameters
-        ----------
-        simulated_losses : np.ndarray
-            Simulated log losses for one scenario, shape (n_origins, n_dev).
-        mu_p : np.ndarray
-            Expected log losses, shape (num_samples, n_origins, n_dev).
-        sig : np.ndarray
-            Standard deviations by dev period, shape (num_samples, n_dev).
-        calendar_year : int
-            Calendar year (1-indexed) being observed.
-
-        Returns
-        -------
-        np.ndarray
-            Log likelihoods, shape (num_samples,).
-        """
-        ll = np.zeros(self.num_samples)
-
-        for w in range(calendar_year, self.n_origins):
-            d = self.n_dev - 1 + calendar_year - w  # Development period
-            if d < self.n_dev:
-                x = simulated_losses[w, d]
-                mu = mu_p[:, w, d]
-                sigma = sig[:, d]
-                ll += stats.norm.logpdf(x, mu, sigma)
-
-        return ll
-
     def calculate_ultimate_horizon(
         self,
-        n_parallel_scenarios: int | None = None,
         progress_callback: Any | None = None,
     ) -> RiskMarginResult:
         """
@@ -556,9 +353,6 @@ class RiskMarginCalculator:
 
         Parameters
         ----------
-        n_parallel_scenarios : int, optional
-            Number of scenarios to process in parallel. If None, processes
-            all scenarios sequentially.
         progress_callback : callable, optional
             Function called with (current, total) to report progress.
 
@@ -579,23 +373,21 @@ class RiskMarginCalculator:
         6. Calculate capital releases: C_t * (1+r_f) - C_{t+1}
         7. Compute risk margin: C_0 - PV(releases at risky rate)
         """
-        # Get model parameters
-        params = self._extract_csr_parameters()
-        trpaid = self._get_paid_triangle()
+        # Get data from model
+        params = self.model.get_risk_margin_params()
+        sig = params["sig"]
 
         # Compute best estimate
-        best_estimates = self._compute_best_estimate(params, trpaid)
+        best_estimates = self.model.compute_best_estimate(self.fixed_rate)
         best_estimate = np.mean(best_estimates)
 
         # Compute unconditional ultimate loss by origin
-        mean_ult = self._compute_ultimate_by_origin(params, trpaid)
+        mean_ult = self.model.compute_unconditional_ultimate()
         ultall = mean_ult.sum(axis=1)  # Total ultimate by sample
         expected_ultimate = np.mean(ultall)
 
         # Simulate future losses and get mu_p for likelihood calculation
-        logloss_p, mu_p = self._simulate_future_losses(params)
-
-        sig = params["sig"]
+        logloss_p, mu_p = self.model.simulate_future_losses(self.random_seed)
 
         # Initialize output arrays
         n_periods = self.n_dev
@@ -606,7 +398,6 @@ class RiskMarginCalculator:
             np.random.seed(self.random_seed + 1)
 
         # Process each scenario - following R code structure
-        # R: for (i in 1:num.mcmc) { x_p = logloss_p[i,,]; ... }
         for i in range(self.num_samples):
             if progress_callback is not None:
                 progress_callback(i, self.num_samples)
@@ -615,37 +406,28 @@ class RiskMarginCalculator:
             x_p = logloss_p[i]  # Shape (n_origins, n_dev)
 
             # Initial (unconditional) estimates
-            # R: p.mean[1]=mean(ultall); p.assets[1]=mean(sort(ultall)[TVaR.Range])
             pred_mean[i, 0] = np.mean(ultall)
             pred_assets[i, 0] = self._compute_tvar(ultall)
 
             # Accumulate log likelihood as we observe more calendar years
-            # R: loglike=rep(0,num.mcmc)
             loglike = np.zeros(self.num_samples)
 
-            # R: for each calendar year, accumulate likelihood and update posterior
+            # For each calendar year, accumulate likelihood and update posterior
             for cy in range(1, n_periods):
                 # Add likelihood of observing calendar year cy data
-                # R: loglike=loglike+llike(x_p,cy,num.mcmc)
-                # R llike: for (w in (1+cy):10) ll=ll+dnorm(x_p[w,11+cy-w],...)
-                # In 0-indexed: w from cy to n_origins-1, d = n_dev-1+cy-w
                 for w in range(cy, self.n_origins):
                     d = self.n_dev - 1 + cy - w
-                    # Access x_p[w, d] and compare to mu_p[:, w, d]
                     x = x_p[w, d]
                     mu = mu_p[:, w, d]
                     sigma = sig[:, d]
                     loglike += stats.norm.logpdf(x, mu, sigma)
 
                 # Compute posterior weights (stabilized)
-                # R: loglike2=loglike-max(loglike); postint=sum(exp(loglike2));
-                #    posterior=exp(loglike2)/postint
                 loglike_shifted = loglike - np.max(loglike)
                 weights = np.exp(loglike_shifted)
                 weights = weights / np.sum(weights)
 
                 # Compute posterior mean and TVaR
-                # R: call.pa=post_assets(posterior,ultall)
                 mean, tvar = self._compute_posterior_assets(weights, ultall)
                 pred_mean[i, cy] = mean
                 pred_assets[i, cy] = tvar
@@ -724,20 +506,19 @@ class RiskMarginCalculator:
         This requires computing E[Ultimate | Data through CY+1] for
         each scenario, which involves nested simulation.
         """
-        # Get model parameters
-        params = self._extract_csr_parameters()
-        trpaid = self._get_paid_triangle()
+        # Get data from model
+        params = self.model.get_risk_margin_params()
+        sig = params["sig"]
 
         # Compute best estimate
-        best_estimates = self._compute_best_estimate(params, trpaid)
+        best_estimates = self.model.compute_best_estimate(self.fixed_rate)
         best_estimate = np.mean(best_estimates)
 
         # Compute unconditional ultimate loss by origin
-        mean_ult = self._compute_ultimate_by_origin(params, trpaid)
+        mean_ult = self.model.compute_unconditional_ultimate()
         ultall = mean_ult.sum(axis=1)
         expected_ultimate = np.mean(ultall)
 
-        sig = params["sig"]
         n_periods = self.n_dev
 
         # Estimate one-year-ahead expected ultimate for each calendar year
@@ -752,7 +533,7 @@ class RiskMarginCalculator:
                 progress_callback(m, n_averaging)
 
             # Simulate new future losses
-            logloss_p, mu_p = self._simulate_future_losses(params)
+            logloss_p, mu_p = self.model.simulate_future_losses(None)
 
             # For each scenario, compute conditional expectations
             for i in range(self.num_samples):
@@ -786,7 +567,7 @@ class RiskMarginCalculator:
         pred_assets = np.zeros((self.num_samples, n_periods))
 
         # Simulate fresh losses for capital calculation
-        logloss_p, mu_p = self._simulate_future_losses(params)
+        logloss_p, mu_p = self.model.simulate_future_losses(None)
 
         for i in range(self.num_samples):
             x_p = logloss_p[i]
