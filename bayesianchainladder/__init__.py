@@ -49,6 +49,14 @@ except PackageNotFoundError:
 # Main estimators
 from .estimators import BayesianChainLadderGLM, BayesianCSR
 
+# Risk margin calculations
+from .risk_margin import (
+    RiskMarginCalculator,
+    RiskMarginResult,
+    compute_tvar,
+    compute_var,
+)
+
 # Model building functions
 from .models import (
     build_bambi_model,
@@ -68,6 +76,8 @@ from .models import (
 from .plots import (
     create_summary_table,
     plot_actual_vs_fitted,
+    plot_capital_release_paths,
+    plot_capital_vs_estimate,
     plot_development_pattern,
     plot_energy,
     plot_forest,
@@ -82,9 +92,14 @@ from .plots import (
     plot_prior_predictive_triangle,
     plot_prior_vs_posterior,
     plot_rank,
+    plot_required_capital_paths,
     plot_reserve_distribution,
     plot_residuals,
+    plot_risk_margin_distribution,
+    plot_risk_margin_pct_distribution,
+    plot_risk_margin_summary,
     plot_trace,
+    plot_ultimate_loss_paths,
 )
 
 # Utility functions
@@ -105,6 +120,11 @@ __all__ = [
     # Main estimators
     "BayesianChainLadderGLM",
     "BayesianCSR",
+    # Risk margin
+    "RiskMarginCalculator",
+    "RiskMarginResult",
+    "compute_tvar",
+    "compute_var",
     # Model functions
     "build_bambi_model",
     "build_csr_model",
@@ -139,6 +159,14 @@ __all__ = [
     "plot_prior_predictive_triangle",
     "plot_prior_predictive_summary",
     "plot_prior_vs_posterior",
+    # Plotting functions - Risk margin
+    "plot_ultimate_loss_paths",
+    "plot_required_capital_paths",
+    "plot_capital_release_paths",
+    "plot_risk_margin_distribution",
+    "plot_risk_margin_pct_distribution",
+    "plot_risk_margin_summary",
+    "plot_capital_vs_estimate",
     # Utility functions
     "triangle_to_dataframe",
     "get_future_dataframe",

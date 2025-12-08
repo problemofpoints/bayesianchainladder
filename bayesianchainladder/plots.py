@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
     from .estimators import BayesianChainLadderGLM
+    from .risk_margin import RiskMarginResult
 
 
 def plot_trace(
@@ -1766,3 +1767,576 @@ def plot_prior_predictive_summary(
     fig.suptitle("Prior Predictive Check Summary", fontsize=14, y=0.98)
 
     return fig, [ax1, ax2, ax3, ax4]
+
+
+# =============================================================================
+# Risk Margin Plots
+# =============================================================================
+
+
+def plot_ultimate_loss_paths(
+    result: "RiskMarginResult",
+    n_paths: int = 50,
+    figsize: tuple[float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, Axes]:
+    """
+    Plot sample paths of ultimate loss estimates over future calendar years.
+
+    This visualization shows how estimates of ultimate losses evolve as
+    more data becomes available, illustrating the range of possible
+    outcomes across MCMC scenarios.
+
+    Parameters
+    ----------
+    result : RiskMarginResult
+        Result from RiskMarginCalculator.calculate_ultimate_horizon() or
+        calculate_one_year_horizon().
+    n_paths : int, optional
+        Number of sample paths to display. Default is 50.
+    figsize : tuple[float, float], optional
+        Figure size.
+    **kwargs
+        Additional arguments passed to plt.plot().
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        Matplotlib Figure and Axes objects.
+
+    Examples
+    --------
+    >>> calc = RiskMarginCalculator(model)
+    >>> result = calc.calculate_ultimate_horizon()
+    >>> fig, ax = plot_ultimate_loss_paths(result)
+    """
+    from .risk_margin import RiskMarginResult
+
+    if figsize is None:
+        figsize = (10, 6)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    pred_mean = result.pred_mean
+    num_samples = result.num_samples
+    n_periods = pred_mean.shape[1]
+
+    # Select representative paths based on final estimate
+    probs = np.linspace(0.01, 0.99, n_paths)
+    indices = np.quantile(np.arange(num_samples), probs).astype(int)
+
+    # Sort by final estimate to get representative paths
+    sorted_idx = np.argsort(pred_mean[:, -1])
+    path_indices = sorted_idx[indices]
+
+    x = np.arange(n_periods)
+
+    # Plot paths
+    for idx in path_indices:
+        ax.plot(x, pred_mean[idx, :], alpha=0.5, linewidth=0.8, **kwargs)
+
+    # Add reference lines
+    ax.axhline(
+        result.expected_ultimate,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"E[Ultimate] = {result.expected_ultimate:,.0f}",
+    )
+
+    ax.set_xlabel("Future Calendar Year")
+    ax.set_ylabel("Ultimate Loss Estimate")
+    ax.set_title("Paths of Ultimate Loss Estimates")
+
+    subtitle = (
+        f"E[Ultimate Loss] = {result.expected_ultimate:,.0f} - "
+        f"Best Estimate of Liability = {result.best_estimate:,.0f}"
+    )
+    ax.text(
+        0.5,
+        -0.12,
+        subtitle,
+        ha="center",
+        transform=ax.transAxes,
+        fontsize=10,
+    )
+
+    ax.legend(loc="upper right")
+
+    return fig, ax
+
+
+def plot_required_capital_paths(
+    result: "RiskMarginResult",
+    n_paths: int = 50,
+    figsize: tuple[float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, Axes]:
+    """
+    Plot sample paths of required capital over future calendar years.
+
+    Required capital is computed as TVaR - Mean at each calendar year.
+    This visualization shows how capital requirements decrease as the
+    reserve runs off.
+
+    Parameters
+    ----------
+    result : RiskMarginResult
+        Result from RiskMarginCalculator.
+    n_paths : int, optional
+        Number of sample paths to display. Default is 50.
+    figsize : tuple[float, float], optional
+        Figure size.
+    **kwargs
+        Additional arguments passed to plt.plot().
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        Matplotlib Figure and Axes objects.
+    """
+    from .risk_margin import RiskMarginResult
+
+    if figsize is None:
+        figsize = (10, 6)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    pred_capital = result.pred_capital
+    num_samples = result.num_samples
+    n_periods = pred_capital.shape[1]
+
+    # Select representative paths
+    probs = np.linspace(0.01, 0.99, n_paths)
+    indices = np.quantile(np.arange(num_samples), probs).astype(int)
+    sorted_idx = np.argsort(result.pred_mean[:, -1])
+    path_indices = sorted_idx[indices]
+
+    x = np.arange(n_periods)
+
+    # Plot paths
+    for idx in path_indices:
+        ax.plot(x, pred_capital[idx, :], alpha=0.5, linewidth=0.8, **kwargs)
+
+    # Add initial capital reference
+    initial_capital = np.mean(pred_capital[:, 0])
+    ax.axhline(
+        initial_capital,
+        color="red",
+        linestyle="--",
+        linewidth=1.5,
+        alpha=0.7,
+    )
+
+    ax.set_xlabel("Future Calendar Year")
+    ax.set_ylabel("Required Capital")
+    ax.set_title("Required Capital by Calendar Year")
+
+    subtitle = f"Initial Capital = {pred_capital[0, 0]:,.0f}"
+    ax.text(
+        0.5,
+        -0.12,
+        subtitle,
+        ha="center",
+        transform=ax.transAxes,
+        fontsize=10,
+    )
+
+    return fig, ax
+
+
+def plot_capital_release_paths(
+    result: "RiskMarginResult",
+    n_paths: int = 50,
+    figsize: tuple[float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, Axes]:
+    """
+    Plot sample paths of capital released each period.
+
+    Capital release = Capital_t * (1 + fixed_rate) - Capital_{t+1}
+
+    Positive values indicate capital being released (favorable);
+    negative values indicate additional capital being required (adverse).
+
+    Parameters
+    ----------
+    result : RiskMarginResult
+        Result from RiskMarginCalculator.
+    n_paths : int, optional
+        Number of sample paths to display. Default is 50.
+    figsize : tuple[float, float], optional
+        Figure size.
+    **kwargs
+        Additional arguments passed to plt.plot().
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        Matplotlib Figure and Axes objects.
+    """
+    from .risk_margin import RiskMarginResult
+
+    if figsize is None:
+        figsize = (10, 6)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    capital_release = result.capital_release
+    num_samples = result.num_samples
+    n_periods = capital_release.shape[1]
+
+    # Select representative paths
+    probs = np.linspace(0.01, 0.99, n_paths)
+    indices = np.quantile(np.arange(num_samples), probs).astype(int)
+    sorted_idx = np.argsort(result.pred_mean[:, -1])
+    path_indices = sorted_idx[indices]
+
+    x = np.arange(1, n_periods + 1)  # Calendar years 1 through n
+
+    # Plot paths
+    for idx in path_indices:
+        ax.plot(x, capital_release[idx, :], alpha=0.5, linewidth=0.8, **kwargs)
+
+    # Add zero line
+    ax.axhline(0, color="red", linewidth=2, label="Break-even")
+
+    ax.set_xlabel("Future Calendar Year")
+    ax.set_ylabel("Capital Released")
+    ax.set_title("Path of Released Capital")
+    ax.legend()
+
+    return fig, ax
+
+
+def plot_risk_margin_distribution(
+    result: "RiskMarginResult",
+    kind: str = "hist",
+    figsize: tuple[float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, Axes]:
+    """
+    Plot the distribution of risk margins across scenarios.
+
+    Parameters
+    ----------
+    result : RiskMarginResult
+        Result from RiskMarginCalculator.
+    kind : str, optional
+        Type of plot: "hist" or "kde". Default is "hist".
+    figsize : tuple[float, float], optional
+        Figure size.
+    **kwargs
+        Additional arguments passed to plotting function.
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        Matplotlib Figure and Axes objects.
+    """
+    from .risk_margin import RiskMarginResult
+
+    if figsize is None:
+        figsize = (10, 6)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    risk_margin = result.risk_margin
+
+    if kind == "hist":
+        ax.hist(risk_margin, bins=50, density=True, alpha=0.7, edgecolor="black", **kwargs)
+    elif kind == "kde":
+        az.plot_kde(risk_margin, ax=ax, **kwargs)
+    else:
+        raise ValueError(f"Unknown kind: {kind}")
+
+    # Add mean line
+    mean_rm = np.mean(risk_margin)
+    ax.axvline(
+        mean_rm,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mean = {mean_rm:,.0f}",
+    )
+
+    ax.set_xlabel("Risk Margin")
+    ax.set_title("Risk Margin Distribution")
+
+    subtitle = f"Mean Risk Margin = {mean_rm:,.0f}"
+    ax.text(
+        0.5,
+        -0.12,
+        subtitle,
+        ha="center",
+        transform=ax.transAxes,
+        fontsize=10,
+    )
+
+    ax.legend()
+
+    return fig, ax
+
+
+def plot_risk_margin_pct_distribution(
+    result: "RiskMarginResult",
+    kind: str = "hist",
+    figsize: tuple[float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, Axes]:
+    """
+    Plot risk margin as a percentage of initial capital.
+
+    Parameters
+    ----------
+    result : RiskMarginResult
+        Result from RiskMarginCalculator.
+    kind : str, optional
+        Type of plot: "hist" or "kde". Default is "hist".
+    figsize : tuple[float, float], optional
+        Figure size.
+    **kwargs
+        Additional arguments passed to plotting function.
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        Matplotlib Figure and Axes objects.
+    """
+    from .risk_margin import RiskMarginResult
+
+    if figsize is None:
+        figsize = (10, 6)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    risk_margin_pct = result.risk_margin_pct
+
+    # Filter out infinite values
+    rm_pct_valid = risk_margin_pct[np.isfinite(risk_margin_pct)]
+
+    if kind == "hist":
+        ax.hist(rm_pct_valid, bins=50, density=True, alpha=0.7, edgecolor="black", **kwargs)
+    elif kind == "kde":
+        az.plot_kde(rm_pct_valid, ax=ax, **kwargs)
+    else:
+        raise ValueError(f"Unknown kind: {kind}")
+
+    # Add summary statistics
+    mean_pct = np.mean(rm_pct_valid)
+    std_pct = np.std(rm_pct_valid)
+
+    ax.axvline(
+        mean_pct,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Mean = {mean_pct:.1f}%",
+    )
+
+    ax.set_xlabel("Risk Margin %")
+    ax.set_title("Risk Margin as a % of Initial Capital")
+
+    subtitle = f"Mean = {mean_pct:.1f}%, Std. Dev. = {std_pct:.1f}%"
+    ax.text(
+        0.5,
+        -0.12,
+        subtitle,
+        ha="center",
+        transform=ax.transAxes,
+        fontsize=10,
+    )
+
+    ax.legend()
+
+    return fig, ax
+
+
+def plot_risk_margin_summary(
+    result: "RiskMarginResult",
+    figsize: tuple[float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, list[Axes]]:
+    """
+    Create a comprehensive risk margin summary plot with multiple panels.
+
+    This creates a 2x2 grid showing:
+    - Ultimate loss estimate paths
+    - Required capital paths
+    - Capital release paths
+    - Risk margin distribution
+
+    Parameters
+    ----------
+    result : RiskMarginResult
+        Result from RiskMarginCalculator.
+    figsize : tuple[float, float], optional
+        Figure size.
+    **kwargs
+        Additional arguments passed to plotting functions.
+
+    Returns
+    -------
+    tuple[Figure, list[Axes]]
+        Matplotlib Figure and list of Axes objects.
+
+    Examples
+    --------
+    >>> calc = RiskMarginCalculator(model)
+    >>> result = calc.calculate_ultimate_horizon()
+    >>> fig, axes = plot_risk_margin_summary(result)
+    >>> plt.show()
+    """
+    from .risk_margin import RiskMarginResult
+
+    if figsize is None:
+        figsize = (14, 10)
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+
+    pred_mean = result.pred_mean
+    pred_capital = result.pred_capital
+    capital_release = result.capital_release
+    risk_margin = result.risk_margin
+    num_samples = result.num_samples
+    n_periods = pred_mean.shape[1]
+
+    # Select representative paths
+    n_paths = 50
+    probs = np.linspace(0.01, 0.99, n_paths)
+    indices = np.quantile(np.arange(num_samples), probs).astype(int)
+    sorted_idx = np.argsort(pred_mean[:, -1])
+    path_indices = sorted_idx[indices]
+
+    # Panel 1: Ultimate loss paths
+    ax1 = axes[0, 0]
+    x = np.arange(n_periods)
+    for idx in path_indices:
+        ax1.plot(x, pred_mean[idx, :], alpha=0.5, linewidth=0.8, color="steelblue")
+    ax1.set_xlabel("Future Calendar Year")
+    ax1.set_ylabel("Ultimate Loss Estimate")
+    ax1.set_title("Paths of Ultimate Loss Estimates")
+    ax1.text(
+        0.02,
+        0.98,
+        f"E[Ultimate] = {result.expected_ultimate:,.0f}",
+        transform=ax1.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+    )
+
+    # Panel 2: Required capital paths
+    ax2 = axes[0, 1]
+    for idx in path_indices:
+        ax2.plot(x, pred_capital[idx, :], alpha=0.5, linewidth=0.8, color="steelblue")
+    ax2.set_xlabel("Future Calendar Year")
+    ax2.set_ylabel("Required Capital")
+    ax2.set_title("Required Capital by Calendar Year")
+    ax2.text(
+        0.02,
+        0.98,
+        f"Initial Capital = {pred_capital[0, 0]:,.0f}",
+        transform=ax2.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+    )
+
+    # Panel 3: Capital release paths
+    ax3 = axes[1, 0]
+    x_release = np.arange(1, n_periods + 1)
+    for idx in path_indices:
+        ax3.plot(
+            x_release,
+            capital_release[idx, :],
+            alpha=0.5,
+            linewidth=0.8,
+            color="steelblue",
+        )
+    ax3.axhline(0, color="red", linewidth=2)
+    ax3.set_xlabel("Future Calendar Year")
+    ax3.set_ylabel("Capital Released")
+    ax3.set_title("Path of Released Capital")
+
+    # Panel 4: Risk margin distribution
+    ax4 = axes[1, 1]
+    ax4.hist(risk_margin, bins=50, density=True, alpha=0.7, color="steelblue", edgecolor="black")
+    mean_rm = np.mean(risk_margin)
+    ax4.axvline(mean_rm, color="red", linestyle="--", linewidth=2)
+    ax4.set_xlabel("Risk Margin")
+    ax4.set_title("Risk Margin Distribution")
+    ax4.text(
+        0.98,
+        0.98,
+        f"Mean = {mean_rm:,.0f}",
+        transform=ax4.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        horizontalalignment="right",
+    )
+
+    # Overall title
+    fig.suptitle(
+        f"Risk Margin Analysis ({result.time_horizon.replace('_', ' ').title()} Time Horizon)",
+        fontsize=14,
+        y=0.98,
+    )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+
+    return fig, axes.flatten().tolist()
+
+
+def plot_capital_vs_estimate(
+    result: "RiskMarginResult",
+    figsize: tuple[float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, Axes]:
+    """
+    Plot required capital vs ultimate loss estimate as a scatter plot.
+
+    This shows the relationship between the uncertainty in estimates
+    (capital requirement) and the level of estimates.
+
+    Parameters
+    ----------
+    result : RiskMarginResult
+        Result from RiskMarginCalculator.
+    figsize : tuple[float, float], optional
+        Figure size.
+    **kwargs
+        Additional arguments passed to plt.scatter().
+
+    Returns
+    -------
+    tuple[Figure, Axes]
+        Matplotlib Figure and Axes objects.
+    """
+    from .risk_margin import RiskMarginResult
+
+    if figsize is None:
+        figsize = (8, 8)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Initial values
+    estimates = result.pred_mean[:, 0]
+    capital = result.pred_capital[:, 0]
+
+    ax.scatter(estimates, capital, alpha=0.3, s=10, **kwargs)
+
+    ax.set_xlabel("Ultimate Loss Estimate (Initial)")
+    ax.set_ylabel("Required Capital (Initial)")
+    ax.set_title("Required Capital vs Ultimate Estimate")
+
+    # Add correlation
+    corr = np.corrcoef(estimates, capital)[0, 1]
+    ax.text(
+        0.02,
+        0.98,
+        f"Correlation: {corr:.3f}",
+        transform=ax.transAxes,
+        fontsize=10,
+        verticalalignment="top",
+    )
+
+    return fig, ax
