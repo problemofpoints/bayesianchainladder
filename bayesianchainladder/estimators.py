@@ -16,7 +16,7 @@ import pandas as pd
 import pymc as pm
 import xarray as xr
 
-from .models import build_bambi_model, build_csr_model, fit_model
+from .models import build_bambi_model, build_csr_model, fit_model, sample_prior_predictive
 from .utils import (
     add_categorical_columns,
     get_future_dataframe,
@@ -696,6 +696,262 @@ class BayesianChainLadderGLM:
             indices = np.random.choice(len(all_samples), size=n_samples, replace=True)
 
         return all_samples[indices]
+
+    def build_model(
+        self,
+        triangle: cl.Triangle,
+        exposure_triangle: cl.Triangle | None = None,
+    ) -> "BayesianChainLadderGLM":
+        """
+        Build the Bayesian model without fitting.
+
+        This is useful for prior predictive checks before committing to
+        a full MCMC fit. Build the model, examine prior predictive samples,
+        adjust priors if needed, then call fit().
+
+        Parameters
+        ----------
+        triangle : chainladder.Triangle
+            The claims triangle (cumulative or incremental).
+        exposure_triangle : chainladder.Triangle, optional
+            Optional exposure triangle (e.g., earned premium by origin).
+
+        Returns
+        -------
+        self
+            The estimator with model_ attribute set.
+
+        Examples
+        --------
+        >>> model = BayesianChainLadderGLM(formula="incremental ~ 1 + C(origin) + C(dev)")
+        >>> model.build_model(triangle)
+        >>> prior_idata = model.sample_prior_predictive(draws=500)
+        >>> # Examine prior predictions, adjust priors if needed
+        >>> model.fit(triangle)  # Full MCMC fit
+        """
+        # Validate input
+        validate_triangle(triangle)
+
+        self.triangle_ = triangle.copy()
+
+        # Convert triangle to long format
+        self.data_, self.future_data_ = prepare_model_data(
+            triangle,
+            exposure_triangle=exposure_triangle,
+            exposure_column=self.exposure if self.exposure else "exposure",
+        )
+
+        # Add categorical encoding
+        self.data_ = add_categorical_columns(self.data_, formula=self.formula)
+        self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
+
+        # Validate data compatibility with chosen family
+        self._validate_data_family_compatibility()
+
+        # Set up default priors based on data scale and family/link
+        priors = self.priors
+        if priors is None:
+            import bambi as bmb
+
+            # Compute data-adaptive intercept prior
+            response_values = self.data_["incremental"].values
+            response_mean = response_values.mean()
+            response_std = response_values.std()
+
+            if self.family.lower() in ("gaussian", "normal"):
+                intercept_mu = response_mean
+                intercept_sigma = max(response_std, abs(response_mean) * 0.5)
+            else:
+                positive_values = response_values[response_values > 0]
+                if len(positive_values) > 0:
+                    positive_mean = positive_values.mean()
+                    intercept_mu = np.log(positive_mean)
+                else:
+                    intercept_mu = 0.0
+                intercept_sigma = 2.0
+
+            priors = {
+                "Intercept": bmb.Prior("Normal", mu=intercept_mu, sigma=intercept_sigma),
+            }
+
+        # Build the model
+        offset = self.exposure if self.exposure else None
+        self.model_ = build_bambi_model(
+            data=self.data_,
+            formula=self.formula,
+            family=self.family,
+            link=self.link,
+            priors=priors,
+            offset=offset,
+        )
+
+        return self
+
+    def sample_prior_predictive(
+        self,
+        triangle: cl.Triangle | None = None,
+        exposure_triangle: cl.Triangle | None = None,
+        draws: int = 500,
+        random_seed: int | None = None,
+    ) -> az.InferenceData:
+        """
+        Sample from the prior predictive distribution.
+
+        Prior predictive checks are critical for Bayesian loss reserving models.
+        They help verify that priors produce predictions consistent with domain
+        knowledge before fitting to data. This is especially important because:
+
+        1. Loss reserves can span many orders of magnitude
+        2. Development patterns should show realistic payment patterns
+        3. Priors that are too vague can produce unrealistic predictions
+        4. Priors that are too tight may not allow the data to speak
+
+        Parameters
+        ----------
+        triangle : chainladder.Triangle, optional
+            Triangle to use for predictions. If None, uses the previously
+            built triangle (requires calling build_model() first).
+        exposure_triangle : chainladder.Triangle, optional
+            Optional exposure triangle.
+        draws : int, optional
+            Number of prior predictive samples. Default is 500.
+        random_seed : int, optional
+            Random seed for reproducibility.
+
+        Returns
+        -------
+        az.InferenceData
+            InferenceData with prior and prior_predictive groups.
+
+        Examples
+        --------
+        >>> import chainladder as cl
+        >>> from bayesianchainladder import BayesianChainLadderGLM
+        >>> from bayesianchainladder.plots import plot_prior_predictive
+        >>>
+        >>> triangle = cl.load_sample("raa")
+        >>> model = BayesianChainLadderGLM()
+        >>>
+        >>> # Sample from prior predictive
+        >>> prior_idata = model.sample_prior_predictive(triangle, draws=500)
+        >>>
+        >>> # Visualize prior predictions
+        >>> fig, ax = plot_prior_predictive(model, prior_idata)
+
+        Notes
+        -----
+        Key things to check in prior predictive samples for loss reserving:
+
+        1. **Incremental loss magnitudes**: Are predicted losses in a
+           reasonable range? (e.g., not billions for a small portfolio)
+
+        2. **Development pattern**: Do early periods show higher losses
+           with decreasing amounts over time?
+
+        3. **Total reserves**: Is the implied reserve distribution
+           consistent with portfolio expectations?
+
+        4. **Tail behavior**: Are extreme predictions (95th percentile)
+           plausible worst-case scenarios?
+        """
+        if triangle is not None:
+            # Build model with provided triangle
+            self.build_model(triangle, exposure_triangle)
+        elif self.model_ is None:
+            raise ValueError(
+                "No triangle provided and model not yet built. "
+                "Either pass a triangle or call build_model() first."
+            )
+
+        # Sample from prior predictive using the model
+        prior_idata = sample_prior_predictive(
+            self.model_,
+            draws=draws,
+            random_seed=random_seed if random_seed is not None else self.random_seed,
+        )
+
+        # Store prior predictive data and model data for later analysis
+        self.prior_idata_ = prior_idata
+
+        return prior_idata
+
+    def get_prior_predictive_summary(
+        self,
+        prior_idata: az.InferenceData | None = None,
+        by: str | None = None,
+    ) -> pd.DataFrame:
+        """
+        Get summary statistics of prior predictive samples.
+
+        Parameters
+        ----------
+        prior_idata : az.InferenceData, optional
+            Prior predictive samples. If None, uses stored prior_idata_.
+        by : str, optional
+            Group summary by "origin", "dev", or "calendar".
+            If None, returns per-observation summary.
+
+        Returns
+        -------
+        pd.DataFrame
+            Summary statistics of prior predictive samples.
+        """
+        if prior_idata is None:
+            if not hasattr(self, "prior_idata_") or self.prior_idata_ is None:
+                raise ValueError(
+                    "No prior predictive samples available. "
+                    "Call sample_prior_predictive() first."
+                )
+            prior_idata = self.prior_idata_
+
+        if "prior_predictive" not in prior_idata.groups():
+            raise ValueError("InferenceData must contain prior_predictive group")
+
+        # Get response name from model
+        response_name = self.model_.response_component.response.name
+
+        # Get prior predictive samples
+        pp = prior_idata.prior_predictive[response_name]
+
+        # Stack chains and draws
+        pp_flat = pp.stack(sample=["chain", "draw"])
+
+        # Compute summary
+        quantiles = [0.025, 0.25, 0.5, 0.75, 0.975]
+        summary_data = {
+            "mean": pp_flat.mean(dim="sample").values,
+            "std": pp_flat.std(dim="sample").values,
+        }
+        for q in quantiles:
+            summary_data[f"{q*100:.1f}%"] = pp_flat.quantile(q, dim="sample").values
+
+        summary_df = pd.DataFrame(summary_data)
+
+        # Add observation metadata
+        if self.data_ is not None:
+            summary_df["origin"] = self.data_["origin"].values
+            summary_df["dev"] = self.data_["dev"].values
+            if "calendar" in self.data_.columns:
+                summary_df["calendar"] = self.data_["calendar"].values
+
+        # Aggregate by group if requested
+        if by is not None and by in ["origin", "dev", "calendar"]:
+            if by not in summary_df.columns:
+                raise ValueError(f"Column '{by}' not found in data")
+
+            # Sum means across group (for aggregate statistics)
+            agg_summary = summary_df.groupby(by).agg({
+                "mean": "sum",
+                "std": lambda x: np.sqrt((x**2).sum()),  # Sum variances, take sqrt
+                "2.5%": "sum",
+                "25.0%": "sum",
+                "50.0%": "sum",
+                "75.0%": "sum",
+                "97.5%": "sum",
+            })
+            return agg_summary
+
+        return summary_df
 
     def _check_is_fitted(self) -> None:
         """Check if the model has been fitted."""

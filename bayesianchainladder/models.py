@@ -854,3 +854,115 @@ def extract_parameter_summary(
         Summary statistics for parameters.
     """
     return az.summary(idata, var_names=var_names, filter_vars=filter_vars, hdi_prob=hdi_prob) # type: ignore
+
+
+def sample_prior_predictive(
+    model: bmb.Model,
+    draws: int = 500,
+    random_seed: int | None = None,
+) -> az.InferenceData:
+    """
+    Sample from the prior predictive distribution.
+
+    Prior predictive checks are essential for validating that priors produce
+    reasonable predictions before fitting the model to data. This is especially
+    important in loss reserving where domain knowledge about loss magnitudes,
+    development patterns, and reserve ranges should inform prior selection.
+
+    Parameters
+    ----------
+    model : bmb.Model
+        A Bambi model (unfitted or fitted).
+    draws : int, optional
+        Number of prior predictive samples per chain. Default is 500.
+    random_seed : int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    az.InferenceData
+        InferenceData object with prior and prior_predictive groups containing:
+        - prior: Samples from prior distributions of all parameters
+        - prior_predictive: Samples of predicted responses under the prior
+
+    Examples
+    --------
+    >>> import chainladder as cl
+    >>> from bayesianchainladder import BayesianChainLadderGLM
+    >>> from bayesianchainladder.models import sample_prior_predictive
+    >>>
+    >>> # Create model but don't fit
+    >>> model = BayesianChainLadderGLM(draws=1000)
+    >>> model._build_model(triangle)  # Build without fitting
+    >>>
+    >>> # Sample from prior predictive
+    >>> prior_idata = sample_prior_predictive(model.model_, draws=500)
+    >>>
+    >>> # Examine prior predictions
+    >>> import arviz as az
+    >>> az.plot_ppc(prior_idata, group="prior")
+
+    Notes
+    -----
+    For loss reserving, prior predictive checks help verify that:
+    1. Predicted incremental losses are within plausible ranges
+    2. Development patterns are reasonable (most development early)
+    3. Reserve estimates are not absurdly large or negative
+    4. Loss ratios (if exposure available) are within industry norms
+    """
+    # Ensure the model is built before sampling
+    # Bambi requires model.build() to be called before prior_predictive()
+    if not model.backend:
+        model.build()
+
+    # Use Bambi's prior predictive sampling capability
+    idata = model.prior_predictive(draws=draws, random_seed=random_seed)
+
+    return idata
+
+
+def compute_prior_predictive_summary(
+    prior_idata: az.InferenceData,
+    response_name: str = "incremental",
+    quantiles: list[float] | None = None,
+) -> pd.DataFrame:
+    """
+    Compute summary statistics from prior predictive samples.
+
+    Parameters
+    ----------
+    prior_idata : az.InferenceData
+        InferenceData with prior_predictive group.
+    response_name : str, optional
+        Name of the response variable. Default is "incremental".
+    quantiles : list[float], optional
+        Quantiles to compute. Default is [0.025, 0.25, 0.5, 0.75, 0.975].
+
+    Returns
+    -------
+    pd.DataFrame
+        Summary statistics including mean, std, and quantiles.
+    """
+    if quantiles is None:
+        quantiles = [0.025, 0.25, 0.5, 0.75, 0.975]
+
+    if "prior_predictive" not in prior_idata.groups():
+        raise ValueError("InferenceData must contain prior_predictive group")
+
+    # Get prior predictive samples
+    pp = prior_idata.prior_predictive[response_name]
+
+    # Stack chains and draws
+    pp_flat = pp.stack(sample=["chain", "draw"])
+
+    # Compute summary statistics per observation
+    summary_data = {
+        "mean": pp_flat.mean(dim="sample").values,
+        "std": pp_flat.std(dim="sample").values,
+    }
+
+    for q in quantiles:
+        q_label = f"{q*100:.1f}%"
+        summary_data[q_label] = pp_flat.quantile(q, dim="sample").values
+
+    return pd.DataFrame(summary_data)
