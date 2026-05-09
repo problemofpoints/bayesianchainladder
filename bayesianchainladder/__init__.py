@@ -47,6 +47,16 @@ except PackageNotFoundError:
     __version__ = "0.1.0"
 
 # Main estimators
+# Base contract
+from .base import BaseStochasticReserve, MethodSummary
+
+# Frequentist estimators
+from .bootstrap import (
+    BootstrapODPChainLadder,
+    CorrelatedBootstrapChainLadder,
+    CorrelatedBootstrapODPSample,
+    MackChainLadder,
+)
 from .estimators import BayesianChainLadderGLM, BayesianCSR
 
 # Model building functions
@@ -55,8 +65,8 @@ from .models import (
     build_csr_model,
     build_pymc_model,
     compute_loo,
-    compute_waic,
     compute_prior_predictive_summary,
+    compute_waic,
     extract_parameter_summary,
     fit_model,
     posterior_predictive_check,
@@ -105,6 +115,14 @@ __all__ = [
     # Main estimators
     "BayesianChainLadderGLM",
     "BayesianCSR",
+    # Base contract
+    "BaseStochasticReserve",
+    "MethodSummary",
+    # Frequentist estimators
+    "MackChainLadder",
+    "BootstrapODPChainLadder",
+    "CorrelatedBootstrapChainLadder",
+    "CorrelatedBootstrapODPSample",
     # Model functions
     "build_bambi_model",
     "build_csr_model",

@@ -182,3 +182,25 @@ class TestBaseStochasticReserve:
     def test_total_summary_cv_is_positive(self, stub_fitted):
         result = stub_fitted.total_summary()
         assert result.total_reserve_cv > 0
+
+
+class TestPackageExports:
+    def test_base_class_is_exported(self):
+        import bayesianchainladder as bcl
+
+        assert hasattr(bcl, "BaseStochasticReserve")
+        assert hasattr(bcl, "MethodSummary")
+
+    def test_new_estimators_are_exported(self):
+        import bayesianchainladder as bcl
+
+        assert hasattr(bcl, "MackChainLadder")
+        assert hasattr(bcl, "BootstrapODPChainLadder")
+        assert hasattr(bcl, "CorrelatedBootstrapChainLadder")
+        assert hasattr(bcl, "CorrelatedBootstrapODPSample")
+
+    def test_existing_estimators_still_exported(self):
+        import bayesianchainladder as bcl
+
+        assert hasattr(bcl, "BayesianChainLadderGLM")
+        assert hasattr(bcl, "BayesianCSR")
