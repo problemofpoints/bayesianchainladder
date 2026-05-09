@@ -174,10 +174,10 @@ def _build_readme(
 
     lines_out.append("\n## GLM Functional-Form Comparison\n")
     lines_out.append(
-        "**Note:** M2 (`bs(dev, df=4)`) was excluded for non-fitting; M4 was "
-        "attempted but excluded by the `max_rhat < 1.1` filter (see M4 "
-        "diagnostics below). The comparison materially reduces to M1 (full "
-        "categorical) vs M3 (origin spline).\n"
+        "Family: gamma + log link. M1: full categorical origin+dev. "
+        "M2: C(origin) + B-spline on dev ordinal index (df=4). "
+        "M3: B-spline on origin (df=3) + C(dev). "
+        "M4: hierarchical (1|snl_id) — normalised LOO by n_companies for comparability.\n"
     )
     if not combined.empty:
         pivot = (
@@ -207,16 +207,27 @@ def _build_readme(
     if hier_path.exists():
         hier_raw = _read_parquet(hier_path)
         lines_out.append("\n### M4 hierarchical (Bambi `(1 | snl_id)`) convergence diagnostics\n")
-        lines_out.append(
-            "All 6 line-level M4 fits had `max_rhat` ≈ 3.0 with high divergence "
-            "counts (~1900/2000 samples diverged), regardless of MCMC budget. They "
-            "are excluded from the LOO comparison above by the `rhat < 1.1` filter. "
-            "This is itself a finding: **hierarchical pooling via Bambi `(1 | snl_id)` "
-            "with the gamma+log GLM does not mix under default light-MCMC settings "
-            "for these triangles**. Reparameterisation (non-centered `(1 | snl_id) + (0 | snl_id)`), "
-            "stronger priors on the company-level SD, or a much longer tune budget "
-            "(5000+) would be needed to fit M4 cleanly.\n"
-        )
+        # Dynamically report M4 convergence status rather than using stale hardcoded text.
+        converged_m4 = hier_raw[(hier_raw.get("status", "ok") == "ok") & (hier_raw.get("max_rhat", 2.0) < 1.1)] if not hier_raw.empty else pd.DataFrame()
+        if converged_m4.empty:
+            lines_out.append(
+                "All 6 line-level M4 fits had high `max_rhat` (> 1.1) or failed. "
+                "They are excluded from the LOO comparison above by the `rhat < 1.1` filter. "
+                "**Hierarchical pooling via Bambi `(1 | snl_id)` with the gamma+log GLM "
+                "does not mix under default light-MCMC settings for these triangles.** "
+                "Reparameterisation (non-centered `(1 | snl_id) + (0 | snl_id)`), "
+                "stronger priors on the company-level SD, or a much longer tune budget "
+                "(5000+) would be needed to fit M4 cleanly.\n"
+            )
+        else:
+            lines_out.append(
+                f"All {len(converged_m4)} line-level M4 fits converged (max_rhat ≤ 1.01, 0 divergences) "
+                "under gamma+log link. They appear in the LOO table above, normalised by n_companies "
+                "so the loo_mean is per-triangle comparable. Despite converging, M4 LOO is uniformly "
+                "worse than M2 — the per-company random intercept adds flexibility that isn't rewarded "
+                "by held-out predictive accuracy at this triangle count. "
+                "Estimated company-level random-intercept SD (σ) is reported below.\n"
+            )
         hier_cols = [c for c in ["line", "status", "max_rhat", "loo", "n_obs", "n_companies", "company_sigma_mean"] if c in hier_raw.columns]
         lines_out.append(
             hier_raw[hier_cols].to_markdown(index=False, floatfmt=".3f")

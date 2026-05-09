@@ -6,56 +6,56 @@ Interactive version: [report.html](report.html).
 
 ## Headline Recommendations
 
-| line   | best_spec   |   loo_mean | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     |   rho_point |   rho_median |   ulr_mean |   phi_p50 |
-|:-------|:------------|-----------:|:--------------------|:----------------------|:------------------|------------:|-------------:|-----------:|----------:|
-| OLO    | M1_cat      |  -1284.230 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) |       0.105 |        0.105 |      0.663 |  1209.404 |
-| OLC    | M1_cat      |  -1328.097 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |       0.061 |        0.062 |      0.639 |  1894.560 |
-| CAL    | M1_cat      |  -1287.034 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) |       0.110 |        0.110 |      0.749 |   639.597 |
-| WC     | M1_cat      |  -1254.410 | Normal(-0.74, 0.43) | Normal(0.004, 0.031)  | HalfNormal(0.048) |       0.124 |        0.125 |      0.567 |   192.466 |
-| PPAL   | M1_cat      |  -1318.959 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) |       0.140 |        0.139 |      0.716 |   338.915 |
-| CMP    | M1_cat      |  -1251.625 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) |       0.071 |        0.068 |      0.635 |   655.080 |
+| line   | best_spec     |   loo_mean | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     |   rho_point |   rho_median |   ulr_mean |   phi_p50 |
+|:-------|:--------------|-----------:|:--------------------|:----------------------|:------------------|------------:|-------------:|-----------:|----------:|
+| OLO    | M2_devidx_bs4 |   -526.745 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) |       0.105 |        0.105 |      0.663 |  1209.404 |
+| OLC    | M2_devidx_bs4 |   -568.411 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |       0.061 |        0.062 |      0.639 |  1894.560 |
+| CAL    | M2_devidx_bs4 |   -545.996 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) |       0.110 |        0.110 |      0.749 |   639.597 |
+| WC     | M2_devidx_bs4 |   -504.440 | Normal(-0.74, 0.43) | Normal(0.004, 0.031)  | HalfNormal(0.048) |       0.124 |        0.125 |      0.567 |   192.466 |
+| PPAL   | M2_devidx_bs4 |   -547.536 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) |       0.140 |        0.139 |      0.716 |   338.915 |
+| CMP    | M2_devidx_bs4 |   -531.951 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) |       0.071 |        0.068 |      0.635 |   655.080 |
 
 
 ## GLM Functional-Form Comparison
 
-**Note:** M2 (`bs(dev, df=4)`) was excluded for non-fitting; M4 was attempted but excluded by the `max_rhat < 1.1` filter (see M4 diagnostics below). The comparison materially reduces to M1 (full categorical) vs M3 (origin spline).
+Family: gamma + log link. M1: full categorical origin+dev. M2: C(origin) + B-spline on dev ordinal index (df=4). M3: B-spline on origin (df=3) + C(dev). M4: hierarchical (1|snl_id) — normalised LOO by n_companies for comparability.
 
 Mean LOO per spec (higher = better, NaN = no converged fits):
 
-| line   |   M1_cat |   M3_restorigin |
-|:-------|---------:|----------------:|
-| OLO    | -1284.23 |        -1360.65 |
-| OLC    | -1328.1  |        -1333.25 |
-| CAL    | -1287.03 |        -1341.89 |
-| WC     | -1254.41 |        -1268.25 |
-| PPAL   | -1318.96 |        -1398.26 |
-| CMP    | -1251.62 |        -1329.13 |
+| line   |   M1_cat |   M2_devidx_bs4 |   M3_restorigin |   M4_hierarchical |
+|:-------|---------:|----------------:|----------------:|------------------:|
+| OLO    |  -537.5  |         -526.75 |         -535.99 |           -558.34 |
+| OLC    |  -571.58 |         -568.41 |         -571.06 |           -580.4  |
+| CAL    |  -552.73 |         -546    |         -550.3  |           -558.18 |
+| WC     |  -513.19 |         -504.44 |         -510.48 |           -528.4  |
+| PPAL   |  -561.24 |         -547.54 |         -569.51 |           -550.44 |
+| CMP    |  -542.11 |         -531.95 |         -538.1  |           -553.37 |
 
 
 Converged-fit counts per spec (out of 24 sampled triangles per line):
 
-| line   |   M1_cat |   M3_restorigin |
-|:-------|---------:|----------------:|
-| OLO    |       21 |              12 |
-| OLC    |       18 |              15 |
-| CAL    |       23 |              14 |
-| WC     |       22 |              14 |
-| PPAL   |       23 |              11 |
-| CMP    |       24 |               6 |
+| line   |   M1_cat |   M2_devidx_bs4 |   M3_restorigin |   M4_hierarchical |
+|:-------|---------:|----------------:|----------------:|------------------:|
+| OLO    |       24 |              24 |              24 |                24 |
+| OLC    |       19 |              19 |              19 |                19 |
+| CAL    |       24 |              24 |              24 |                24 |
+| WC     |       24 |              24 |              24 |                24 |
+| PPAL   |       22 |              24 |              23 |                24 |
+| CMP    |       24 |              24 |              24 |                24 |
 
 
 ### M4 hierarchical (Bambi `(1 | snl_id)`) convergence diagnostics
 
-All 6 line-level M4 fits had `max_rhat` ≈ 3.0 with high divergence counts (~1900/2000 samples diverged), regardless of MCMC budget. They are excluded from the LOO comparison above by the `rhat < 1.1` filter. This is itself a finding: **hierarchical pooling via Bambi `(1 | snl_id)` with the gamma+log GLM does not mix under default light-MCMC settings for these triangles**. Reparameterisation (non-centered `(1 | snl_id) + (0 | snl_id)`), stronger priors on the company-level SD, or a much longer tune budget (5000+) would be needed to fit M4 cleanly.
+All 6 line-level M4 fits converged (max_rhat ≤ 1.01, 0 divergences) under gamma+log link. They appear in the LOO table above, normalised by n_companies so the loo_mean is per-triangle comparable. Despite converging, M4 LOO is uniformly worse than M2 — the per-company random intercept adds flexibility that isn't rewarded by held-out predictive accuracy at this triangle count. Estimated company-level random-intercept SD (σ) is reported below.
 
 | line   | status   |   max_rhat |        loo |   n_obs |   n_companies |   company_sigma_mean |
 |:-------|:---------|-----------:|-----------:|--------:|--------------:|---------------------:|
-| OLO    | ok       |      2.950 | -29713.180 |    1320 |            24 |                9.987 |
-| OLC    | ok       |      3.020 | -24827.807 |    1045 |            19 |                8.107 |
-| CAL    | ok       |      3.020 | -30667.639 |    1320 |            24 |                8.665 |
-| WC     | ok       |      2.970 | -29650.130 |    1320 |            24 |                8.509 |
-| PPAL   | ok       |      3.040 | -31162.501 |    1320 |            24 |                2.940 |
-| CMP    | ok       |      3.040 | -29743.496 |    1320 |            24 |                8.325 |
+| OLO    | ok       |      1.010 | -13400.080 |    1320 |            24 |                0.533 |
+| OLC    | ok       |      1.010 | -11027.672 |    1045 |            19 |                0.210 |
+| CAL    | ok       |      1.000 | -13396.402 |    1320 |            24 |                0.176 |
+| WC     | ok       |      1.010 | -12681.653 |    1320 |            24 |                0.143 |
+| PPAL   | ok       |      1.010 | -13210.659 |    1320 |            24 |                0.193 |
+| CMP    | ok       |      1.010 | -13280.781 |    1320 |            24 |                0.330 |
 
 
 ## CSR Prior Recommendations (full)

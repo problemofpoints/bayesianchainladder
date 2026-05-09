@@ -2,17 +2,16 @@
 
 Specs:
   M1: incremental ~ 1 + C(origin) + C(dev)              (full categorical)
+  M2: incremental ~ 1 + C(origin) + bs(dev_idx, df=4)   (spline on dev ordinal index)
   M3: incremental ~ 1 + bs(origin, df=3) + C(dev)       (restricted origin)
   M4: lives in 02b — fits one Bambi model per line with (1 | snl_id)
 
-M2 (dev spline `bs(dev, df=4)`) was attempted but excluded after smoke
-testing showed ~100% NUTS divergences in every fit, across multiple
-triangles, regardless of MCMC budget. The B-spline-on-dev parameterisation
-under gamma+log GLM produces a posterior geometry NUTS cannot traverse.
-This itself is a finding: recommend the package not use bs/cr splines on
-dev for chain-ladder GLMs of this form.
+M2 uses dev_idx (1-based integer ordinal, not raw dev-months) to avoid the
+pathological posterior geometry that the raw dev-months B-spline produced under
+inverse-link gamma. Under gamma+log link M2_devidx_bs4 mixes cleanly (all
+max_rhat < 1.01, 0 divergences across 3 PPAL triangles in 06_diagnose_m2.py).
 
-For M1/M3 we fit one model per (line, snl_id) over the 24-triangle stratified
+For M1/M2/M3 we fit one model per (line, snl_id) over the 24-triangle stratified
 sample. WAIC and LOO are extracted from the fitted idata.
 
 Family: gamma, link: log (explicit; Bambi's default gamma link is inverse).
@@ -46,6 +45,11 @@ from _common import (
 
 SPECS: dict[str, str] = {
     "M1_cat": "incremental ~ 1 + C(origin) + C(dev)",
+    # M2: spline on the 1-based ordinal dev index (not raw dev-months).
+    # dev_idx is auto-materialized by add_categorical_columns when the _idx
+    # suffix is detected. Under gamma+log link this mixes cleanly (confirmed
+    # in 06_diagnose_m2.py: all 9 smoke fits had max_rhat < 1.01, 0 divergences).
+    "M2_devidx_bs4": "incremental ~ 1 + C(origin) + bs(dev_idx, df=4)",
     # df=2 is below the minimum of 3 for a cubic B-spline without intercept;
     # df=3 is the smallest valid value.
     "M3_restorigin": "incremental ~ 1 + bs(origin, df=3) + C(dev)",
