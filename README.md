@@ -18,8 +18,8 @@ Key features:
 ## Installation
 
 ```bash
-# Using Poetry (recommended)
-poetry install
+# Using uv (recommended)
+uv sync
 
 # Using pip
 pip install bayesianchainladder

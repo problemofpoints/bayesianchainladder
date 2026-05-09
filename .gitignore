@@ -97,3 +97,6 @@ Thumbs.db
 *.hdf5
 *.nc
 *.netcdf
+
+# Local Claude Code state (worktrees, etc.)
+.claude/
