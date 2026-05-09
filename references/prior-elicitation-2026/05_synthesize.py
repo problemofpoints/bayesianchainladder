@@ -174,10 +174,10 @@ def _build_readme(
 
     lines_out.append("\n## GLM Functional-Form Comparison\n")
     lines_out.append(
-        "**Note:** M2 (`bs(dev, df=4)`) was excluded from the full sweep "
-        "after smoke testing showed ~100% NUTS divergences regardless of MCMC "
-        "budget. The comparison below is M1 (full categorical) vs M3 (origin "
-        "spline) vs M4 (hierarchical pool).\n"
+        "**Note:** M2 (`bs(dev, df=4)`) was excluded for non-fitting; M4 was "
+        "attempted but excluded by the `max_rhat < 1.1` filter (see M4 "
+        "diagnostics below). The comparison materially reduces to M1 (full "
+        "categorical) vs M3 (origin spline).\n"
     )
     if not combined.empty:
         pivot = (
@@ -191,6 +191,26 @@ def _build_readme(
         lines_out.append(pivot.to_markdown() + "\n")
     else:
         lines_out.append("_GLM fits not yet available (sweeps still running)._\n")
+
+    hier_path = cache_path("glm_hierarchical_fits.parquet")
+    if hier_path.exists():
+        hier_raw = _read_parquet(hier_path)
+        lines_out.append("\n### M4 hierarchical (Bambi `(1 | snl_id)`) convergence diagnostics\n")
+        lines_out.append(
+            "All 6 line-level M4 fits had `max_rhat` ≈ 3.0 with high divergence "
+            "counts (~1900/2000 samples diverged), regardless of MCMC budget. They "
+            "are excluded from the LOO comparison above by the `rhat < 1.1` filter. "
+            "This is itself a finding: **hierarchical pooling via Bambi `(1 | snl_id)` "
+            "with the gamma+log GLM does not mix under default light-MCMC settings "
+            "for these triangles**. Reparameterisation (non-centered `(1 | snl_id) + (0 | snl_id)`), "
+            "stronger priors on the company-level SD, or a much longer tune budget "
+            "(5000+) would be needed to fit M4 cleanly.\n"
+        )
+        hier_cols = [c for c in ["line", "status", "max_rhat", "loo", "n_obs", "n_companies", "company_sigma_mean"] if c in hier_raw.columns]
+        lines_out.append(
+            hier_raw[hier_cols].to_markdown(index=False, floatfmt=".3f")
+            + "\n"
+        )
 
     if not csr_agg.empty:
         lines_out.append("\n## CSR Prior Recommendations (full)\n")

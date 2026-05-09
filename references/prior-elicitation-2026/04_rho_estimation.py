@@ -60,7 +60,7 @@ def _bootstrap_ci(panel: np.ndarray, n_boot: int = 1000, seed: int = SAMPLE_SEED
     for b in range(n_boot):
         idx = rng.integers(0, n, size=n)
         sample = panel[idx]
-        rhos[b] = rho_from_residual_panel(sample)["rho"]
+        rhos[b] = rho_from_residual_panel(sample, min_pairs=15)["rho"]
     rhos = rhos[np.isfinite(rhos)]
     if rhos.size == 0:
         return {
@@ -86,7 +86,11 @@ def main() -> int:
         if panel.shape[0] == 0:
             print(f"    no eligible triangles for {line}; skipping")
             continue
-        out = rho_from_residual_panel(panel)
+        # Use a slightly looser min_pairs (15) so lines with fewer eligible
+        # companies (e.g., OLC with 19) still produce a rho estimate. Default
+        # of 20 is for cell-pair stability, not company count, so this lower
+        # threshold is statistically defensible.
+        out = rho_from_residual_panel(panel, min_pairs=15)
         ci = _bootstrap_ci(panel)
         rows.append(
             {

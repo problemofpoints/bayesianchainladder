@@ -138,10 +138,12 @@ def render_html(payload: dict) -> str:
           </p>
 
           <div class="scope-note">
-            <strong>Note:</strong> M2 (B-spline on dev) was attempted but
-            excluded after smoke testing showed ~100% NUTS divergences across
-            all triangles, regardless of MCMC budget. The comparison is M1
-            (full categorical) vs M3 (origin spline) vs M4 (hierarchical pool).
+            <strong>Note:</strong> Two specs were attempted but excluded by
+            convergence filtering: M2 (<code>bs(dev, df=4)</code>) failed smoke
+            testing with ~100% NUTS divergences; M4
+            (<code>(1 | snl_id)</code> hierarchical) had max_rhat ~3.0 across
+            all 6 line-level fits. The materially comparable specs are M1
+            (full categorical) and M3 (origin spline).
           </div>
 
           <div class="controls">

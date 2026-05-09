@@ -9,16 +9,16 @@ Interactive version: [report.html](report.html).
 | line   | best_spec   |   loo_mean | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     |   rho_point |   rho_median |   ulr_mean |   phi_p50 |
 |:-------|:------------|-----------:|:--------------------|:----------------------|:------------------|------------:|-------------:|-----------:|----------:|
 | OLO    | M1_cat      |  -1284.230 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) |       0.105 |        0.105 |      0.663 |  1209.404 |
-| OLC    | M1_cat      |  -1328.097 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |     nan     |      nan     |      0.639 |  1894.560 |
+| OLC    | M1_cat      |  -1328.097 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |       0.061 |        0.062 |      0.639 |  1894.560 |
 | CAL    | M1_cat      |  -1287.034 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) |       0.110 |        0.110 |      0.749 |   639.597 |
 | WC     | M1_cat      |  -1254.410 | Normal(-0.74, 0.43) | Normal(0.004, 0.031)  | HalfNormal(0.048) |       0.124 |        0.125 |      0.567 |   192.466 |
 | PPAL   | M1_cat      |  -1318.959 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) |       0.140 |        0.139 |      0.716 |   338.915 |
-| CMP    | M1_cat      |  -1280.490 | Normal(-0.59, 0.20) | Normal(0.002, 0.035)  | HalfNormal(0.068) |       0.071 |        0.068 |      0.635 |   655.080 |
+| CMP    | M1_cat      |  -1251.625 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) |       0.071 |        0.068 |      0.635 |   655.080 |
 
 
 ## GLM Functional-Form Comparison
 
-**Note:** M2 (`bs(dev, df=4)`) was excluded from the full sweep after smoke testing showed ~100% NUTS divergences regardless of MCMC budget. The comparison below is M1 (full categorical) vs M3 (origin spline) vs M4 (hierarchical pool).
+**Note:** M2 (`bs(dev, df=4)`) was excluded for non-fitting; M4 was attempted but excluded by the `max_rhat < 1.1` filter (see M4 diagnostics below). The comparison materially reduces to M1 (full categorical) vs M3 (origin spline).
 
 Mean LOO per spec (higher = better, NaN = no converged fits):
 
@@ -29,7 +29,21 @@ Mean LOO per spec (higher = better, NaN = no converged fits):
 | CAL    | -1287.03 |        -1341.89 |
 | WC     | -1254.41 |        -1268.25 |
 | PPAL   | -1318.96 |        -1398.26 |
-| CMP    | -1280.49 |        -1293.11 |
+| CMP    | -1251.62 |        -1329.13 |
+
+
+### M4 hierarchical (Bambi `(1 | snl_id)`) convergence diagnostics
+
+All 6 line-level M4 fits had `max_rhat` ≈ 3.0 with high divergence counts (~1900/2000 samples diverged), regardless of MCMC budget. They are excluded from the LOO comparison above by the `rhat < 1.1` filter. This is itself a finding: **hierarchical pooling via Bambi `(1 | snl_id)` with the gamma+log GLM does not mix under default light-MCMC settings for these triangles**. Reparameterisation (non-centered `(1 | snl_id) + (0 | snl_id)`), stronger priors on the company-level SD, or a much longer tune budget (5000+) would be needed to fit M4 cleanly.
+
+| line   | status   |   max_rhat |        loo |   n_obs |   n_companies |   company_sigma_mean |
+|:-------|:---------|-----------:|-----------:|--------:|--------------:|---------------------:|
+| OLO    | ok       |      2.950 | -29713.180 |    1320 |            24 |                9.987 |
+| OLC    | ok       |      3.020 | -24827.807 |    1045 |            19 |                8.107 |
+| CAL    | ok       |      3.020 | -30667.639 |    1320 |            24 |                8.665 |
+| WC     | ok       |      2.970 | -29650.130 |    1320 |            24 |                8.509 |
+| PPAL   | ok       |      3.040 | -31162.501 |    1320 |            24 |                2.940 |
+| CMP    | ok       |      3.040 | -29743.496 |    1320 |            24 |                8.325 |
 
 
 ## CSR Prior Recommendations (full)
@@ -37,7 +51,7 @@ Mean LOO per spec (higher = better, NaN = no converged fits):
 | line   |   logelr_mean |   logelr_sd |   gamma_mean |   gamma_sd |   sig_p50 |   a_ig_p10_p50 | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     | csr_a_ig_prior      |
 |:-------|--------------:|------------:|-------------:|-----------:|----------:|---------------:|:--------------------|:----------------------|:------------------|:--------------------|
 | CAL    |        -0.326 |       0.154 |       -0.024 |      0.016 |     0.044 |        284.554 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) | HalfNormal(284.55)  |
-| CMP    |        -0.589 |       0.136 |        0.002 |      0.035 |     0.045 |        247.725 | Normal(-0.59, 0.20) | Normal(0.002, 0.035)  | HalfNormal(0.068) | HalfNormal(247.72)  |
+| CMP    |        -0.585 |       0.156 |        0.001 |      0.031 |     0.048 |        211.011 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) | HalfNormal(211.01)  |
 | OLC    |        -0.547 |       0.242 |        0.004 |      0.022 |     0.117 |         37.522 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) | HalfNormal(37.52)   |
 | OLO    |        -0.628 |       0.567 |       -0.009 |      0.028 |     0.126 |         25.740 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) | HalfNormal(25.74)   |
 | PPAL   |        -0.306 |       0.105 |       -0.022 |      0.016 |     0.016 |       1041.689 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) | HalfNormal(1041.69) |
@@ -46,14 +60,14 @@ Mean LOO per spec (higher = better, NaN = no converged fits):
 
 ## Rho (CorrelatedBootstrapODPSample, calendar-diagonal correlation)
 
-| line   |   n_companies |   rho_point |   rho_median |   rho_p10 |   rho_p90 |      r1 |      r2 |      r3 |
-|:-------|--------------:|------------:|-------------:|----------:|----------:|--------:|--------:|--------:|
-| OLO    |            54 |       0.105 |        0.105 |     0.070 |     0.145 |  -0.055 |  -0.042 |  -0.066 |
-| OLC    |            19 |     nan     |      nan     |   nan     |   nan     | nan     | nan     | nan     |
-| CAL    |            61 |       0.110 |        0.110 |     0.083 |     0.139 |  -0.054 |  -0.060 |  -0.041 |
-| WC     |            73 |       0.124 |        0.125 |     0.096 |     0.158 |  -0.040 |  -0.043 |  -0.086 |
-| PPAL   |            74 |       0.140 |        0.139 |     0.110 |     0.171 |  -0.023 |  -0.093 |  -0.072 |
-| CMP    |            60 |       0.071 |        0.068 |     0.043 |     0.102 |  -0.038 |  -0.038 |  -0.042 |
+| line   |   n_companies |   rho_point |   rho_median |   rho_p10 |   rho_p90 |     r1 |     r2 |     r3 |
+|:-------|--------------:|------------:|-------------:|----------:|----------:|-------:|-------:|-------:|
+| OLO    |            54 |       0.105 |        0.105 |     0.070 |     0.145 | -0.055 | -0.042 | -0.066 |
+| OLC    |            19 |       0.061 |        0.062 |     0.015 |     0.105 | -0.064 | -0.061 | -0.021 |
+| CAL    |            61 |       0.110 |        0.110 |     0.083 |     0.139 | -0.054 | -0.060 | -0.041 |
+| WC     |            73 |       0.124 |        0.125 |     0.096 |     0.158 | -0.040 | -0.043 | -0.086 |
+| PPAL   |            74 |       0.140 |        0.139 |     0.110 |     0.171 | -0.023 | -0.093 | -0.072 |
+| CMP    |            60 |       0.071 |        0.068 |     0.043 |     0.102 | -0.038 | -0.038 | -0.042 |
 
 
 ## Per-Line Descriptive Diagnostics
