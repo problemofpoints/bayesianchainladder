@@ -61,9 +61,19 @@ def main() -> int:
 
         # Recommended priors (strings for documentation).
         intercept_prior = f"Normal({int_mean:.3f}, {1.5 * int_sd:.3f})"
-        # For HalfNormal, if alpha_p90 is NaN (no converged fits found alpha), fall back.
-        if np.isfinite(alpha_p90) and alpha_p90 > 0:
+        # For HalfNormal on alpha: Bambi's gamma family uses the INVERSE link for mu (not log).
+        # Under that parameterization, the gamma concentration (alpha) collapses to near-zero
+        # in posterior because the model compensates for the link-function mismatch.
+        # alpha_p90 values are typically ~1e-5, making 1.5*p90 also effectively 0.
+        # We flag this explicitly rather than emit a misleading HalfNormal(0.000).
+        # A proper alpha prior requires switching to log-link gamma.
+        if np.isfinite(alpha_p90) and alpha_p90 > 1e-3:
             alpha_prior = f"HalfNormal({1.5 * alpha_p90:.3f})"
+        elif np.isfinite(alpha_p90):
+            alpha_prior = (
+                f"WARNING: alpha_p90={alpha_p90:.2e} near-zero (inverse-link artifact). "
+                f"Use HalfCauchy(1) [Bambi default] or switch to log-link gamma."
+            )
         else:
             alpha_prior = "HalfNormal(5.0)  [fallback: insufficient data]"
         if np.isfinite(origin_sd_p50) and origin_sd_p50 > 0:
