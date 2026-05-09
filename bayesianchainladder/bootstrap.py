@@ -613,7 +613,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
                 if (i, j) not in self.valid_indices_:
                     resampled_incr[:, i, j] = xp.nan
 
-        resampled_triangles = xp.nancumsum(resampled_incr, axis=2)
+        resampled_triangles = xp.cumsum(resampled_incr, axis=2)
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
     def _generate_correlated_nonparametric(
@@ -639,7 +639,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
                 if (i, j) not in self.valid_indices_:
                     resampled_incr[:, i, j] = xp.nan
 
-        resampled_triangles = xp.nancumsum(resampled_incr, axis=2)
+        resampled_triangles = xp.cumsum(resampled_incr, axis=2)
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
     # ----- design / hat matrix -----
@@ -752,18 +752,12 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
 
     Notes
     -----
-    With ``rho > 0`` the mean total reserve from this method is typically
-    lower than both the deterministic chain-ladder mean and the independent
-    ``BootstrapODPChainLadder`` mean (commonly by 10-25 percent on standard
-    test triangles), while the standard deviation is wider as expected. The
-    mean shift is a feature of the ported algorithm: the Gaussian copula
-    induces correlated residuals across all observed cells of the upper
-    triangle, which can pull early-development origin samples downward
-    enough to produce negative per-origin IBNR draws. The standard deviation
-    increase reflecting calendar-year correlation is the primary value
-    delivered; consumers using this method for point estimates should also
-    fit ``BootstrapODPChainLadder`` (or a deterministic chain ladder) for an
-    uncorrelated mean reference.
+    With ``rho > 0`` the mean total reserve closely tracks the deterministic
+    chain-ladder mean (within Monte Carlo noise on standard test triangles),
+    while the standard deviation increases with ``rho`` as calendar-year
+    correlation amplifies dispersion. This matches the intent of the
+    Clark/Ding/Zhou (2022) correlated bootstrap: same point estimate as
+    standard ODP, wider tails reflecting calendar-year shocks.
     """
 
     def __init__(

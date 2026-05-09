@@ -326,3 +326,22 @@ class TestCorrelatedBootstrapChainLadder:
         result = model.total_summary()
         assert np.isfinite(result.total_reserve_mean)
         assert result.total_reserve_stddev > 0
+
+    def test_mean_unbiased_for_positive_rho(self, genins_triangle):
+        """Regression guard: mean total reserve must track deterministic
+        chain ladder for rho > 0 (within Monte Carlo noise). Previously
+        biased ~26% downward due to nancumsum in correlated paths."""
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        cl_model = cl.Chainladder().fit(genins_triangle)
+        cl_total = float(np.nansum(np.asarray(cl_model.ibnr_.values)))
+
+        for rho in [0.1, 0.3, 0.5]:
+            model = CorrelatedBootstrapChainLadder(
+                n_sims=1000, rho=rho, random_seed=42
+            ).fit(genins_triangle)
+            mean = model.total_summary().total_reserve_mean
+            # Allow 10% tolerance for Monte Carlo noise at n_sims=1000
+            assert abs(mean / cl_total - 1) < 0.10, (
+                f"rho={rho}: mean={mean:,.0f} drifted >{10}% from CL={cl_total:,.0f}"
+            )
