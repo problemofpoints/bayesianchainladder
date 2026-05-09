@@ -211,3 +211,61 @@ def test_pearson_residuals_zero_when_chain_ladder_perfect():
     res = pearson_residuals(tri)
     # Standardised Pearson residuals should be very small for a perfect fit.
     assert np.abs(res["residual"]).max() < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Fisher-z mean tests
+# ---------------------------------------------------------------------------
+
+from _common import fisher_z_mean
+
+
+def test_fisher_z_mean_simple():
+    """Fisher-z mean of [0.5, 0.5] is 0.5; of [0.0] is 0.0."""
+    assert abs(fisher_z_mean(np.array([0.5, 0.5])) - 0.5) < 1e-9
+    assert abs(fisher_z_mean(np.array([0.0])) - 0.0) < 1e-9
+
+
+def test_fisher_z_mean_skips_extremes():
+    """fisher_z_mean must clip values at +/-1 to avoid arctanh(±1) = inf."""
+    out = fisher_z_mean(np.array([0.999999, 0.5, -1.0, 1.0]))
+    assert np.isfinite(out)
+
+
+# ---------------------------------------------------------------------------
+# rho_from_residual_panel tests
+# ---------------------------------------------------------------------------
+
+from _common import rho_from_residual_panel
+
+
+def test_rho_from_residual_panel_recovers_known_correlation():
+    """Synthetic residual panel with a known same-diagonal correlation should recover it."""
+    rng = np.random.default_rng(123)
+    n_companies = 200
+    n_origin, n_dev = 10, 10
+    rho_true = 0.3
+
+    # Build a residual panel of shape (n_companies, n_origin, n_dev) where for each
+    # company, residuals on the same diagonal share a common AR-style shock plus noise.
+    panels = []
+    for c in range(n_companies):
+        diag_shocks = rng.standard_normal(n_origin + n_dev - 1)
+        noise = rng.standard_normal((n_origin, n_dev))
+        # Per-cell residual: sqrt(rho_true) * diag_shock + sqrt(1 - rho_true) * noise.
+        panel = np.full((n_origin, n_dev), np.nan)
+        for i in range(n_origin):
+            for j in range(n_dev - i):  # upper triangle only
+                cy = i + j
+                panel[i, j] = (
+                    np.sqrt(rho_true) * diag_shocks[cy]
+                    + np.sqrt(1 - rho_true) * noise[i, j]
+                )
+        panels.append(panel)
+
+    panel_arr = np.stack(panels, axis=0)  # (n_companies, n_origin, n_dev)
+    out = rho_from_residual_panel(panel_arr)
+    # `out` is a dict with `r_by_d`, `rho`, `n_pairs_by_d`.
+    assert abs(out["rho"] - rho_true) < 0.05
+    # r_1 should be approximately 0 under this DGP (only same-diagonal correlation).
+    assert abs(out["r_by_d"].get(1, 0.0)) < 0.1

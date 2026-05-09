@@ -315,3 +315,100 @@ def pearson_residuals(tri: cl.Triangle) -> pd.DataFrame:
         return df
     df["residual"] = raw_pearson / np.sqrt(phi) * adj
     return df
+
+
+# ---------------------------------------------------------------------------
+# Cache I/O
+# ---------------------------------------------------------------------------
+
+
+def cache_path(name: str) -> Path:
+    """Return the absolute path of a parquet cache file by short name."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return CACHE_DIR / name
+
+
+# ---------------------------------------------------------------------------
+# Statistical helpers
+# ---------------------------------------------------------------------------
+
+
+def fisher_z_mean(rs: np.ndarray) -> float:
+    """Average a vector of Pearson correlations via Fisher z-transform.
+
+    Clips values to (-1+eps, 1-eps) to keep arctanh finite.
+    """
+    rs = np.asarray(rs, dtype=float)
+    rs = rs[np.isfinite(rs)]
+    if rs.size == 0:
+        return float("nan")
+    eps = 1e-9
+    rs = np.clip(rs, -1.0 + eps, 1.0 - eps)
+    z = np.arctanh(rs)
+    return float(np.tanh(np.mean(z)))
+
+
+# ---------------------------------------------------------------------------
+# Cross-company calendar-diagonal correlation
+# ---------------------------------------------------------------------------
+
+
+def rho_from_residual_panel(
+    panel: np.ndarray,
+    min_pairs: int = 20,
+    max_diag_distance: int = 4,
+) -> dict:
+    """Compute calendar-diagonal residual correlation by pooling across companies.
+
+    Parameters
+    ----------
+    panel : ndarray, shape (n_companies, n_origin, n_dev)
+        Standardised Pearson residuals; NaN for unobserved cells.
+    min_pairs : int
+        Minimum number of jointly-observed companies required for a cell-pair
+        correlation to be included in the Fisher-z aggregation.
+    max_diag_distance : int
+        Largest cy_diff to report (we report 0 .. max_diag_distance).
+
+    Returns
+    -------
+    dict with keys:
+        rho           : float — recommended same-diagonal correlation (r at d=0)
+        r_by_d        : dict[int, float] — Fisher-z mean correlation by cy_diff
+        n_pairs_by_d  : dict[int, int]   — number of cell-pairs aggregated per d
+    """
+    n_companies, n_origin, n_dev = panel.shape
+    # Flatten the (origin, dev) cells into a single index 0..n_cells-1.
+    cell_index = [(i, j) for i in range(n_origin) for j in range(n_dev)]
+    n_cells = len(cell_index)
+    flat = panel.reshape(n_companies, n_cells)  # (n_companies, n_cells)
+
+    # Pre-compute calendar diagonal for each cell.
+    cy = np.array([i + j for (i, j) in cell_index])
+
+    pair_corrs_by_d: dict[int, list[float]] = {d: [] for d in range(max_diag_distance + 1)}
+
+    for a in range(n_cells):
+        col_a = flat[:, a]
+        for b in range(a + 1, n_cells):
+            d = abs(int(cy[a] - cy[b]))
+            if d > max_diag_distance:
+                continue
+            col_b = flat[:, b]
+            mask = ~np.isnan(col_a) & ~np.isnan(col_b)
+            n_pairs = int(mask.sum())
+            if n_pairs < min_pairs:
+                continue
+            xa = col_a[mask]
+            xb = col_b[mask]
+            sd_a = xa.std(ddof=1)
+            sd_b = xb.std(ddof=1)
+            if sd_a == 0 or sd_b == 0:
+                continue
+            r = float(np.corrcoef(xa, xb)[0, 1])
+            pair_corrs_by_d[d].append(r)
+
+    r_by_d = {d: fisher_z_mean(np.array(v)) for d, v in pair_corrs_by_d.items() if v}
+    n_pairs_by_d = {d: len(v) for d, v in pair_corrs_by_d.items()}
+    rho = r_by_d.get(0, float("nan"))
+    return {"rho": rho, "r_by_d": r_by_d, "n_pairs_by_d": n_pairs_by_d}
