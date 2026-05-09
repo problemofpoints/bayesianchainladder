@@ -173,3 +173,82 @@ class MackChainLadder(BaseStochasticReserve):
             index=["Total"],
         )
         return pd.concat([result, total_row])
+
+
+class BootstrapODPChainLadder(BaseStochasticReserve):
+    """ODP bootstrap chain ladder wrapped with the shared interface.
+
+    Wraps ``chainladder.BootstrapODPSample`` (resampling) followed by
+    ``chainladder.Chainladder`` (deterministic chain ladder applied to each
+    resample). The resulting per-simulation IBNR distribution is stored in
+    ``reserves_posterior_``.
+
+    Parameters
+    ----------
+    n_sims : int, default 1000
+        Number of bootstrap simulations.
+    n_periods : int, default -1
+        Forwarded to ``chainladder.BootstrapODPSample``. ``-1`` uses all origins.
+    hat_adj : bool, default True
+        Hat-matrix adjustment per Shapland.
+    random_seed : int, optional
+        Seed for the bootstrap resampler.
+    """
+
+    def __init__(
+        self,
+        n_sims: int = 1000,
+        n_periods: int = -1,
+        hat_adj: bool = True,
+        random_seed: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.n_sims = n_sims
+        self.n_periods = n_periods
+        self.hat_adj = hat_adj
+        self.random_seed = random_seed
+
+    def fit(self, triangle):
+        validate_triangle(triangle)
+        self.triangle_ = triangle.copy()
+
+        # chainladder's BootstrapODPSample chokes when key_labels length
+        # doesn't match the resampled kdims shape (e.g., the triangle
+        # originated from a multi-index). Force a single-key layout.
+        prepared = triangle.copy()
+        prepared.key_labels = ["triangle_id"]
+        prepared.kdims = np.asarray([["resample"]], dtype=object)
+
+        sampler = cl.BootstrapODPSample(
+            n_sims=self.n_sims,
+            n_periods=self.n_periods,
+            hat_adj=self.hat_adj,
+            random_state=self.random_seed,
+        ).fit(prepared)
+        resampled = sampler.transform(prepared)
+        model = cl.Chainladder().fit(resampled)
+
+        # ibnr_.values has shape (n_sims, 1, n_origin, n_dev). chainladder's
+        # ibnr_ is already aggregated to per-origin IBNR (the n_dev axis is
+        # effectively 1), so the dev-axis sum is a no-op for safety. We then
+        # squeeze ONLY the singleton key axis (axis=1) to avoid collapsing
+        # n_origin=1 or n_sims=1 cases.
+        ibnr_vals = np.asarray(model.ibnr_.values)
+        per_sim_per_origin = np.nansum(ibnr_vals, axis=-1)  # (n_sims, 1, n_origin)
+        per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
+        per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
+
+        origins = [_extract_period_value(o) for o in triangle.origin]
+
+        self.reserves_posterior_ = xr.DataArray(
+            per_origin_per_sim,
+            dims=["origin", "sample"],
+            coords={
+                "origin": origins,
+                "sample": np.arange(per_origin_per_sim.shape[1]),
+            },
+        )
+
+        self._build_reserve_summaries()
+        self._is_fitted = True
+        return self
