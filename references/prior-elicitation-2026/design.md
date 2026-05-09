@@ -46,7 +46,8 @@ For each line in {OLO, OLC, CAL, WC, PPAL, CMP}:
 3. **Stratify** the surviving triangles by **booked reserve magnitude** into terciles (small / mid / large).
 4. **Sample** 8 triangles per tercile uniformly at random → **24 triangles per line, 144 total**. Random seed fixed (`np.random.default_rng(20260508)`).
 
-Sample membership is written to `cache/sample.parquet` and reused across all downstream scripts.
+Sample membership is recomputed deterministically each script run via
+`select_sample(line)` (md5-based seed); no separate parquet is needed.
 
 ## 01 — Descriptive layer (no MCMC)
 
@@ -125,6 +126,13 @@ Fit `BayesianCSR` (default priors) on the same 24-triangle sample per line. Extr
 - `gamma` (settlement-rate drift) → recommend `Normal(posterior_mean, posterior_sd)` — explicitly note this is the most line-sensitive parameter
 - `a_ig` (variance path) → recommend HalfNormal scale matching posterior median
 
+**Note (added during execution, 2026-05-09):** `alpha_sig` and `beta_sig` are
+prior hyperparameters in the package's `BayesianCSR`, not posterior variables —
+they don't appear in the fitted `idata`. The actual posterior contains
+`r_alpha` (raw origin effects), `r_beta` (raw dev effects), and `sig`
+(observation noise). The synthesis script summarises those instead and
+recommends `csr_sig_prior` based on the median `sig` posterior across the line.
+
 Cache one row per (line, snl_id) with posterior mean/sd/q10/q90 for each parameter. The synthesis script aggregates these to per-line recommended priors.
 
 ## 04 — Empirical rho for CorrelatedBootstrapODP
@@ -150,7 +158,7 @@ For each line:
 Implementation notes:
 - Drop companies with too-sparse residuals (e.g., < 30 valid cells) before stacking.
 - Cell-pairs with fewer than ~20 jointly-observed companies are excluded from the Fisher-z aggregation.
-- The descriptive layer (01) reuses this same machinery to produce a preview correlation-by-cy_diff plot per line.
+- The rho preview (correlation-by-cy_diff plot per line) is produced by `04_rho_estimation.py`, not in the descriptive layer (01).
 
 ## 05 — Synthesis
 

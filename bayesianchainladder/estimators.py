@@ -420,6 +420,16 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             combined = pd.concat([new_data, new_future], ignore_index=True)
             combined = add_categorical_columns(combined)
 
+            # Mirror the _compute_predictions fix: when an exposure offset is
+            # configured, Bambi expects a `logoffset` column in whatever DataFrame
+            # we pass to predict().  Build it here on a copy so we never mutate
+            # the caller's data.
+            if self.exposure and self.exposure in combined.columns:
+                combined = combined.copy()
+                combined["logoffset"] = np.log(
+                    np.asarray(combined[self.exposure].values, dtype=np.float64)
+                )
+
             self.model_.predict(self.idata, data=combined, kind=kind, inplace=True)
 
             pred_mean = self.idata.posterior[mean_name].mean(dim=["chain", "draw"])

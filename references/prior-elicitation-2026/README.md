@@ -32,6 +32,18 @@ Mean LOO per spec (higher = better, NaN = no converged fits):
 | CMP    | -1251.62 |        -1329.13 |
 
 
+Converged-fit counts per spec (out of 24 sampled triangles per line):
+
+| line   |   M1_cat |   M3_restorigin |
+|:-------|---------:|----------------:|
+| OLO    |       21 |              12 |
+| OLC    |       18 |              15 |
+| CAL    |       23 |              14 |
+| WC     |       22 |              14 |
+| PPAL   |       23 |              11 |
+| CMP    |       24 |               6 |
+
+
 ### M4 hierarchical (Bambi `(1 | snl_id)`) convergence diagnostics
 
 All 6 line-level M4 fits had `max_rhat` ≈ 3.0 with high divergence counts (~1900/2000 samples diverged), regardless of MCMC budget. They are excluded from the LOO comparison above by the `rhat < 1.1` filter. This is itself a finding: **hierarchical pooling via Bambi `(1 | snl_id)` with the gamma+log GLM does not mix under default light-MCMC settings for these triangles**. Reparameterisation (non-centered `(1 | snl_id) + (0 | snl_id)`), stronger priors on the company-level SD, or a much longer tune budget (5000+) would be needed to fit M4 cleanly.

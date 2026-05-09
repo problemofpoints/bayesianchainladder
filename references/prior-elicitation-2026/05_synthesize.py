@@ -189,6 +189,17 @@ def _build_readme(
             "Mean LOO per spec (higher = better, NaN = no converged fits):\n"
         )
         lines_out.append(pivot.to_markdown() + "\n")
+
+        n_pivot = (
+            combined.pivot(index="line", columns="spec", values="n")
+            .reindex(LINES)
+            .fillna(0)
+            .astype(int)
+        )
+        lines_out.append(
+            "\nConverged-fit counts per spec (out of 24 sampled triangles per line):\n"
+        )
+        lines_out.append(n_pivot.to_markdown() + "\n")
     else:
         lines_out.append("_GLM fits not yet available (sweeps still running)._\n")
 

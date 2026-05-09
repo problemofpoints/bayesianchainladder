@@ -1,5 +1,5 @@
 """03_csr_priors.py — Fit BayesianCSR on the 24-triangle sample per line and
-extract posteriors for `logelr`, `alpha_sig`, `beta_sig`, `gamma`, `a_ig`.
+extract posteriors for `logelr`, `r_alpha`, `r_beta`, `gamma`, `a_ig`, `sig`.
 
 Cache: cache/csr_fits.parquet — one row per (line, snl_id).
 
