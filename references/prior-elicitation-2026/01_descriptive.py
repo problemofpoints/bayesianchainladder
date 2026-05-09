@@ -8,7 +8,7 @@ For each line, computes (and caches):
   - Between-company variance of log loss-ratio (informs M4 hyper-prior)
 
 Produces:
-  - cache/descriptive_<line>.parquet  (per-line summary frame)
+  - cache/descriptive_summary.parquet  (per-line rows; one row per line)
   - figures/01_descriptive_<line>.png (3-panel diagnostic figure)
 
 Run: uv run python references/prior-elicitation-2026/01_descriptive.py
@@ -69,7 +69,8 @@ def _phi_for_triangle(tri) -> float | None:
     # so re-derive phi from raw Pearson via (actual − fitted) / sqrt(fitted).
     raw = (res["actual"] - res["fitted"]) / np.sqrt(res["fitted"])
     n = len(res)
-    p = 10 + 9  # n_origin + (n_dev - 1) for our 10x10 triangle
+    paid_shape = tri["paid_loss"].values[0, 0].shape
+    p = paid_shape[0] + (paid_shape[1] - 1)
     if n - p <= 0:
         return None
     return float(np.sum(raw**2) / (n - p))
@@ -142,7 +143,8 @@ def main() -> int:
                 atau_pool.setdefault(d, []).extend(fs)
             lrs = _ultimate_to_premium(sub)
             lr_pool.extend(lrs.values())
-            log_ulr_pool.append(np.log(np.mean(list(lrs.values())))) if lrs else None
+            if lrs:
+                log_ulr_pool.append(np.log(np.mean(list(lrs.values()))))
             phi_pool.append(_phi_for_triangle(sub))
             vm_pool.append(_var_mean_slope(sub))
 
