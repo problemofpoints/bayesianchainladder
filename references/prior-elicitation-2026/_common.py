@@ -5,6 +5,7 @@ test_common.py suite. Keep it small and side-effect-free at import time.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Iterator
 
@@ -129,12 +130,18 @@ def booked_reserve(tri: cl.Triangle) -> float:
     booked_reserve = booked_ultimate_loss − cumulative paid_loss, summed across
     accident years.
     """
-    if "booked_reserve" in list(tri.vdims):
+    vdims = list(tri.vdims)
+    if "booked_reserve" in vdims:
         latest = tri["booked_reserve"].latest_diagonal.values
         return float(np.nansum(latest))
-    ult = tri["booked_ultimate_loss"].latest_diagonal.values
-    paid = tri["paid_loss"].latest_diagonal.values
-    return float(np.nansum(ult - paid))
+    if "booked_ultimate_loss" in vdims and "paid_loss" in vdims:
+        ult = tri["booked_ultimate_loss"].latest_diagonal.values
+        paid = tri["paid_loss"].latest_diagonal.values
+        return float(np.nansum(ult - paid))
+    raise ValueError(
+        f"Triangle missing both 'booked_reserve' and 'booked_ultimate_loss' "
+        f"vdims; available: {vdims}"
+    )
 
 
 def select_sample(full_tri: cl.Triangle, line: str) -> list[str]:
@@ -153,10 +160,13 @@ def select_sample(full_tri: cl.Triangle, line: str) -> list[str]:
             "br": [booked_reserve(t) for _, t in eligible],
         }
     )
-    df["tercile"] = pd.qcut(df["br"], 3, labels=["small", "mid", "large"])
+    df["tercile"] = pd.qcut(
+        df["br"].rank(method="first"), 3, labels=["small", "mid", "large"]
+    )
 
-    # Seed combines the global seed with a line hash so each line gets its own draw.
-    seed = SAMPLE_SEED + abs(hash(line)) % 10_000
+    # Seed combines the global seed with a stable line hash so each line gets its own draw.
+    line_hash = int(hashlib.md5(line.encode()).hexdigest(), 16) % 10_000
+    seed = SAMPLE_SEED + line_hash
     rng = np.random.default_rng(seed)
     per_tercile = SAMPLE_PER_LINE // 3
     picked: list[str] = []

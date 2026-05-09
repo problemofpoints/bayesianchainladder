@@ -1,5 +1,9 @@
 """Unit tests for _common.py."""
+import json
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -144,3 +148,30 @@ def test_select_sample_is_deterministic(full_triangle):
     assert s1 == s2
     # 24 sampled, plus checks that they're all real eligible IDs.
     assert len(s1) == SAMPLE_PER_LINE
+
+
+@_SKIPIF
+def test_select_sample_is_deterministic_across_processes(tmp_path):
+    """select_sample(line) must return the same ids across separate Python processes.
+
+    The bug we are guarding against: Python's built-in hash() is randomized via
+    PYTHONHASHSEED, so deriving an RNG seed from `hash(line)` produces different
+    samples across processes. This test launches two fresh subprocesses and
+    compares the sorted id lists.
+    """
+    code = (
+        "import sys; sys.path.insert(0, '"
+        + str(Path(__file__).resolve().parent)
+        + "')\n"
+        "from _common import load_full_triangle, select_sample\n"
+        "import json\n"
+        "tri = load_full_triangle()\n"
+        "print(json.dumps(select_sample(tri, 'OLO')))\n"
+    )
+    out1 = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    out2 = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    assert json.loads(out1.stdout) == json.loads(out2.stdout)
