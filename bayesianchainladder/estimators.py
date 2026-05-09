@@ -7,6 +7,7 @@ for Bayesian stochastic loss reserving.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Literal
 
 import arviz as az
@@ -214,36 +215,7 @@ class BayesianChainLadderGLM:
         # Validate data compatibility with chosen family
         self._validate_data_family_compatibility()
 
-        # Set up default priors based on data scale and family/link
-        priors = self.priors
-        if priors is None:
-            import bambi as bmb
-
-            # Compute data-adaptive intercept prior
-            response_values = self.data_["incremental"].values
-            response_mean = response_values.mean()
-            response_std = response_values.std()
-
-            # For log link (negativebinomial, poisson, gamma), use log scale
-            # For identity link (gaussian), use original scale
-            if self.family.lower() in ("gaussian", "normal"):
-                # Identity link - intercept is on original scale
-                intercept_mu = response_mean
-                intercept_sigma = max(response_std, abs(response_mean) * 0.5)
-            else:
-                # Log link - intercept is on log scale
-                # Use positive values only for computing mean on log scale
-                positive_values = response_values[response_values > 0]
-                if len(positive_values) > 0:
-                    positive_mean = positive_values.mean()
-                    intercept_mu = np.log(positive_mean)
-                else:
-                    intercept_mu = 0.0
-                intercept_sigma = 2.0
-
-            priors = {
-                "Intercept": bmb.Prior("Normal", mu=intercept_mu, sigma=intercept_sigma),
-            }
+        priors = self._build_default_priors()
 
         # Build the model
         offset = self.exposure if self.exposure else None
@@ -748,31 +720,7 @@ class BayesianChainLadderGLM:
         # Validate data compatibility with chosen family
         self._validate_data_family_compatibility()
 
-        # Set up default priors based on data scale and family/link
-        priors = self.priors
-        if priors is None:
-            import bambi as bmb
-
-            # Compute data-adaptive intercept prior
-            response_values = self.data_["incremental"].values
-            response_mean = response_values.mean()
-            response_std = response_values.std()
-
-            if self.family.lower() in ("gaussian", "normal"):
-                intercept_mu = response_mean
-                intercept_sigma = max(response_std, abs(response_mean) * 0.5)
-            else:
-                positive_values = response_values[response_values > 0]
-                if len(positive_values) > 0:
-                    positive_mean = positive_values.mean()
-                    intercept_mu = np.log(positive_mean)
-                else:
-                    intercept_mu = 0.0
-                intercept_sigma = 2.0
-
-            priors = {
-                "Intercept": bmb.Prior("Normal", mu=intercept_mu, sigma=intercept_sigma),
-            }
+        priors = self._build_default_priors()
 
         # Build the model
         offset = self.exposure if self.exposure else None
@@ -959,6 +907,60 @@ class BayesianChainLadderGLM:
             raise ValueError(
                 "Model has not been fitted. Call fit() before using this method."
             )
+
+    def _build_default_priors(self) -> dict[str, Any]:
+        """Build data-adaptive default priors, with user priors layered on top.
+
+        Bambi's auto-priors scale sigma with sd(y), which is appropriate for
+        identity-link models but produces sigmas of 6-19+ for one-hot
+        categorical effects under a log link. Those wide priors generate
+        prior predictive draws of exp(linear_predictor) that overflow the
+        valid parameter range of NegativeBinomial / Poisson, so prior
+        predictive sampling crashes with "n too large or p too small".
+
+        For log-link families we therefore set:
+          - Intercept: Normal(log(mean) - sigma^2/2, sigma=1.0). The
+            -sigma^2/2 lognormal correction keeps E[exp(Intercept)] equal
+            to the data mean rather than inflating it by exp(sigma^2/2).
+          - Each C(...) categorical term: Normal(0, sigma=1.0), giving a
+            95% prior on group multipliers of roughly [0.14, 7.4].
+
+        User-supplied priors via ``self.priors`` always override the defaults.
+        """
+        response_values = self.data_["incremental"].values
+        is_log_link = self.family.lower() not in ("gaussian", "normal")
+
+        if is_log_link:
+            intercept_sigma = 1.0
+            positive_values = response_values[response_values > 0]
+            if len(positive_values) > 0:
+                # Lognormal correction: target E[exp(Intercept)] = positive_mean
+                intercept_mu = float(
+                    np.log(positive_values.mean()) - intercept_sigma**2 / 2
+                )
+            else:
+                intercept_mu = 0.0
+        else:
+            response_mean = float(response_values.mean())
+            response_std = float(response_values.std())
+            intercept_mu = response_mean
+            intercept_sigma = max(response_std, abs(response_mean) * 0.5)
+
+        defaults: dict[str, Any] = {
+            "Intercept": bmb.Prior("Normal", mu=intercept_mu, sigma=intercept_sigma),
+        }
+
+        if is_log_link:
+            for term in re.findall(
+                r"C\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\)", self.formula
+            ):
+                key = re.sub(r"\s+", "", term)
+                defaults[key] = bmb.Prior("Normal", mu=0.0, sigma=1.0)
+
+        if self.priors:
+            defaults.update(self.priors)
+
+        return defaults
 
     def _validate_data_family_compatibility(self) -> None:
         """Validate that data is compatible with the chosen distribution family."""
