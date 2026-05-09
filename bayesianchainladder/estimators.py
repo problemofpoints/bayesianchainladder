@@ -817,7 +817,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         )
 
 
-class BayesianCSR:
+class BayesianCSR(BaseStochasticReserve):
     """
     Bayesian Changing Settlement Rate (CSR) model for stochastic loss reserving.
 
@@ -929,6 +929,7 @@ class BayesianCSR:
         random_seed: int | None = None,
         include_process_variance: bool = True,
     ):
+        super().__init__()
         self.priors = priors
         self.draws = draws
         self.tune = tune
@@ -937,18 +938,13 @@ class BayesianCSR:
         self.random_seed = random_seed
         self.include_process_variance = include_process_variance
 
-        # Fitted attributes (set by fit())
+        # CSR-specific fitted attributes (not in base)
         self.model_: pm.Model | None = None
         self.idata: az.InferenceData | None = None
         self.data_: pd.DataFrame | None = None
         self.future_data_: pd.DataFrame | None = None
-        self.triangle_: cl.Triangle | None = None
-        self.ultimate_: pd.DataFrame | None = None
-        self.ibnr_: pd.DataFrame | None = None
-        self.reserves_posterior_: xr.DataArray | None = None
         self.elr_posterior_: xr.DataArray | None = None
         self.gamma_posterior_: xr.DataArray | None = None
-        self._is_fitted: bool = False
 
     def fit(
         self,
@@ -1146,173 +1142,25 @@ class BayesianCSR:
     def _compute_reserve_summaries(
         self, future_predictions: dict[Any, dict[str, np.ndarray]]
     ) -> None:
-        """Compute summary statistics for reserves."""
+        """Build reserves_posterior_ from per-origin samples and delegate
+        to the base class for ibnr_/ultimate_ assembly."""
         origins = sorted(future_predictions.keys())
-
-        summary_data = []
-        ibnr_samples_list = []
-
-        for origin in origins:
-            pred = future_predictions[origin]
-            paid = pred["paid_to_date"]
-            ultimate_samples = pred["ultimate_samples"].flatten()
-            ibnr_samples = pred["ibnr_samples"].flatten()
-
-            ibnr_samples_list.append(ibnr_samples)
-
-            ibnr_mean = float(np.mean(ibnr_samples))
-            ibnr_std = float(np.std(ibnr_samples))
-            ibnr_median = float(np.median(ibnr_samples))
-            ibnr_q05 = float(np.percentile(ibnr_samples, 5))
-            ibnr_q25 = float(np.percentile(ibnr_samples, 25))
-            ibnr_q75 = float(np.percentile(ibnr_samples, 75))
-            ibnr_q95 = float(np.percentile(ibnr_samples, 95))
-
-            ultimate_mean = float(np.mean(ultimate_samples))
-            ultimate_std = float(np.std(ultimate_samples))
-            ultimate_median = float(np.median(ultimate_samples))
-            ultimate_q05 = float(np.percentile(ultimate_samples, 5))
-            ultimate_q25 = float(np.percentile(ultimate_samples, 25))
-            ultimate_q75 = float(np.percentile(ultimate_samples, 75))
-            ultimate_q95 = float(np.percentile(ultimate_samples, 95))
-
-            summary_data.append(
-                {
-                    "origin": origin,
-                    "paid_to_date": paid,
-                    "ibnr_mean": ibnr_mean,
-                    "ibnr_std": ibnr_std,
-                    "ibnr_median": ibnr_median,
-                    "ibnr_5%": ibnr_q05,
-                    "ibnr_25%": ibnr_q25,
-                    "ibnr_75%": ibnr_q75,
-                    "ibnr_95%": ibnr_q95,
-                    "ultimate_mean": ultimate_mean,
-                    "ultimate_std": ultimate_std,
-                    "ultimate_median": ultimate_median,
-                    "ultimate_5%": ultimate_q05,
-                    "ultimate_25%": ultimate_q25,
-                    "ultimate_75%": ultimate_q75,
-                    "ultimate_95%": ultimate_q95,
-                }
-            )
-
-        summary_df = pd.DataFrame(summary_data)
-        summary_df = summary_df.set_index("origin")
-
-        # Split into ibnr_ and ultimate_
-        self.ibnr_ = summary_df[
-            [
-                "ibnr_mean",
-                "ibnr_std",
-                "ibnr_median",
-                "ibnr_5%",
-                "ibnr_25%",
-                "ibnr_75%",
-                "ibnr_95%",
-            ]
-        ].copy()
-        self.ibnr_.columns = ["mean", "std", "median", "5%", "25%", "75%", "95%"]
-
-        self.ultimate_ = summary_df[
-            [
-                "paid_to_date",
-                "ultimate_mean",
-                "ultimate_std",
-                "ultimate_median",
-                "ultimate_5%",
-                "ultimate_25%",
-                "ultimate_75%",
-                "ultimate_95%",
-            ]
-        ].copy()
-        self.ultimate_.columns = [
-            "paid_to_date",
-            "mean",
-            "std",
-            "median",
-            "5%",
-            "25%",
-            "75%",
-            "95%",
+        ibnr_samples_list = [
+            future_predictions[origin]["ibnr_samples"].flatten() for origin in origins
         ]
+        ibnr_array = np.stack(ibnr_samples_list, axis=0)  # (n_origin, n_samples)
 
-        # Create reserves posterior DataArray
-        ibnr_array = np.stack(ibnr_samples_list, axis=0)
-        n_origins, n_samples = ibnr_array.shape
-
-        # Reshape to (n_origins, n_chains * n_draws) for consistency
         self.reserves_posterior_ = xr.DataArray(
             ibnr_array,
             dims=["origin", "sample"],
             coords={
                 "origin": origins,
-                "sample": np.arange(n_samples),
+                "sample": np.arange(ibnr_array.shape[1]),
             },
         )
 
-    def summary(
-        self,
-        include_totals: bool = True,
-    ) -> pd.DataFrame:
-        """
-        Return summary table of reserves and ultimates.
-
-        Parameters
-        ----------
-        include_totals : bool, optional
-            Whether to include total row. Default is True.
-
-        Returns
-        -------
-        pd.DataFrame
-            Summary table with reserve statistics by origin.
-        """
-        self._check_is_fitted()
-
-        if self.ultimate_ is None:
-            raise ValueError("No reserve summary available. Model may not have future cells.")
-
-        result = pd.concat(
-            [
-                self.ultimate_[["paid_to_date", "mean", "std", "median"]],
-                self.ibnr_[["mean", "std", "median"]],
-            ],
-            axis=1,
-            keys=["Ultimate", "IBNR"],
-        )
-
-        if include_totals:
-            # Compute total reserves
-            total_paid = self.ultimate_["paid_to_date"].sum()
-
-            # Get total reserve distribution
-            total_reserves = self.reserves_posterior_.sum(dim="origin")
-
-            total_ibnr_mean = float(total_reserves.mean())
-            total_ibnr_std = float(total_reserves.std())
-            total_ibnr_median = float(np.median(total_reserves.values))
-
-            total_ult_mean = total_paid + total_ibnr_mean
-            total_ult_std = total_ibnr_std
-            total_ult_median = total_paid + total_ibnr_median
-
-            total_row = pd.DataFrame(
-                {
-                    ("Ultimate", "paid_to_date"): [total_paid],
-                    ("Ultimate", "mean"): [total_ult_mean],
-                    ("Ultimate", "std"): [total_ult_std],
-                    ("Ultimate", "median"): [total_ult_median],
-                    ("IBNR", "mean"): [total_ibnr_mean],
-                    ("IBNR", "std"): [total_ibnr_std],
-                    ("IBNR", "median"): [total_ibnr_median],
-                },
-                index=["Total"],
-            )
-
-            result = pd.concat([result, total_row])
-
-        return result
+        # Base class builds ibnr_ / ultimate_ tables
+        self._build_reserve_summaries()
 
     def get_parameter_summary(
         self,
@@ -1393,52 +1241,6 @@ class BayesianCSR:
             },
             index=["gamma"],
         )
-
-    def sample_reserves(
-        self,
-        n_samples: int = 1000,
-        random_seed: int | None = None,
-    ) -> np.ndarray:
-        """
-        Draw samples from the reserve distribution.
-
-        Parameters
-        ----------
-        n_samples : int, optional
-            Number of samples to draw. Default is 1000.
-        random_seed : int, optional
-            Random seed for reproducibility.
-
-        Returns
-        -------
-        np.ndarray
-            Array of total reserve samples (shape: n_samples).
-        """
-        self._check_is_fitted()
-
-        if self.reserves_posterior_ is None:
-            raise ValueError("No reserve posterior available")
-
-        # Get total reserves
-        total_reserves = self.reserves_posterior_.sum(dim="origin").values
-
-        if random_seed is not None:
-            np.random.seed(random_seed)
-
-        # Sample with replacement if needed
-        if n_samples <= len(total_reserves):
-            indices = np.random.choice(len(total_reserves), size=n_samples, replace=False)
-        else:
-            indices = np.random.choice(len(total_reserves), size=n_samples, replace=True)
-
-        return total_reserves[indices]
-
-    def _check_is_fitted(self) -> None:
-        """Check if the model has been fitted."""
-        if not self._is_fitted:
-            raise ValueError(
-                "Model has not been fitted. Call fit() before using this method."
-            )
 
     def __repr__(self) -> str:
         fitted_str = "fitted" if self._is_fitted else "not fitted"
