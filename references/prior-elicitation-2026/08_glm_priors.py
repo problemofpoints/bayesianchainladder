@@ -52,6 +52,7 @@ def _fit_and_extract(triangle, seed: int) -> dict:
     model = BayesianChainLadderGLM(
         formula=FORMULA,
         family="gamma",
+        link="log",
         exposure="net_earned_premium",
         draws=1000,
         tune=1000,

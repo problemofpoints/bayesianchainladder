@@ -12,6 +12,8 @@ glm_per_triangle_fits.parquet:
   M2_devidx_bs3:   incremental ~ 1 + C(origin) + bs(dev_idx, df=3)
   M2_devidx_poly3: incremental ~ 1 + C(origin) + I(dev_idx) + I(dev_idx**2) + I(dev_idx**3)
 
+All fits use family="gamma", link="log" (explicit log link; Bambi default for gamma is inverse).
+
 Output: cache/m2_diagnostic.parquet
 Run: uv run python references/prior-elicitation-2026/06_diagnose_m2.py
 """
@@ -62,6 +64,7 @@ def _fit_one(triangle, formula: str, seed: int) -> dict:
     model = BayesianChainLadderGLM(
         formula=formula,
         family="gamma",
+        link="log",
         exposure="net_earned_premium",
         draws=1000,
         tune=1000,

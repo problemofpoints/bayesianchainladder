@@ -107,15 +107,35 @@ def build_bambi_model(
     return model
 
 
-def _get_family(family: str, link: str | None = None) -> str:
-    """Get Bambi family specification.
+def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
+    """Return a Bambi family spec — either a name string (default link) or a custom Family object.
 
-    Note: In Bambi 0.13+, we just return the family name as a string.
-    Bambi will use its default link function for each family.
-    Custom links require creating a full Family object with Likelihood,
-    which is complex and rarely needed for standard actuarial models.
+    When ``link`` matches the family default (or is None), a plain string is returned so that
+    Bambi uses its built-in prior / link configuration unchanged.  When a non-default link is
+    requested, a fully-constructed ``bmb.Family`` object is returned so that Bambi honours the
+    requested link instead of silently falling back to its default.
+
+    The most important non-default case for actuarial work is ``family="gamma", link="log"``.
+    Bambi's default gamma link is ``inverse``; explicitly requesting ``log`` gives the
+    log-linear chain-ladder model that the docstring describes.
+
+    Parameters
+    ----------
+    family : str
+        Family name.  Aliases accepted: ``"negative_binomial"`` / ``"negbinom"`` for
+        ``"negativebinomial"``; ``"normal"`` for ``"gaussian"``.
+    link : str or None
+        Link function name (``"log"``, ``"identity"``, ``"inverse"``, …).  ``None`` means use
+        the family default.
+
+    Returns
+    -------
+    str or bmb.Family
+        Plain string when the default link is adequate; ``bmb.Family`` instance otherwise.
     """
-    # Map family names to Bambi family names
+    from bambi.defaults.utils import generate_family as _bmb_gen_family
+
+    # Map aliases to canonical Bambi family names.
     family_map = {
         "negativebinomial": "negativebinomial",
         "negative_binomial": "negativebinomial",
@@ -132,23 +152,71 @@ def _get_family(family: str, link: str | None = None) -> str:
             f"Unknown family '{family}'. Supported families: {list(family_map.keys())}"
         )
 
-    bambi_family = family_map[family_lower]
+    bambi_name = family_map[family_lower]
 
-    # For now, just return the family name - Bambi uses sensible defaults
-    # gaussian uses identity link, others use log link
-    if link is not None and link != _get_default_link(bambi_family):
+    # Use the fast path (plain string) when the link is the family default.
+    if link is None or link == _get_default_link(bambi_name):
+        return bambi_name
+
+    # Non-default link: construct an explicit Family object so Bambi honours it.
+    # Each entry mirrors the BUILTIN_FAMILIES spec in bambi/defaults/families.py,
+    # but with the mu link replaced by the caller's choice.
+    # Non-parent auxiliary parameters (alpha, sigma, …) keep their canonical log links
+    # so Bambi's auto-generated priors remain valid.
+    _family_specs: dict[str, dict] = {
+        "gamma": {
+            "likelihood": {"name": "Gamma", "params": ["mu", "alpha"], "parent": "mu"},
+            "link": {"mu": link, "alpha": "log"},
+            "family_cls_name": "Gamma",
+            "default_priors": {"alpha": "HalfCauchy"},
+        },
+        "negativebinomial": {
+            "likelihood": {"name": "NegativeBinomial", "params": ["mu", "alpha"], "parent": "mu"},
+            "link": {"mu": link, "alpha": "log"},
+            "family_cls_name": "NegativeBinomial",
+            "default_priors": {"alpha": "HalfCauchy"},
+        },
+        "poisson": {
+            "likelihood": {"name": "Poisson", "params": ["mu"], "parent": "mu"},
+            "link": {"mu": link},
+            "family_cls_name": "Poisson",
+            "default_priors": {},
+        },
+        "gaussian": {
+            "likelihood": {"name": "Normal", "params": ["mu", "sigma"], "parent": "mu"},
+            "link": {"mu": link, "sigma": "log"},
+            "family_cls_name": "Gaussian",
+            "default_priors": {"sigma": "HalfNormal"},
+        },
+    }
+
+    if bambi_name not in _family_specs:
+        # Fallback for any future family additions — warn and return the string.
         import warnings
         warnings.warn(
-            f"Custom link '{link}' specified but Bambi will use its default link for '{bambi_family}'. "
-            "Custom links require advanced Family configuration.",
+            f"Custom link '{link}' for family '{bambi_name}' is not supported; "
+            "using the default link instead.",
             UserWarning,
         )
+        return bambi_name
 
-    return bambi_family
+    spec = _family_specs[bambi_name]
+
+    # Dynamically import the Bambi family class by name.
+    from bambi.families import univariate as _bmb_univariate
+    family_cls = getattr(_bmb_univariate, spec["family_cls_name"])
+
+    return _bmb_gen_family(
+        name=bambi_name,
+        likelihood=spec["likelihood"],
+        link=spec["link"],
+        family=family_cls,
+        default_priors=spec["default_priors"] if spec["default_priors"] else None,
+    )
 
 
 def _get_default_link(family: str) -> str:
-    """Get the default link function for a family."""
+    """Get the default mu-link function for a Bambi family."""
     default_links = {
         "negativebinomial": "log",
         "poisson": "log",

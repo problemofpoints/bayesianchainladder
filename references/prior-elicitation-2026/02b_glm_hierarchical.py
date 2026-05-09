@@ -5,9 +5,10 @@ For each line, builds a long-format dataframe stacking the 24 sampled triangles
 
     incremental ~ 1 + C(origin) + C(dev) + (1 | snl_id) + offset(logoffset)
 
-with gamma family (default log link). Computes WAIC/LOO. Also extracts the
-posterior summary for the company-level random-intercept SD so we can inform
-M4's hyper-prior.
+with gamma family and explicit log link (Bambi's default gamma link is inverse;
+using log gives the log-linear chain-ladder parameterisation). Computes WAIC/LOO.
+Also extracts the posterior summary for the company-level random-intercept SD so
+we can inform M4's hyper-prior.
 
 Output: cache/glm_hierarchical_fits.parquet  (one row per line)
 Run:    uv run python references/prior-elicitation-2026/02b_glm_hierarchical.py
@@ -90,7 +91,11 @@ def _fit_hierarchical(df: pd.DataFrame, seed: int) -> dict:
     formula = (
         "incremental ~ 1 + C(origin) + C(dev) + (1 | snl_id) + offset(logoffset)"
     )
-    model = bmb.Model(formula=formula, data=df, family="gamma")
+    # Explicitly request log link — Bambi's default gamma link is inverse, which
+    # produces a different (and less standard for chain-ladder) model geometry.
+    from bayesianchainladder.models import _get_family
+    gamma_log = _get_family("gamma", "log")
+    model = bmb.Model(formula=formula, data=df, family=gamma_log)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         idata = model.fit(

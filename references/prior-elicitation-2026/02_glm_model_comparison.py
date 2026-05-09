@@ -15,7 +15,8 @@ dev for chain-ladder GLMs of this form.
 For M1/M3 we fit one model per (line, snl_id) over the 24-triangle stratified
 sample. WAIC and LOO are extracted from the fitted idata.
 
-Family: gamma. Exposure: net_earned_premium. Light fits: 1000 draws / 1000 tune /
+Family: gamma, link: log (explicit; Bambi's default gamma link is inverse).
+Exposure: net_earned_premium. Light fits: 1000 draws / 1000 tune /
 2 chains / target_accept=0.95. Random seed deterministic per (line, snl_id, spec).
 
 Output:
@@ -70,6 +71,7 @@ def _fit_one(triangle, formula: str, seed: int) -> dict:
     model = BayesianChainLadderGLM(
         formula=formula,
         family="gamma",
+        link="log",
         exposure="net_earned_premium",
         draws=1000,
         tune=1000,
