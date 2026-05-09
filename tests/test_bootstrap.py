@@ -248,3 +248,81 @@ class TestCorrelatedBootstrapODPSample:
         resampled = sampler.transform(genins_triangle)
         # The resampled triangle's first dim should be n_sims
         assert resampled.values.shape[0] == 20
+
+
+class TestCorrelatedBootstrapChainLadder:
+    def test_inherits_from_base(self):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        model = CorrelatedBootstrapChainLadder()
+        assert isinstance(model, BaseStochasticReserve)
+
+    def test_fit_returns_self(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        model = CorrelatedBootstrapChainLadder(
+            n_sims=100, rho=0.3, random_seed=42
+        )
+        result = model.fit(genins_triangle)
+        assert result is model
+        assert model._is_fitted is True
+
+    def test_summary_has_total_row(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        model = CorrelatedBootstrapChainLadder(
+            n_sims=200, rho=0.3, random_seed=42
+        ).fit(genins_triangle)
+        summary = model.summary()
+        assert "Total" in summary.index
+
+    def test_rho_zero_matches_independent_bootstrap(self, genins_triangle):
+        """With rho=0, the correlated wrapper should produce the same total
+        std as the independent BootstrapODPChainLadder when seeded
+        identically."""
+        from bayesianchainladder.bootstrap import (
+            BootstrapODPChainLadder,
+            CorrelatedBootstrapChainLadder,
+        )
+
+        # Note: not exact match because the underlying samplers differ in
+        # implementation, but the totals should be in the same ballpark.
+        indep = BootstrapODPChainLadder(n_sims=500, random_seed=42).fit(
+            genins_triangle
+        )
+        corr = CorrelatedBootstrapChainLadder(
+            n_sims=500, rho=0.0, random_seed=42
+        ).fit(genins_triangle)
+
+        indep_std = indep.total_summary().total_reserve_stddev
+        corr_std = corr.total_summary().total_reserve_stddev
+        assert corr_std == pytest.approx(indep_std, rel=0.20)
+
+    def test_rho_positive_increases_total_std(self, genins_triangle):
+        """Higher rho should produce a wider total reserve distribution."""
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        low = CorrelatedBootstrapChainLadder(
+            n_sims=500, rho=0.0, random_seed=42
+        ).fit(genins_triangle)
+        high = CorrelatedBootstrapChainLadder(
+            n_sims=500, rho=0.5, random_seed=42
+        ).fit(genins_triangle)
+
+        assert (
+            high.total_summary().total_reserve_stddev
+            > low.total_summary().total_reserve_stddev
+        )
+
+    def test_lognormal_distribution_runs(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        model = CorrelatedBootstrapChainLadder(
+            n_sims=200,
+            rho=0.3,
+            parametric_dist="lognormal",
+            random_seed=42,
+        ).fit(genins_triangle)
+        result = model.total_summary()
+        assert np.isfinite(result.total_reserve_mean)
+        assert result.total_reserve_stddev > 0

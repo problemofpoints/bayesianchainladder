@@ -731,6 +731,86 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         return X_new
 
 
+class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
+    """Correlated ODP bootstrap chain ladder behind the shared interface.
+
+    Wraps :class:`CorrelatedBootstrapODPSample` (calendar-year-correlated
+    bootstrap, Clark/Ding/Zhou 2022) followed by
+    ``chainladder.Chainladder``. Identical surface to
+    :class:`BootstrapODPChainLadder`, plus correlation parameters.
+
+    Parameters
+    ----------
+    n_sims : int, default 1000
+    rho : float, default 0.0
+        Same-diagonal correlation (``0`` reduces to independent ODP bootstrap).
+    parametric : bool, default True
+    parametric_dist : {"normal", "lognormal"}, default "normal"
+    hat_adj : bool, default True
+    n_periods : int, default -1
+    random_seed : int, optional
+    """
+
+    def __init__(
+        self,
+        n_sims: int = 1000,
+        rho: float = 0.0,
+        parametric: bool = True,
+        parametric_dist: str = "normal",
+        hat_adj: bool = True,
+        n_periods: int = -1,
+        random_seed: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.n_sims = n_sims
+        self.rho = rho
+        self.parametric = parametric
+        self.parametric_dist = parametric_dist
+        self.hat_adj = hat_adj
+        self.n_periods = n_periods
+        self.random_seed = random_seed
+
+    def fit(self, triangle):
+        validate_triangle(triangle)
+        self.triangle_ = triangle.copy()
+
+        prepared = triangle.copy()
+        prepared.key_labels = ["triangle_id"]
+        prepared.kdims = np.asarray([["resample"]], dtype=object)
+
+        sampler = CorrelatedBootstrapODPSample(
+            n_sims=self.n_sims,
+            rho=self.rho,
+            parametric=self.parametric,
+            parametric_dist=self.parametric_dist,
+            hat_adj=self.hat_adj,
+            n_periods=self.n_periods,
+            random_state=self.random_seed,
+        ).fit(prepared)
+        resampled = sampler.transform(prepared)
+        model = Chainladder().fit(resampled)
+
+        ibnr_vals = np.asarray(model.ibnr_.values)
+        per_sim_per_origin = np.nansum(ibnr_vals, axis=-1)  # (n_sims, 1, n_origin)
+        per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
+        per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
+
+        origins = [_extract_period_value(o) for o in triangle.origin]
+
+        self.reserves_posterior_ = xr.DataArray(
+            per_origin_per_sim,
+            dims=["origin", "sample"],
+            coords={
+                "origin": origins,
+                "sample": np.arange(per_origin_per_sim.shape[1]),
+            },
+        )
+
+        self._build_reserve_summaries()
+        self._is_fitted = True
+        return self
+
+
 def _get_process_variance(self, full_triangle):
     """Inject random gamma process noise into the lower-right (future) cells."""
     xp = full_triangle.get_array_module()
