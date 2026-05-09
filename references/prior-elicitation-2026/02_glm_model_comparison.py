@@ -2,11 +2,17 @@
 
 Specs:
   M1: incremental ~ 1 + C(origin) + C(dev)              (full categorical)
-  M2: incremental ~ 1 + C(origin) + cr(dev, df=4)       (dev spline)
-  M3: incremental ~ 1 + bs(origin, df=2) + C(dev)       (restricted origin)
+  M3: incremental ~ 1 + bs(origin, df=3) + C(dev)       (restricted origin)
   M4: lives in 02b — fits one Bambi model per line with (1 | snl_id)
 
-For M1/M2/M3 we fit one model per (line, snl_id) over the 24-triangle stratified
+M2 (dev spline `bs(dev, df=4)`) was attempted but excluded after smoke
+testing showed ~100% NUTS divergences in every fit, across multiple
+triangles, regardless of MCMC budget. The B-spline-on-dev parameterisation
+under gamma+log GLM produces a posterior geometry NUTS cannot traverse.
+This itself is a finding: recommend the package not use bs/cr splines on
+dev for chain-ladder GLMs of this form.
+
+For M1/M3 we fit one model per (line, snl_id) over the 24-triangle stratified
 sample. WAIC and LOO are extracted from the fitted idata.
 
 Family: gamma. Exposure: net_earned_premium. Light fits: 1000 draws / 1000 tune /
@@ -39,9 +45,6 @@ from _common import (
 
 SPECS: dict[str, str] = {
     "M1_cat": "incremental ~ 1 + C(origin) + C(dev)",
-    # Bambi uses formulae (not patsy), so cr() is unavailable; bs() gives the
-    # same cubic B-spline smoothing of dev with df=4 basis functions.
-    "M2_devspline": "incremental ~ 1 + C(origin) + bs(dev, df=4)",
     # df=2 is below the minimum of 3 for a cubic B-spline without intercept;
     # df=3 is the smallest valid value.
     "M3_restorigin": "incremental ~ 1 + bs(origin, df=3) + C(dev)",
