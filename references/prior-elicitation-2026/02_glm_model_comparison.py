@@ -9,8 +9,8 @@ Specs:
 For M1/M2/M3 we fit one model per (line, snl_id) over the 24-triangle stratified
 sample. WAIC and LOO are extracted from the fitted idata.
 
-Family: gamma. Exposure: net_earned_premium. Light fits: 1000 draws / 500 tune /
-2 chains / target_accept=0.9. Random seed deterministic per (line, snl_id, spec).
+Family: gamma. Exposure: net_earned_premium. Light fits: 1000 draws / 1000 tune /
+2 chains / target_accept=0.95. Random seed deterministic per (line, snl_id, spec).
 
 Output:
   cache/glm_per_triangle_fits.parquet — one row per (line, snl_id, spec)
@@ -69,9 +69,9 @@ def _fit_one(triangle, formula: str, seed: int) -> dict:
         family="gamma",
         exposure="net_earned_premium",
         draws=1000,
-        tune=500,
+        tune=1000,
         chains=2,
-        target_accept=0.9,
+        target_accept=0.95,
         random_seed=seed,
     )
     with warnings.catch_warnings():

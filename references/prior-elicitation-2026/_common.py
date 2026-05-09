@@ -44,8 +44,10 @@ def is_eligible_triangle(tri: cl.Triangle) -> bool:
       1. >= MIN_ORIGIN_YEARS origin years have at least one observed cell.
       2. All observed cumulative `paid_loss` values are strictly positive.
       3. Net earned premium is positive for every origin with paid data.
-      4. At least one origin shows positive cumulative growth beyond dev=12
-         (i.e., paid_loss increases somewhere past the first development period).
+      4. At least one positive incremental at dev > 12 (this is implied by Rule 5
+         plus origin coverage but kept explicit for clarity).
+      5. All observed incremental paid_loss values are strictly positive
+         (cumulative paid never decreases between observed dev periods).
 
     Parameters
     ----------
@@ -79,15 +81,20 @@ def is_eligible_triangle(tri: cl.Triangle) -> bool:
         if prem_observed.size == 0 or np.any(prem_observed <= 0):
             return False
 
+    # Rule 5: every observed incremental must be > 0.
+    inc = np.full_like(paid, np.nan, dtype=float)
+    inc[:, 0] = paid[:, 0]
+    inc[:, 1:] = paid[:, 1:] - paid[:, :-1]
+    obs_inc = inc[~np.isnan(inc)]
+    if obs_inc.size == 0 or np.any(obs_inc <= 0):
+        return False
+
     # Rule 4: positive incremental somewhere at dev > 12.
-    # np.diff propagates NaN, so a row with an interior NaN gap
-    # (observed, NaN, observed) would yield NaN diffs even if real growth
-    # occurred. Acceptable for Schedule P upper triangles which have no
-    # interior gaps; revisit if data shape changes.
+    # (Implied by Rule 5 for any triangle with >1 dev column, kept explicit
+    # for clarity.  inc was computed above; reuse it here.)
     if paid.shape[1] < 2:
         return False
-    incremental = np.diff(paid, axis=1)  # shape: (n_origin, n_dev - 1)
-    if not np.any(incremental[~np.isnan(incremental)] > 0):
+    if not np.any(inc[~np.isnan(inc)] > 0):
         return False
 
     return True

@@ -93,6 +93,18 @@ def test_negative_paid_fails():
     assert is_eligible_triangle(tri) is False
 
 
+def test_negative_incremental_fails():
+    """Triangle with one negative incremental (cumulative goes down) fails Rule 5."""
+    vals = np.full((10, 10), np.nan)
+    for i in range(9):
+        for j in range(10 - i):
+            vals[i, j] = 100.0 * (i + 1) * (j + 1)
+    # Force a decreasing cumulative for origin 5: dev 1 < dev 0
+    vals[5, 1] = vals[5, 0] - 10.0
+    tri = _make_triangle(vals)
+    assert is_eligible_triangle(tri) is False
+
+
 def test_no_late_dev_activity_fails():
     """Triangle with flat cumulative paid (no incremental growth) fails Rule 4."""
     vals = np.full((10, 10), np.nan)
