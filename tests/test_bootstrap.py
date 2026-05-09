@@ -191,3 +191,60 @@ class TestBootstrapODPChainLadder:
         assert model_a.total_summary().total_reserve_mean == pytest.approx(
             model_b.total_summary().total_reserve_mean
         )
+
+
+class TestCorrelatedBootstrapODPSample:
+    """Smoke tests for the low-level transformer."""
+
+    def test_fit_with_rho_zero(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        sampler = CorrelatedBootstrapODPSample(
+            n_sims=50, rho=0.0, random_state=42
+        )
+        sampler.fit(genins_triangle)
+        # rho=0 path doesn't build a correlation matrix
+        assert sampler.correlation_matrix_ is None
+        assert sampler.scale_ is not None
+
+    def test_fit_with_rho_positive_builds_correlation_matrix(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        sampler = CorrelatedBootstrapODPSample(
+            n_sims=50, rho=0.5, random_state=42
+        )
+        sampler.fit(genins_triangle)
+        assert sampler.correlation_matrix_ is not None
+        # Diagonal should be 1
+        diag = np.diag(sampler.correlation_matrix_)
+        assert np.allclose(diag, 1.0)
+        # Same-calendar-year off-diagonals should equal rho
+        # (cell (0,1) and (1,0) are both calendar year 1)
+        idx_a = sampler.valid_indices_.index((0, 1))
+        idx_b = sampler.valid_indices_.index((1, 0))
+        assert sampler.correlation_matrix_[idx_a, idx_b] == pytest.approx(0.5)
+
+    def test_invalid_parametric_dist_raises(self):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        with pytest.raises(ValueError, match="parametric_dist"):
+            CorrelatedBootstrapODPSample(parametric_dist="weibull")
+
+    def test_invalid_rho_raises(self):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        with pytest.raises(ValueError, match="rho must be in"):
+            CorrelatedBootstrapODPSample(rho=1.5)
+        with pytest.raises(ValueError, match="rho must be in"):
+            CorrelatedBootstrapODPSample(rho=-0.1)
+
+    def test_transform_produces_n_sims_resamples(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        sampler = CorrelatedBootstrapODPSample(
+            n_sims=20, rho=0.3, random_state=42
+        )
+        sampler.fit(genins_triangle)
+        resampled = sampler.transform(genins_triangle)
+        # The resampled triangle's first dim should be n_sims
+        assert resampled.values.shape[0] == 20
