@@ -14,9 +14,12 @@ from _common import (
     LINES,
     SAMPLE_PER_LINE,
     booked_reserve,
+    fisher_z_mean,
     is_eligible_triangle,
     iter_eligible_triangles,
     load_full_triangle,
+    pearson_residuals,
+    rho_from_residual_panel,
     select_sample,
 )
 
@@ -181,8 +184,6 @@ def test_select_sample_is_deterministic_across_processes(tmp_path):
 # Pearson residual tests
 # ---------------------------------------------------------------------------
 
-from _common import pearson_residuals
-
 
 def test_pearson_residuals_shape_and_finite():
     """Residuals have the expected long-format columns; finite where observed."""
@@ -217,8 +218,6 @@ def test_pearson_residuals_zero_when_chain_ladder_perfect():
 # Fisher-z mean tests
 # ---------------------------------------------------------------------------
 
-from _common import fisher_z_mean
-
 
 def test_fisher_z_mean_simple():
     """Fisher-z mean of [0.5, 0.5] is 0.5; of [0.0] is 0.0."""
@@ -235,8 +234,6 @@ def test_fisher_z_mean_skips_extremes():
 # ---------------------------------------------------------------------------
 # rho_from_residual_panel tests
 # ---------------------------------------------------------------------------
-
-from _common import rho_from_residual_panel
 
 
 def test_rho_from_residual_panel_recovers_known_correlation():

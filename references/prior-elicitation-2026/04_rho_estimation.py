@@ -20,6 +20,7 @@ import pandas as pd
 
 from _common import (
     LINES,
+    SAMPLE_SEED,
     cache_path,
     iter_eligible_triangles,
     load_full_triangle,
@@ -36,10 +37,14 @@ def _build_panel(full_tri, line: str) -> tuple[np.ndarray, list[str]]:
         res_df = pearson_residuals(sub_tri)
         if len(res_df) < 30:
             continue
-        # 10x10 grid of NaN, fill with residuals at (origin_idx, dev_idx).
-        grid = np.full((10, 10), np.nan)
-        for _, r in res_df.iterrows():
-            grid[int(r.origin_idx), int(r.dev_idx)] = r.residual
+        # Grid shape derived from triangle; fill with residuals at (origin_idx, dev_idx).
+        paid = sub_tri["paid_loss"].values[0, 0]
+        n_origin, n_dev = paid.shape
+        grid = np.full((n_origin, n_dev), np.nan)
+        grid[
+            res_df.origin_idx.values.astype(int),
+            res_df.dev_idx.values.astype(int),
+        ] = res_df.residual.values
         panels.append(grid)
         snl_ids.append(snl_id)
     if not panels:
@@ -47,7 +52,7 @@ def _build_panel(full_tri, line: str) -> tuple[np.ndarray, list[str]]:
     return np.stack(panels, axis=0), snl_ids
 
 
-def _bootstrap_ci(panel: np.ndarray, n_boot: int = 1000, seed: int = 20260508):
+def _bootstrap_ci(panel: np.ndarray, n_boot: int = 1000, seed: int = SAMPLE_SEED):
     """Resample companies (axis 0) with replacement; recompute rho each iteration."""
     rng = np.random.default_rng(seed)
     n = panel.shape[0]
@@ -57,6 +62,12 @@ def _bootstrap_ci(panel: np.ndarray, n_boot: int = 1000, seed: int = 20260508):
         sample = panel[idx]
         rhos[b] = rho_from_residual_panel(sample)["rho"]
     rhos = rhos[np.isfinite(rhos)]
+    if rhos.size == 0:
+        return {
+            "rho_median": float("nan"),
+            "rho_p10": float("nan"),
+            "rho_p90": float("nan"),
+        }
     return {
         "rho_median": float(np.median(rhos)),
         "rho_p10": float(np.percentile(rhos, 10)),
