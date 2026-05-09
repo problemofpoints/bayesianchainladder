@@ -141,7 +141,6 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
-    { name = "pyarrow" },
     { name = "pymc" },
     { name = "xarray" },
 ]
@@ -150,6 +149,7 @@ dependencies = [
 dev = [
     { name = "black" },
     { name = "mypy" },
+    { name = "pyarrow" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -165,7 +165,6 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.7.0" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
-    { name = "pyarrow", specifier = ">=24.0.0" },
     { name = "pymc", specifier = ">=5.10.0" },
     { name = "xarray", specifier = ">=2023.1.0" },
 ]
@@ -174,6 +173,7 @@ requires-dist = [
 dev = [
     { name = "black", specifier = ">=23.0.0" },
     { name = "mypy", specifier = ">=1.0.0" },
+    { name = "pyarrow", specifier = ">=24.0.0" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "ruff", specifier = ">=0.1.0" },
