@@ -175,3 +175,39 @@ def test_select_sample_is_deterministic_across_processes(tmp_path):
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     )
     assert json.loads(out1.stdout) == json.loads(out2.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Pearson residual tests
+# ---------------------------------------------------------------------------
+
+from _common import pearson_residuals
+
+
+def test_pearson_residuals_shape_and_finite():
+    """Residuals have the expected long-format columns; finite where observed."""
+    vals = np.full((10, 10), np.nan)
+    for i in range(9):
+        for j in range(10 - i):
+            vals[i, j] = 100.0 * (i + 1) * (j + 1)
+    tri = _make_triangle(vals)
+    res = pearson_residuals(tri)
+    # res is a long-format DataFrame with origin_idx, dev_idx, cy_idx, residual, fitted, actual.
+    assert {"origin_idx", "dev_idx", "cy_idx", "residual", "fitted", "actual"}.issubset(res.columns)
+    assert res["residual"].notna().all()
+    assert np.isfinite(res["residual"]).all()
+
+
+def test_pearson_residuals_zero_when_chain_ladder_perfect():
+    """If incremental losses follow a perfect multiplicative pattern, residuals ≈ 0."""
+    # Build cumulative paid such that the chain-ladder factors are exact.
+    f = np.array([2.0, 1.5, 1.3, 1.2, 1.1, 1.05, 1.02, 1.01, 1.005])
+    cum = np.full((10, 10), np.nan)
+    for i in range(9):
+        cum[i, 0] = 100.0
+        for j in range(1, 10 - i):
+            cum[i, j] = cum[i, j - 1] * f[j - 1]
+    tri = _make_triangle(cum)
+    res = pearson_residuals(tri)
+    # Standardised Pearson residuals should be very small for a perfect fit.
+    assert np.abs(res["residual"]).max() < 1e-6

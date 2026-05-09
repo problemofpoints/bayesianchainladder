@@ -179,3 +179,129 @@ def select_sample(full_tri: cl.Triangle, line: str) -> list[str]:
         leftover = [s for s in df["snl_id"] if s not in picked]
         picked.append(rng.choice(leftover))
     return sorted(picked)
+
+
+# ---------------------------------------------------------------------------
+# Deterministic chain ladder fit and Pearson residuals
+# ---------------------------------------------------------------------------
+
+
+def _to_incremental(cum: np.ndarray) -> np.ndarray:
+    """Cumulative → incremental along the dev axis. NaN-safe."""
+    inc = np.full_like(cum, np.nan, dtype=float)
+    inc[:, 0] = cum[:, 0]
+    inc[:, 1:] = cum[:, 1:] - cum[:, :-1]
+    return inc
+
+
+def _chain_ladder_fitted(cum: np.ndarray) -> np.ndarray:
+    """Fit deterministic chain ladder, return fitted *incremental* values for the upper triangle.
+
+    Uses volume-weighted age-to-age factors. Returns an array of shape
+    cum.shape with NaN where cum is NaN.
+    """
+    n_origin, n_dev = cum.shape
+    # Volume-weighted age-to-age factors f[j] = sum cum[:, j+1] / sum cum[:, j],
+    # with the sums taken over origins where both cells are observed.
+    f = np.full(n_dev - 1, np.nan)
+    for j in range(n_dev - 1):
+        mask = ~np.isnan(cum[:, j]) & ~np.isnan(cum[:, j + 1])
+        denom = np.sum(cum[mask, j])
+        numer = np.sum(cum[mask, j + 1])
+        if denom > 0:
+            f[j] = numer / denom
+
+    # Fitted cumulative (forward-project from the first observed cell of each origin).
+    fit_cum = np.full_like(cum, np.nan)
+    for i in range(n_origin):
+        # Use the last observed cumulative as the anchor and back-cast / forward-cast.
+        observed_j = np.where(~np.isnan(cum[i]))[0]
+        if observed_j.size == 0:
+            continue
+        # Anchor at the latest observation, then back-fill earlier dev's by dividing.
+        last_j = observed_j[-1]
+        fit_cum[i, last_j] = cum[i, last_j]
+        for j in range(last_j - 1, -1, -1):
+            if np.isnan(f[j]) or f[j] == 0:
+                fit_cum[i, j] = np.nan
+            else:
+                fit_cum[i, j] = fit_cum[i, j + 1] / f[j]
+        for j in range(last_j + 1, n_dev):
+            if np.isnan(f[j - 1]):
+                fit_cum[i, j] = np.nan
+            else:
+                fit_cum[i, j] = fit_cum[i, j - 1] * f[j - 1]
+
+    fit_inc = _to_incremental(fit_cum)
+    # Restrict fitted to upper triangle (where cum was observed).
+    fit_inc[np.isnan(cum)] = np.nan
+    return fit_inc
+
+
+def pearson_residuals(tri: cl.Triangle) -> pd.DataFrame:
+    """Compute Shapland's standardised Pearson residuals for an upper-triangle paid_loss.
+
+    Returns long-format with columns:
+      - origin_idx (0-based)
+      - dev_idx   (0-based)
+      - cy_idx    (origin_idx + dev_idx, the calendar diagonal)
+      - actual    (observed incremental)
+      - fitted    (fitted incremental)
+      - residual  (standardised Pearson, hat-matrix adjusted)
+
+    Cells with non-positive fitted incrementals or where the actual
+    incremental is undefined are dropped.
+
+    The hat-matrix adjustment follows the standard ODP bootstrap formulation:
+        r_std = (a − f) / sqrt(phi * f) * sqrt(n / (n - p))
+    where n is the number of observed cells and p is the number of free
+    parameters (origin + dev factors), p = n_origin + (n_dev − 1).
+    """
+    paid = tri["paid_loss"].values[0, 0]
+    inc_actual = _to_incremental(paid)
+    inc_fitted = _chain_ladder_fitted(paid)
+
+    rows = []
+    for i in range(paid.shape[0]):
+        for j in range(paid.shape[1]):
+            a = inc_actual[i, j]
+            f = inc_fitted[i, j]
+            if np.isnan(a) or np.isnan(f) or f <= 0:
+                continue
+            rows.append(
+                {
+                    "origin_idx": i,
+                    "dev_idx": j,
+                    "cy_idx": i + j,
+                    "actual": float(a),
+                    "fitted": float(f),
+                }
+            )
+    if not rows:
+        return pd.DataFrame(
+            columns=["origin_idx", "dev_idx", "cy_idx", "actual", "fitted", "residual"]
+        )
+    df = pd.DataFrame(rows)
+    n = len(df)
+    n_origin, n_dev = paid.shape
+    p = n_origin + (n_dev - 1)
+    raw_pearson = (df["actual"] - df["fitted"]) / np.sqrt(df["fitted"])
+    # Pearson dispersion phi (Shapland eq. 2.1.4).
+    if n - p > 0:
+        phi = float(np.sum(raw_pearson**2) / (n - p))
+    else:
+        phi = float(np.var(raw_pearson, ddof=0))
+    if phi <= 0:
+        phi = 1e-12
+    # Hat-matrix adjustment factor.
+    if n - p > 0:
+        adj = np.sqrt(n / (n - p))
+    else:
+        adj = 1.0
+    # Guard: if all raw residuals are essentially zero (perfect fit), return zeros
+    # directly to avoid dividing near-zero by clamped near-zero phi.
+    if np.allclose(raw_pearson, 0, atol=1e-9):
+        df["residual"] = 0.0
+        return df
+    df["residual"] = raw_pearson / np.sqrt(phi) * adj
+    return df
