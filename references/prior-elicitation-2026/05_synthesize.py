@@ -160,6 +160,7 @@ def _build_readme(
     rho: pd.DataFrame,
     descriptive: pd.DataFrame,
     rec: pd.DataFrame,
+    glm_priors: pd.DataFrame | None = None,
 ) -> str:
     lines_out: list[str] = []
     lines_out.append("# Prior Elicitation 2026 — Per-Line Recommendations\n")
@@ -234,6 +235,30 @@ def _build_readme(
             + "\n"
         )
 
+    glm_priors_path = cache_path("glm_priors_by_line.parquet")
+    if glm_priors_path.exists():
+        _glm_priors = glm_priors if glm_priors is not None else _read_parquet(glm_priors_path)
+        lines_out.append("\n## GLM Prior Recommendations (BayesianChainLadderGLM, gamma + log link)\n")
+        lines_out.append(
+            "Per-line prior recommendations derived from posteriors of the "
+            "M1 fits (24 sampled triangles per line, gamma+log link, default "
+            "package priors). The recommended priors below are **for use as "
+            "informative defaults** in `BayesianChainLadderGLM(priors=...)`.\n"
+        )
+        lines_out.append(
+            _glm_priors[
+                [
+                    "line",
+                    "n_converged",
+                    "glm_intercept_prior",
+                    "glm_alpha_prior",
+                    "glm_origin_sigma_prior",
+                    "glm_dev_sigma_prior",
+                ]
+            ].to_markdown(index=False)
+            + "\n"
+        )
+
     if not csr_agg.empty:
         lines_out.append("\n## CSR Prior Recommendations (full)\n")
         keep = [
@@ -283,6 +308,7 @@ def _payload_for_html(
     rho: pd.DataFrame,
     descriptive: pd.DataFrame,
     rec: pd.DataFrame,
+    glm_priors: pd.DataFrame | None = None,
 ) -> dict:
     """Convert pandas DataFrames into JSON-serialisable list-of-dicts payload."""
     glm_path = cache_path("glm_per_triangle_fits.parquet")
@@ -306,6 +332,16 @@ def _payload_for_html(
     if csr_path.exists():
         csr_rows = _read_parquet(csr_path).to_dict("records")
 
+    glm_priors_rows: list[dict] = []
+    if glm_priors is not None and not glm_priors.empty:
+        keep_cols = [
+            "line", "n_converged",
+            "glm_intercept_prior", "glm_alpha_prior",
+            "glm_origin_sigma_prior", "glm_dev_sigma_prior",
+        ]
+        avail = [c for c in keep_cols if c in glm_priors.columns]
+        glm_priors_rows = glm_priors[avail].to_dict("records")
+
     return {
         "lines": LINES,
         "recs": rec.to_dict("records"),
@@ -314,6 +350,7 @@ def _payload_for_html(
         "csr": csr_rows,
         "rho": rho.to_dict("records"),
         "desc": descriptive.to_dict("records"),
+        "glm_priors": glm_priors_rows,
     }
 
 
@@ -322,6 +359,12 @@ def main() -> int:
     rho = _read_parquet(cache_path("rho_by_line.parquet"))
     combined, winners = _rank_glm_specs()
     csr_agg = _aggregate_csr()
+
+    # Load GLM priors if available.
+    glm_priors_path = cache_path("glm_priors_by_line.parquet")
+    glm_priors: pd.DataFrame | None = None
+    if glm_priors_path.exists():
+        glm_priors = _read_parquet(glm_priors_path)
 
     # Build the headline recommendations frame.
     rec = pd.DataFrame({"line": LINES})
@@ -344,12 +387,15 @@ def main() -> int:
     rec = rec.merge(
         descriptive[["line", "ulr_mean", "phi_p50"]], on="line", how="left"
     )
+    if glm_priors is not None and not glm_priors.empty:
+        glm_priors_short = glm_priors[["line", "glm_intercept_prior", "glm_dev_sigma_prior"]]
+        rec = rec.merge(glm_priors_short, on="line", how="left")
 
-    md = _build_readme(combined, winners, csr_agg, rho, descriptive, rec)
+    md = _build_readme(combined, winners, csr_agg, rho, descriptive, rec, glm_priors=glm_priors)
     readme_path = ANALYSIS_DIR / "README.md"
     readme_path.write_text(md, encoding="utf-8")
 
-    html_payload = _payload_for_html(combined, winners, csr_agg, rho, descriptive, rec)
+    html_payload = _payload_for_html(combined, winners, csr_agg, rho, descriptive, rec, glm_priors=glm_priors)
     html = render_html(html_payload)
     html_path = ANALYSIS_DIR / "report.html"
     html_path.write_text(html, encoding="utf-8")

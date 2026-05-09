@@ -27,7 +27,8 @@ def render_html(payload: dict) -> str:
       - hier:  list[dict] — long-format M4 rows
       - csr:   list[dict] — long-format CSR posterior rows
       - rho:   list[dict] — one row per line with rho + diagnostics
-      - desc:  list[dict] — one row per line of descriptive summary
+      - desc:       list[dict] — one row per line of descriptive summary
+      - glm_priors: list[dict] — one row per line with recommended GLM priors (optional, may be absent)
     """
     payload_json = json.dumps(payload, default=_json_default)
 
@@ -138,12 +139,13 @@ def render_html(payload: dict) -> str:
           </p>
 
           <div class="scope-note">
-            <strong>Note:</strong> Two specs were attempted but excluded by
-            convergence filtering: M2 (<code>bs(dev, df=4)</code>) failed smoke
-            testing with ~100% NUTS divergences; M4
-            (<code>(1 | snl_id)</code> hierarchical) had max_rhat ~3.0 across
-            all 6 line-level fits. The materially comparable specs are M1
-            (full categorical) and M3 (origin spline).
+            <strong>Note:</strong>
+            The original gamma family fits used Bambi's default <em>inverse</em> link
+            instead of the documented <em>log</em> link, due to a bug in
+            <code>_get_family()</code>. After fixing the package to honor
+            <code>link="log"</code>, all four specs (M1 categorical, M2 dev spline,
+            M3 origin spline, M4 hierarchical) converge cleanly. M2 wins LOO across
+            all 6 lines.
           </div>
 
           <div class="controls">
@@ -165,6 +167,15 @@ def render_html(payload: dict) -> str:
             <div class="chart" id="csr-logelr-chart"></div>
             <div class="chart" id="csr-gamma-chart"></div>
           </div>
+
+          <h2>GLM Prior Recommendations (BayesianChainLadderGLM, gamma + log link)</h2>
+          <p>
+            Per-line recommended priors derived from posteriors of M1 fits
+            (24 sampled triangles per line, gamma + log link, default package priors).
+            Use these as informative defaults in
+            <code>BayesianChainLadderGLM(priors=...)</code>.
+          </p>
+          <div id="glm-priors-table"></div>
 
           <h2>Rho — Within-Triangle Calendar-Diagonal Correlation</h2>
           <p>
@@ -337,11 +348,33 @@ def render_html(payload: dict) -> str:
               document.getElementById('desc-figs').innerHTML = html;
             }}
 
+            function renderGlmPriorsTable(activeLines) {{
+              const el = document.getElementById('glm-priors-table');
+              if (!el) return;
+              const rows = (PAYLOAD.glm_priors || []).filter(r => activeLines.includes(r.line));
+              if (rows.length === 0) {{
+                el.innerHTML = '<p style="color:var(--muted)"><em>GLM prior data not available.</em></p>';
+                return;
+              }}
+              const cols = ['line', 'n_converged', 'glm_intercept_prior', 'glm_alpha_prior',
+                            'glm_origin_sigma_prior', 'glm_dev_sigma_prior'];
+              const headers = ['Line', 'N converged', 'Intercept prior', 'Alpha prior',
+                               'Origin σ prior', 'Dev σ prior'];
+              let html = '<table><thead><tr>' +
+                headers.map(h => `<th>${{h}}</th>`).join('') + '</tr></thead><tbody>';
+              rows.forEach(r => {{
+                html += '<tr>' + cols.map(c => `<td>${{r[c] !== null && r[c] !== undefined ? r[c] : ''}}</td>`).join('') + '</tr>';
+              }});
+              html += '</tbody></table>';
+              el.innerHTML = html;
+            }}
+
             function renderAll() {{
               const a = getActiveLines();
               renderRecsTable(a);
               renderGlmChart(a);
               renderCsrCharts(a);
+              renderGlmPriorsTable(a);
               renderRhoChart(a);
               renderDescFigs(a);
             }}

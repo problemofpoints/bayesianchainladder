@@ -6,14 +6,14 @@ Interactive version: [report.html](report.html).
 
 ## Headline Recommendations
 
-| line   | best_spec     |   loo_mean | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     |   rho_point |   rho_median |   ulr_mean |   phi_p50 |
-|:-------|:--------------|-----------:|:--------------------|:----------------------|:------------------|------------:|-------------:|-----------:|----------:|
-| OLO    | M2_devidx_bs4 |   -526.745 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) |       0.105 |        0.105 |      0.663 |  1209.404 |
-| OLC    | M2_devidx_bs4 |   -568.411 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |       0.061 |        0.062 |      0.639 |  1894.560 |
-| CAL    | M2_devidx_bs4 |   -545.996 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) |       0.110 |        0.110 |      0.749 |   639.597 |
-| WC     | M2_devidx_bs4 |   -504.440 | Normal(-0.74, 0.43) | Normal(0.004, 0.031)  | HalfNormal(0.048) |       0.124 |        0.125 |      0.567 |   192.466 |
-| PPAL   | M2_devidx_bs4 |   -547.536 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) |       0.140 |        0.139 |      0.716 |   338.915 |
-| CMP    | M2_devidx_bs4 |   -531.951 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) |       0.071 |        0.068 |      0.635 |   655.080 |
+| line   | best_spec     |   loo_mean | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     |   rho_point |   rho_median |   ulr_mean |   phi_p50 | glm_intercept_prior   | glm_dev_sigma_prior   |
+|:-------|:--------------|-----------:|:--------------------|:----------------------|:------------------|------------:|-------------:|-----------:|----------:|:----------------------|:----------------------|
+| OLO    | M2_devidx_bs4 |   -526.745 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) |       0.105 |        0.105 |      0.663 |  1209.404 | Normal(-3.089, 0.386) | HalfNormal(1.125)     |
+| OLC    | M2_devidx_bs4 |   -568.411 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |       0.061 |        0.062 |      0.639 |  1894.560 | Normal(-3.291, 0.263) | HalfNormal(1.122)     |
+| CAL    | M2_devidx_bs4 |   -545.996 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) |       0.110 |        0.110 |      0.749 |   639.597 | Normal(-2.256, 0.255) | HalfNormal(1.756)     |
+| WC     | M2_devidx_bs4 |   -504.440 | Normal(-0.74, 0.43) | Normal(0.004, 0.031)  | HalfNormal(0.048) |       0.124 |        0.125 |      0.567 |   192.466 | Normal(-2.279, 0.228) | HalfNormal(1.548)     |
+| PPAL   | M2_devidx_bs4 |   -547.536 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) |       0.140 |        0.139 |      0.716 |   338.915 | Normal(-1.256, 0.377) | HalfNormal(2.179)     |
+| CMP    | M2_devidx_bs4 |   -531.951 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) |       0.071 |        0.068 |      0.635 |   655.080 | Normal(-1.871, 0.292) | HalfNormal(1.122)     |
 
 
 ## GLM Functional-Form Comparison
@@ -56,6 +56,20 @@ All 6 line-level M4 fits converged (max_rhat ≤ 1.01, 0 divergences) under gamm
 | WC     | ok       |      1.010 | -12681.653 |    1320 |            24 |                0.143 |
 | PPAL   | ok       |      1.010 | -13210.659 |    1320 |            24 |                0.193 |
 | CMP    | ok       |      1.010 | -13280.781 |    1320 |            24 |                0.330 |
+
+
+## GLM Prior Recommendations (BayesianChainLadderGLM, gamma + log link)
+
+Per-line prior recommendations derived from posteriors of the M1 fits (24 sampled triangles per line, gamma+log link, default package priors). The recommended priors below are **for use as informative defaults** in `BayesianChainLadderGLM(priors=...)`.
+
+| line   |   n_converged | glm_intercept_prior   | glm_alpha_prior     | glm_origin_sigma_prior   | glm_dev_sigma_prior   |
+|:-------|--------------:|:----------------------|:--------------------|:-------------------------|:----------------------|
+| CAL    |            24 | Normal(-2.256, 0.255) | HalfNormal(48.822)  | HalfNormal(0.204)        | HalfNormal(1.756)     |
+| CMP    |            24 | Normal(-1.871, 0.292) | HalfNormal(55.564)  | HalfNormal(0.308)        | HalfNormal(1.122)     |
+| OLC    |            19 | Normal(-3.291, 0.263) | HalfNormal(19.940)  | HalfNormal(0.295)        | HalfNormal(1.122)     |
+| OLO    |            24 | Normal(-3.089, 0.386) | HalfNormal(32.577)  | HalfNormal(0.350)        | HalfNormal(1.125)     |
+| PPAL   |            22 | Normal(-1.256, 0.377) | HalfNormal(72.154)  | HalfNormal(0.221)        | HalfNormal(2.179)     |
+| WC     |            24 | Normal(-2.279, 0.228) | HalfNormal(100.056) | HalfNormal(0.252)        | HalfNormal(1.548)     |
 
 
 ## CSR Prior Recommendations (full)

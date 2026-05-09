@@ -73,18 +73,27 @@ For each of the 24 triangles per line, fit four specs and compute WAIC + LOO:
 
 | Spec | Formula | Notes |
 |---|---|---|
-| **M1** | `paid_loss ~ C(origin) + C(dev)` | Full categorical baseline (current default) |
-| **M2** | `paid_loss ~ C(origin) + cr(dev, df=4)` | Dev as natural cubic spline |
-| **M3** | `paid_loss ~ bs(origin, df=2) + C(dev)` | Restricted origin (linear-ish trend) |
-| **M4** | `paid_loss ~ C(origin) + C(dev) + (1 \| snl_id)` | Bambi mixed-effects: random intercept per company; pools all 24 sampled companies for the line into one fit |
+| **M1** | `incremental ~ 1 + C(origin) + C(dev)` | Full categorical baseline |
+| **M2** | `incremental ~ 1 + C(origin) + bs(dev_idx, df=4)` | Dev as B-spline on 1-based dev index |
+| **M3** | `incremental ~ 1 + bs(origin, df=3) + C(dev)` | Restricted origin spline |
+| **M4** | Bambi `incremental ~ 1 + C(origin) + C(dev) + (1 \| snl_id) + offset(logoffset)` | Hierarchical pooling across companies |
 
-**Note (added during execution, 2026-05-09):** M2 (`bs(dev, df=4)`) was
-attempted in smoke testing but excluded from the full sweep after every
-fit produced ~100% NUTS divergences (max R-hat 2.4–3.0) across multiple
-triangles and MCMC budgets. The recommendation that emerges from this
-finding is that the package should not expose B-spline-on-dev as a default
-spec for chain-ladder GLMs under gamma+log; categorical dev factors are
-the safe choice. M3 (origin spline) remains in the comparison.
+**Note (added during execution, 2026-05-09):** M2 (`bs(dev, df=4)`) initially
+appeared to fail with ~100% NUTS divergences across all triangles. Diagnostic
+work (`06_diagnose_m2.py`) eventually traced this to a bug in
+`bayesianchainladder.models._get_family()`: the `link=` parameter was being
+silently ignored, so all gamma fits used Bambi's default `inverse` link, not
+the documented `log` link. The geometry of gamma + inverse-link + a continuous
+spline predictor is pathological for NUTS. **Resolution:** the package was
+patched to honor `link="log"`, and the analysis was re-run. Under the correct
+log link, M2 (now `bs(dev_idx, df=4)` with dev as 1-based ordinal index)
+converges cleanly across all triangles AND wins LOO across all 6 lines.
+
+**Note (added during execution, 2026-05-09):** M4 (Bambi `(1 | snl_id)`)
+initially had max_rhat ≈ 3.0 across all lines under gamma + inverse link.
+After the link bug was fixed, M4 with gamma + log link now converges cleanly
+(max_rhat ≤ 1.01) and produces a usable estimate of the company-level random
+intercept SD per line.
 
 **Held fixed:**
 - Family = `gamma` (positive incrementals after eligibility filter; package recommendation for non-integer counts)
