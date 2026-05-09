@@ -243,15 +243,30 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
     def _compute_predictions(self) -> None:
         """Compute fitted values and future predictions."""
+        # When an exposure offset is used, build_bambi_model adds a `logoffset`
+        # column to the training copy of data.  Bambi's predict() needs that
+        # same column in whatever DataFrame we pass.  We compute it here so
+        # that both observed and future frames have it.
+        obs_data = self.data_.copy()
+        fut_data = self.future_data_.copy() if len(self.future_data_) > 0 else self.future_data_
+        if self.exposure and self.exposure in obs_data.columns:
+            obs_data["logoffset"] = np.log(
+                np.asarray(obs_data[self.exposure].values, dtype=np.float64)
+            )
+        if self.exposure and len(fut_data) > 0 and self.exposure in fut_data.columns:
+            fut_data["logoffset"] = np.log(
+                np.asarray(fut_data[self.exposure].values, dtype=np.float64)
+            )
+
         # Fitted values for observed data
         # Use kind="response_params" as "mean" is deprecated in newer Bambi
         try:
             self.model_.predict(
-                self.idata, data=self.data_, kind="response_params", inplace=True
+                self.idata, data=obs_data, kind="response_params", inplace=True
             )
         except (TypeError, ValueError):
             # Fall back to "mean" for older Bambi versions
-            self.model_.predict(self.idata, data=self.data_, kind="mean", inplace=True)
+            self.model_.predict(self.idata, data=obs_data, kind="mean", inplace=True)
 
         # Get response name - Bambi stores predictions under 'mu' for mean
         # or in posterior_predictive for 'response' kind
@@ -278,11 +293,11 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         if len(self.future_data_) > 0:
             try:
                 self.model_.predict(
-                    self.idata, data=self.future_data_, kind="response_params", inplace=True
+                    self.idata, data=fut_data, kind="response_params", inplace=True
                 )
             except (TypeError, ValueError):
                 self.model_.predict(
-                    self.idata, data=self.future_data_, kind="mean", inplace=True
+                    self.idata, data=fut_data, kind="mean", inplace=True
                 )
 
             # Get the future predictions using same name discovery
