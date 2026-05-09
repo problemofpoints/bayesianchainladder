@@ -199,6 +199,15 @@ def _chain_ladder_fitted(cum: np.ndarray) -> np.ndarray:
 
     Uses volume-weighted age-to-age factors. Returns an array of shape
     cum.shape with NaN where cum is NaN.
+
+    Notes
+    -----
+    Anchored at the *latest* observed cell of each origin. For triangles with
+    interior NaN gaps (i.e., a row that is observed → NaN → observed) the
+    back-cast direction can lose otherwise-recoverable fitted values.
+    Schedule P upper triangles are contiguous from j=0, so this limitation
+    does not affect the present project but should be revisited if the data
+    shape changes.
     """
     n_origin, n_dev = cum.shape
     # Volume-weighted age-to-age factors f[j] = sum cum[:, j+1] / sum cum[:, j],
@@ -211,7 +220,10 @@ def _chain_ladder_fitted(cum: np.ndarray) -> np.ndarray:
         if denom > 0:
             f[j] = numer / denom
 
-    # Fitted cumulative (forward-project from the first observed cell of each origin).
+    # Fitted cumulative: anchor at the latest observed cell of each origin, then
+    # back-fill earlier dev periods by dividing by f, and forward-fill later dev
+    # periods by multiplying by f. For a standard contiguous upper triangle this
+    # is numerically equivalent to forward-casting from the first cell.
     fit_cum = np.full_like(cum, np.nan)
     for i in range(n_origin):
         # Use the last observed cumulative as the anchor and back-cast / forward-cast.
@@ -291,8 +303,6 @@ def pearson_residuals(tri: cl.Triangle) -> pd.DataFrame:
         phi = float(np.sum(raw_pearson**2) / (n - p))
     else:
         phi = float(np.var(raw_pearson, ddof=0))
-    if phi <= 0:
-        phi = 1e-12
     # Hat-matrix adjustment factor.
     if n - p > 0:
         adj = np.sqrt(n / (n - p))
