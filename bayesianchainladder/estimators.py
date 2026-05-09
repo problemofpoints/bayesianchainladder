@@ -17,6 +17,7 @@ import pandas as pd
 import pymc as pm
 import xarray as xr
 
+from .base import BaseStochasticReserve
 from .models import build_bambi_model, build_csr_model, fit_model, sample_prior_predictive
 from .utils import (
     add_categorical_columns,
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
     import chainladder as cl
 
 
-class BayesianChainLadderGLM:
+class BayesianChainLadderGLM(BaseStochasticReserve):
     """
     Bayesian cross-classified chain ladder model using GLM.
 
@@ -149,6 +150,7 @@ class BayesianChainLadderGLM:
         random_seed: int | None = None,
         backend: str = "bambi",
     ):
+        super().__init__()
         self.formula = formula
         self.family = family
         self.link = link
@@ -161,17 +163,12 @@ class BayesianChainLadderGLM:
         self.random_seed = random_seed
         self.backend = backend
 
-        # Fitted attributes (set by fit())
+        # GLM-specific fitted attributes (not in base)
         self.model_: bmb.Model | None = None
         self.idata: az.InferenceData | None = None
         self.data_: pd.DataFrame | None = None
         self.future_data_: pd.DataFrame | None = None
-        self.triangle_: cl.Triangle | None = None
         self.fitted_: pd.DataFrame | None = None
-        self.ultimate_: pd.DataFrame | None = None
-        self.ibnr_: pd.DataFrame | None = None
-        self.reserves_posterior_: xr.DataArray | None = None
-        self._is_fitted: bool = False
 
     def fit(
         self,
@@ -345,105 +342,18 @@ class BayesianChainLadderGLM:
                 if origin in reserve_samples:
                     reserves_list.append(reserve_samples[origin])
 
-            self.reserves_posterior_ = xr.concat(
+            reserves_posterior = xr.concat(
                 reserves_list, dim=pd.Index(origins, name="origin")
             )
-
-            # Compute ultimate and IBNR summaries
-            self._compute_reserve_summaries()
-
-    def _compute_reserve_summaries(self) -> None:
-        """Compute summary statistics for reserves."""
-        if self.reserves_posterior_ is None:
-            return
-
-        # Get paid to date for each origin
-        paid_to_date = self.data_.groupby("origin", observed=True)["incremental"].sum()
-
-        # Compute summary statistics
-        reserves_flat = self.reserves_posterior_.stack(sample=["chain", "draw"])
-
-        summary_data = []
-        for origin in self.reserves_posterior_.coords["origin"].values:
-            origin_reserves = reserves_flat.sel(origin=origin)
-
-            ibnr_mean = float(origin_reserves.mean())
-            ibnr_std = float(origin_reserves.std())
-            ibnr_median = float(origin_reserves.median())
-            ibnr_q05 = float(origin_reserves.quantile(0.05))
-            ibnr_q25 = float(origin_reserves.quantile(0.25))
-            ibnr_q75 = float(origin_reserves.quantile(0.75))
-            ibnr_q95 = float(origin_reserves.quantile(0.95))
-
-            paid = paid_to_date.get(origin, 0)
-            ultimate_mean = paid + ibnr_mean
-            ultimate_std = ibnr_std
-            ultimate_median = paid + ibnr_median
-            ultimate_q05 = paid + ibnr_q05
-            ultimate_q25 = paid + ibnr_q25
-            ultimate_q75 = paid + ibnr_q75
-            ultimate_q95 = paid + ibnr_q95
-
-            summary_data.append(
-                {
-                    "origin": origin,
-                    "paid_to_date": paid,
-                    "ibnr_mean": ibnr_mean,
-                    "ibnr_std": ibnr_std,
-                    "ibnr_median": ibnr_median,
-                    "ibnr_5%": ibnr_q05,
-                    "ibnr_25%": ibnr_q25,
-                    "ibnr_75%": ibnr_q75,
-                    "ibnr_95%": ibnr_q95,
-                    "ultimate_mean": ultimate_mean,
-                    "ultimate_std": ultimate_std,
-                    "ultimate_median": ultimate_median,
-                    "ultimate_5%": ultimate_q05,
-                    "ultimate_25%": ultimate_q25,
-                    "ultimate_75%": ultimate_q75,
-                    "ultimate_95%": ultimate_q95,
-                }
+            # Standardize to (origin, sample) for the base class helper
+            self.reserves_posterior_ = (
+                reserves_posterior
+                .stack(sample=["chain", "draw"])
+                .reset_index("sample", drop=True)
             )
 
-        summary_df = pd.DataFrame(summary_data)
-        summary_df = summary_df.set_index("origin")
-
-        # Split into ibnr_ and ultimate_
-        self.ibnr_ = summary_df[
-            [
-                "ibnr_mean",
-                "ibnr_std",
-                "ibnr_median",
-                "ibnr_5%",
-                "ibnr_25%",
-                "ibnr_75%",
-                "ibnr_95%",
-            ]
-        ].copy()
-        self.ibnr_.columns = ["mean", "std", "median", "5%", "25%", "75%", "95%"]
-
-        self.ultimate_ = summary_df[
-            [
-                "paid_to_date",
-                "ultimate_mean",
-                "ultimate_std",
-                "ultimate_median",
-                "ultimate_5%",
-                "ultimate_25%",
-                "ultimate_75%",
-                "ultimate_95%",
-            ]
-        ].copy()
-        self.ultimate_.columns = [
-            "paid_to_date",
-            "mean",
-            "std",
-            "median",
-            "5%",
-            "25%",
-            "75%",
-            "95%",
-        ]
+            # Compute ultimate and IBNR summaries (helper now lives in the base)
+            self._build_reserve_summaries()
 
     def predict(
         self,
@@ -501,73 +411,6 @@ class BayesianChainLadderGLM:
             combined["predicted_mean"] = pred_mean.values[-len(combined) :]
 
             return combined
-
-    def summary(
-        self,
-        include_totals: bool = True,
-        quantiles: list[float] | None = None,
-    ) -> pd.DataFrame:
-        """
-        Return summary table of reserves and ultimates.
-
-        Parameters
-        ----------
-        include_totals : bool, optional
-            Whether to include total row. Default is True.
-        quantiles : list[float], optional
-            Quantiles to include. Default is [0.05, 0.25, 0.5, 0.75, 0.95].
-
-        Returns
-        -------
-        pd.DataFrame
-            Summary table with reserve statistics by origin.
-        """
-        self._check_is_fitted()
-
-        if self.ultimate_ is None:
-            raise ValueError("No reserve summary available. Model may not have future cells.")
-
-        result = pd.concat(
-            [
-                self.ultimate_[["paid_to_date", "mean", "std", "median"]],
-                self.ibnr_[["mean", "std", "median"]],
-            ],
-            axis=1,
-            keys=["Ultimate", "IBNR"],
-        )
-
-        if include_totals:
-            # Compute total reserves
-            total_paid = self.ultimate_["paid_to_date"].sum()
-
-            # Get total reserve distribution
-            total_reserves = self.reserves_posterior_.sum(dim="origin")
-            total_flat = total_reserves.stack(sample=["chain", "draw"])
-
-            total_ibnr_mean = float(total_flat.mean())
-            total_ibnr_std = float(total_flat.std())
-            total_ibnr_median = float(total_flat.median())
-
-            total_ult_mean = total_paid + total_ibnr_mean
-            total_ult_std = total_ibnr_std
-            total_ult_median = total_paid + total_ibnr_median
-
-            total_row = pd.DataFrame(
-                {
-                    ("Ultimate", "paid_to_date"): [total_paid],
-                    ("Ultimate", "mean"): [total_ult_mean],
-                    ("Ultimate", "std"): [total_ult_std],
-                    ("Ultimate", "median"): [total_ult_median],
-                    ("IBNR", "mean"): [total_ibnr_mean],
-                    ("IBNR", "std"): [total_ibnr_std],
-                    ("IBNR", "median"): [total_ibnr_median],
-                },
-                index=["Total"],
-            )
-
-            result = pd.concat([result, total_row])
-
-        return result
 
     def get_parameter_summary(
         self,
@@ -628,46 +471,6 @@ class BayesianChainLadderGLM:
                 return az.summary(self.idata, var_names=[var])
 
         raise ValueError("Could not find development effects in model")
-
-    def sample_reserves(
-        self,
-        n_samples: int = 1000,
-        random_seed: int | None = None,
-    ) -> np.ndarray:
-        """
-        Draw samples from the reserve distribution.
-
-        Parameters
-        ----------
-        n_samples : int, optional
-            Number of samples to draw. Default is 1000.
-        random_seed : int, optional
-            Random seed for reproducibility.
-
-        Returns
-        -------
-        np.ndarray
-            Array of reserve samples (shape: n_samples).
-        """
-        self._check_is_fitted()
-
-        if self.reserves_posterior_ is None:
-            raise ValueError("No reserve posterior available")
-
-        # Get total reserves
-        total_reserves = self.reserves_posterior_.sum(dim="origin")
-        all_samples = total_reserves.stack(sample=["chain", "draw"]).values
-
-        if random_seed is not None:
-            np.random.seed(random_seed)
-
-        # Sample with replacement if needed
-        if n_samples <= len(all_samples):
-            indices = np.random.choice(len(all_samples), size=n_samples, replace=False)
-        else:
-            indices = np.random.choice(len(all_samples), size=n_samples, replace=True)
-
-        return all_samples[indices]
 
     def build_model(
         self,
@@ -900,13 +703,6 @@ class BayesianChainLadderGLM:
             return agg_summary
 
         return summary_df
-
-    def _check_is_fitted(self) -> None:
-        """Check if the model has been fitted."""
-        if not self._is_fitted:
-            raise ValueError(
-                "Model has not been fitted. Call fit() before using this method."
-            )
 
     def _build_default_priors(self) -> dict[str, Any]:
         """Build data-adaptive default priors, with user priors layered on top.
