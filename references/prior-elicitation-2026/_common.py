@@ -41,8 +41,8 @@ def is_eligible_triangle(tri: cl.Triangle) -> bool:
       1. >= MIN_ORIGIN_YEARS origin years have at least one observed cell.
       2. All observed cumulative `paid_loss` values are strictly positive.
       3. Net earned premium is positive for every origin with paid data.
-      4. There is at least one observed cell at dev > 12 months
-         (excludes triangles with only a single dev period).
+      4. At least one origin shows positive cumulative growth beyond dev=12
+         (i.e., paid_loss increases somewhere past the first development period).
 
     Parameters
     ----------
@@ -50,10 +50,11 @@ def is_eligible_triangle(tri: cl.Triangle) -> bool:
         A Triangle whose vdims include `paid_loss` and `net_earned_premium`,
         and whose index identifies a single (snl_id, line_of_business) pair.
     """
-    if "paid_loss" not in list(tri.vdims):
+    vdims = list(tri.vdims)
+    if "paid_loss" not in vdims:
         return False
     paid = tri["paid_loss"].values[0, 0]  # shape: (n_origin, n_dev)
-    if "net_earned_premium" in list(tri.vdims):
+    if "net_earned_premium" in vdims:
         prem = tri["net_earned_premium"].values[0, 0]
     else:
         prem = None
@@ -75,8 +76,11 @@ def is_eligible_triangle(tri: cl.Triangle) -> bool:
         if prem_observed.size == 0 or np.any(prem_observed <= 0):
             return False
 
-    # Rule 4: at least one observed cell at dev > 12 (i.e. j > 0) with
-    # positive incremental paid loss (cumulative increases beyond first period).
+    # Rule 4: positive incremental somewhere at dev > 12.
+    # np.diff propagates NaN, so a row with an interior NaN gap
+    # (observed, NaN, observed) would yield NaN diffs even if real growth
+    # occurred. Acceptable for Schedule P upper triangles which have no
+    # interior gaps; revisit if data shape changes.
     if paid.shape[1] < 2:
         return False
     incremental = np.diff(paid, axis=1)  # shape: (n_origin, n_dev - 1)

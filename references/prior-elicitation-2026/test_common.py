@@ -1,7 +1,6 @@
 """Unit tests for _common.py."""
 import numpy as np
 import pandas as pd
-import pytest
 
 from _common import is_eligible_triangle
 
@@ -76,7 +75,7 @@ def test_negative_paid_fails():
 
 
 def test_no_late_dev_activity_fails():
-    """Triangle where all paid > 0 only appears at dev=12 fails the dev>12 rule."""
+    """Triangle with flat cumulative paid (no incremental growth) fails Rule 4."""
     vals = np.full((10, 10), np.nan)
     for i in range(9):
         vals[i, 0] = 1.0
