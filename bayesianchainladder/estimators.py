@@ -347,7 +347,13 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             self._compute_reserves(future_mean)
 
     def _compute_reserves(self, future_predictions: xr.DataArray) -> None:
-        """Compute reserve distributions from future predictions."""
+        """Compute reserve distributions from future predictions.
+
+        When ``response_per_exposure=True`` the model predicts on loss-ratio
+        scale (incremental / EP).  This method back-transforms those
+        predictions to dollar scale by multiplying each future cell's predicted
+        loss ratio by the corresponding EP before summing within each origin.
+        """
         # Find the observation dimension name
         response_name = self.model_.response_component.response.name
         obs_dim = None
@@ -374,6 +380,13 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # Future observations are the last n_future items
         future_start = n_total_obs - n_future
 
+        # When response_per_exposure=True, predictions are on loss-ratio scale.
+        # Recover the per-row EP from future_data_ to back-transform to dollars.
+        ep_col = self._original_exposure_col if self.response_per_exposure else None
+        if ep_col is not None and ep_col not in self.future_data_.columns:
+            # Exposure column was renamed or missing — fall back to raw ratio
+            ep_col = None
+
         for origin in origins:
             # Get indices for this origin in future_data_
             mask = self.future_data_["origin"] == origin
@@ -385,6 +398,19 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
                 # Sum predictions for this origin across all future cells
                 origin_preds = future_predictions.isel({obs_dim: pos})
+
+                if ep_col is not None:
+                    # Back-transform loss-ratio predictions to dollar scale:
+                    # predicted_dollars[cell] = predicted_lr[cell] * EP[cell]
+                    ep_vals = np.asarray(
+                        self.future_data_.iloc[origin_future_idx][ep_col].values,
+                        dtype=np.float64,
+                    )
+                    # ep_vals has shape (n_cells_for_origin,); broadcast over
+                    # the (chain, draw) dims by creating an xr.DataArray.
+                    ep_da = xr.DataArray(ep_vals, dims=[obs_dim])
+                    origin_preds = origin_preds * ep_da
+
                 reserve_samples[origin] = origin_preds.sum(dim=obs_dim)
 
         # Create DataArray with reserves by origin

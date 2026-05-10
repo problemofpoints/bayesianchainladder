@@ -663,3 +663,53 @@ class TestResponsePerExposure:
 
         # Exposure should be restored after fit
         assert model.exposure == "exposure"
+
+    @pytest.mark.slow
+    def test_dollar_scale_back_transform(self, genins_with_premium):
+        """Ultimate posteriors should be in dollar units, not loss-ratio units.
+
+        When response_per_exposure=True the model predicts on loss-ratio scale.
+        _compute_reserves must multiply each future cell by its EP so that
+        ibnr_ and ultimate_ are in dollars, not fractions.
+        """
+        import warnings
+        paid_tri, prem_tri = genins_with_premium
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="t",
+            link="identity",
+            exposure="exposure",
+            response_per_exposure=True,
+            draws=100,
+            tune=100,
+            chains=1,
+            random_seed=99,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(paid_tri, exposure_triangle=prem_tri)
+
+        assert model._is_fitted
+        assert model.ultimate_ is not None
+        assert model.ibnr_ is not None
+
+        # The prem_tri is 6x paid_tri, so total paid-to-date is e.g. in the
+        # millions range for genins.  The median ultimate should be > total paid
+        # for at least one origin year (there are future cells).
+        total_paid = float(model.ultimate_["paid_to_date"].sum())
+        median_ultimate = float(model.ultimate_["median"].sum())
+
+        # Dollar-scale ultimates must be substantially larger than 1 (not
+        # loss-ratio fractions in [0, 2] range).
+        assert median_ultimate > total_paid * 0.5, (
+            f"Median ultimate {median_ultimate:.0f} is suspiciously small "
+            f"relative to paid {total_paid:.0f} — may still be on LR scale"
+        )
+        # Specifically: with genins prem = 6×paid, if predictions were on LR
+        # scale they'd be tiny (≈0.05-0.3 per cell); dollar scale should give
+        # values comparable to the observed paid amounts.
+        assert median_ultimate > 1_000, (
+            f"Median ultimate {median_ultimate:.2f} looks like a loss ratio, "
+            "not a dollar amount — back-transform may have failed"
+        )
