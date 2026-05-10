@@ -47,6 +47,7 @@ def build_bambi_model(
         - "poisson": Poisson (for count data)
         - "gamma": Gamma (for positive continuous data)
         - "gaussian": Normal/Gaussian
+        - "wald" / "inverse_gaussian": Wald / inverse-Gaussian (heavy-tailed positive data)
         Default is "negativebinomial" as an overdispersed Poisson proxy.
     link : str, optional
         Link function. If None, uses the default for the family.
@@ -144,6 +145,9 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
         "gamma": "gamma",
         "gaussian": "gaussian",
         "normal": "gaussian",
+        "wald": "wald",
+        "inverse_gaussian": "wald",
+        "inversegaussian": "wald",
     }
 
     family_lower = family.lower()
@@ -188,6 +192,12 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
             "family_cls_name": "Gaussian",
             "default_priors": {"sigma": "HalfNormal"},
         },
+        "wald": {
+            "likelihood": {"name": "Wald", "params": ["mu", "lam"], "parent": "mu"},
+            "link": {"mu": link, "lam": "log"},
+            "family_cls_name": "Wald",
+            "default_priors": {"lam": "HalfCauchy"},
+        },
     }
 
     if bambi_name not in _family_specs:
@@ -222,6 +232,7 @@ def _get_default_link(family: str) -> str:
         "poisson": "log",
         "gamma": "inverse",
         "gaussian": "identity",
+        "wald": "inverse_squared",
     }
     return default_links.get(family, "identity")
 

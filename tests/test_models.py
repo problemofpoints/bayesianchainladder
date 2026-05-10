@@ -219,6 +219,16 @@ class TestFamilyMapping:
             "log link may not be applied."
         )
 
+    def test_wald_log_link_returns_family_object(self, sample_data):
+        """_get_family('wald', 'log') returns a Bambi Family with mu's link == log."""
+        fam = _get_family("wald", "log")
+        assert hasattr(fam, "link")
+        assert fam.link["mu"].name == "log"
+
+    def test_wald_default_link_returns_string(self, sample_data):
+        """_get_family('wald') returns the string for default (inverse_squared) link."""
+        assert _get_family("wald") == "wald"
+
 
 @pytest.fixture
 def csr_sample_data():
