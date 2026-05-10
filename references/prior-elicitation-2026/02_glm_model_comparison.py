@@ -1,10 +1,13 @@
 """02_glm_model_comparison.py — WAIC/LOO comparison of GLM functional forms.
 
 Specs:
-  M1: incremental ~ 1 + C(origin) + C(dev)              (full categorical)
-  M2: incremental ~ 1 + C(origin) + bs(dev_idx, df=4)   (spline on dev ordinal index)
-  M3: incremental ~ 1 + bs(origin, df=3) + C(dev)       (restricted origin)
+  M1: incremental ~ 1 + C(origin) + C(dev)                           (full categorical)
+  M2: incremental ~ 1 + C(origin) + bs(dev_idx, df=4)                (spline on dev ordinal index)
+  M3: incremental ~ 1 + bs(origin, df=3) + C(dev)                    (restricted origin)
   M4: lives in 02b — fits one Bambi model per line with (1 | snl_id)
+  M5: incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4)             (random-effect origin)
+  M2_cal: incremental ~ 1 + C(origin) + bs(dev_idx, df=4) + (1 | calendar)   (M2 + calendar RE)
+  M5_cal: incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar) (M5 + calendar RE)
 
 M2 uses dev_idx (1-based integer ordinal, not raw dev-months) to avoid the
 pathological posterior geometry that the raw dev-months B-spline produced under
@@ -53,6 +56,13 @@ SPECS: dict[str, str] = {
     # df=2 is below the minimum of 3 for a cubic B-spline without intercept;
     # df=3 is the smallest valid value.
     "M3_restorigin": "incremental ~ 1 + bs(origin, df=3) + C(dev)",
+    # M5: random intercept by origin + spline on dev ordinal index.
+    # With only 10 origin levels mixing may be imperfect — rhat flagged if > 1.5.
+    "M5_origin_re": "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4)",
+    # M2_cal: M2 + random calendar-period intercept (diagonal effect).
+    "M2_cal": "incremental ~ 1 + C(origin) + bs(dev_idx, df=4) + (1 | calendar)",
+    # M5_cal: M5 + random calendar-period intercept.
+    "M5_cal": "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)",
 }
 
 

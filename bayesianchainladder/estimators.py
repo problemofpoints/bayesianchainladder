@@ -293,11 +293,13 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         if len(self.future_data_) > 0:
             try:
                 self.model_.predict(
-                    self.idata, data=fut_data, kind="response_params", inplace=True
+                    self.idata, data=fut_data, kind="response_params", inplace=True,
+                    sample_new_groups=True,
                 )
             except (TypeError, ValueError):
                 self.model_.predict(
-                    self.idata, data=fut_data, kind="mean", inplace=True
+                    self.idata, data=fut_data, kind="mean", inplace=True,
+                    sample_new_groups=True,
                 )
 
             # Get the future predictions using same name discovery

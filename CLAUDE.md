@@ -26,7 +26,7 @@ CI ([.github/workflows/tests.yml](.github/workflows/tests.yml)) uses `astral-sh/
 
 This package layers a scikit-learn-style estimator API on top of Bambi/PyMC for actuarial loss reserving. There are **two independent model families** sharing utility code:
 
-1. **`BayesianChainLadderGLM`** — Bambi-based cross-classified chain ladder GLM. Formula-driven (Patsy/Bambi), supports `negativebinomial` / `poisson` / `gamma` / `gaussian` families, optional `C(calendar)` effects, and an optional log-exposure offset. The standard model is `log(μ_kj) = intercept + α_k + β_j [+ γ_{k+j-1}] [+ log(exposure)]`.
+1. **`BayesianChainLadderGLM`** — Bambi-based cross-classified chain ladder GLM. Formula-driven (Patsy/Bambi), supports `negativebinomial` / `poisson` / `gamma` / `gaussian` / `wald` (inverse-Gaussian) families, optional `C(calendar)` effects, and an optional log-exposure offset. The standard model is `log(μ_kj) = intercept + α_k + β_j [+ γ_{k+j-1}] [+ log(exposure)]`.
 2. **`BayesianCSR`** — Glenn Meyers' (CAS Monograph 1, 2015) Changing Settlement Rate model written directly in PyMC. Lognormal on **cumulative paid loss** with log-premium offset, plus a geometric `speedup[origin] = (1-gamma)^i` factor allowing settlement-rate drift across accident years. Premium must be supplied (`premium_triangle=` or `premium_value=`).
 
 Both estimators expose the same fitted surface: `.idata`, `.ibnr_`, `.ultimate_`, `.reserves_posterior_`, `.summary()`, `.sample_reserves()`. The GLM additionally supports `.build_model()` + `.sample_prior_predictive()` for prior predictive checks before committing to a full fit (see [bayesianchainladder/estimators.py:700-876](bayesianchainladder/estimators.py#L700-L876)).
