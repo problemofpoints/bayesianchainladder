@@ -306,6 +306,17 @@ def positive_triangle():
     return tri
 
 
+@pytest.fixture
+def genins_with_premium():
+    """Return (paid_tri, prem_tri) using genins; premium is 6× the first-dev paid."""
+    paid_tri = cl.load_sample("genins")
+    # Use a scaled copy of genins as a stand-in premium triangle.
+    # The exposure triangle just needs to supply a positive per-origin scalar;
+    # prepare_model_data takes the first development period's value.
+    prem_tri = paid_tri * 6  # premium ≈ 6× dev-12 paid → implied LR ~17%
+    return paid_tri, prem_tri
+
+
 class TestBayesianChainLadderGLMNegativeBinomial:
     """Tests for negative binomial family with appropriate data."""
 
@@ -595,3 +606,60 @@ class TestBayesianCSRValidation:
 
         with pytest.raises(ValueError, match="not been fitted"):
             model.get_speedup_parameter()
+
+
+# ============================================================================
+# Student-t family + response_per_exposure tests
+# ============================================================================
+
+
+class TestResponsePerExposure:
+    """Tests for response_per_exposure=True (loss-ratio identity-link mode)."""
+
+    def test_response_per_exposure_requires_exposure(self, positive_triangle):
+        """response_per_exposure=True without exposure= raises ValueError."""
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="t",
+            link="identity",
+            response_per_exposure=True,
+            draws=50,
+            tune=25,
+            chains=1,
+        )
+        with pytest.raises(ValueError, match="response_per_exposure"):
+            model.fit(positive_triangle)
+
+    @pytest.mark.slow
+    def test_t_family_response_per_exposure_fits(self, genins_with_premium):
+        """t family with response_per_exposure=True completes and produces sensible LR."""
+        import warnings
+        paid_tri, prem_tri = genins_with_premium
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="t",
+            link="identity",
+            exposure="exposure",
+            response_per_exposure=True,
+            draws=100,
+            tune=100,
+            chains=1,
+            random_seed=42,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(paid_tri, exposure_triangle=prem_tri)
+
+        assert model._is_fitted
+        assert model.idata is not None
+
+        # The intercept should be on loss-ratio scale: well under 1.0
+        # (genins has ~30-40% first-dev LR so intercept will be small positive)
+        intercept_mean = float(model.idata.posterior["Intercept"].values.mean())
+        assert intercept_mean < 1.0, (
+            f"Intercept {intercept_mean:.4f} should be < 1.0 for a loss-ratio-scale fit"
+        )
+
+        # Exposure should be restored after fit
+        assert model.exposure == "exposure"

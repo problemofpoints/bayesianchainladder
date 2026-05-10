@@ -229,6 +229,18 @@ class TestFamilyMapping:
         """_get_family('wald') returns the string for default (inverse_squared) link."""
         assert _get_family("wald") == "wald"
 
+    def test_t_default_link_returns_string(self):
+        """t family with default (identity) link returns plain string."""
+        assert _get_family("t") == "t"
+        assert _get_family("student_t") == "t"
+        assert _get_family("studentt") == "t"
+
+    def test_t_log_link_returns_family_object(self):
+        """t family with link='log' returns a bmb.Family with log mu-link."""
+        fam = _get_family("t", "log")
+        assert hasattr(fam, "link")
+        assert fam.link["mu"].name == "log"
+
 
 @pytest.fixture
 def csr_sample_data():

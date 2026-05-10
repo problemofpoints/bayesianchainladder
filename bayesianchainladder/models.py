@@ -148,6 +148,9 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
         "wald": "wald",
         "inverse_gaussian": "wald",
         "inversegaussian": "wald",
+        "t": "t",
+        "student_t": "t",
+        "studentt": "t",
     }
 
     family_lower = family.lower()
@@ -198,6 +201,12 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
             "family_cls_name": "Wald",
             "default_priors": {"lam": "HalfCauchy"},
         },
+        "t": {
+            "likelihood": {"name": "StudentT", "params": ["mu", "sigma", "nu"], "parent": "mu"},
+            "link": {"mu": link, "sigma": "log", "nu": "log"},
+            "family_cls_name": "StudentT",
+            "default_priors": {"sigma": "HalfNormal", "nu": "Gamma"},
+        },
     }
 
     if bambi_name not in _family_specs:
@@ -233,6 +242,7 @@ def _get_default_link(family: str) -> str:
         "gamma": "inverse",
         "gaussian": "identity",
         "wald": "inverse_squared",
+        "t": "identity",
     }
     return default_links.get(family, "identity")
 

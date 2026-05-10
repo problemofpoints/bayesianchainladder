@@ -86,6 +86,13 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
     backend : str, optional
         Modeling backend. Currently only "bambi" is fully supported.
         Default is "bambi".
+    response_per_exposure : bool, optional
+        If True, divide the response column by the exposure column at fit time
+        and model the resulting loss-ratio-incremental as the response. This is
+        the recommended approach for identity-link or t families that allow
+        negative responses. When True, no log offset is added — the model is on
+        loss-ratio scale directly. Caller must still supply ``exposure=...``.
+        Default is False.
 
     Attributes
     ----------
@@ -149,6 +156,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         target_accept: float = 0.9,
         random_seed: int | None = None,
         backend: str = "bambi",
+        response_per_exposure: bool = False,
     ):
         super().__init__()
         self.formula = formula
@@ -162,6 +170,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.target_accept = target_accept
         self.random_seed = random_seed
         self.backend = backend
+        self.response_per_exposure = response_per_exposure
 
         # GLM-specific fitted attributes (not in base)
         self.model_: bmb.Model | None = None
@@ -169,6 +178,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.data_: pd.DataFrame | None = None
         self.future_data_: pd.DataFrame | None = None
         self.fitted_: pd.DataFrame | None = None
+        self._original_exposure_col: str | None = None
 
     def fit(
         self,
@@ -209,6 +219,27 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.data_ = add_categorical_columns(self.data_, formula=self.formula)
         self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
 
+        # If response_per_exposure=True, divide the response by exposure in the
+        # observed data so the model is on loss-ratio scale rather than dollar scale.
+        # No log offset is appended in this mode.
+        if self.response_per_exposure:
+            if not self.exposure:
+                raise ValueError(
+                    "response_per_exposure=True requires exposure= to be set."
+                )
+            self._original_exposure_col = self.exposure
+            response_col = self.formula.split("~")[0].strip()
+            if response_col not in self.data_.columns:
+                raise ValueError(
+                    f"Response column '{response_col}' (LHS of formula) not found in data."
+                )
+            exp_vals = np.asarray(self.data_[self.exposure].values, dtype=np.float64)
+            self.data_ = self.data_.copy()
+            response_vals = np.asarray(self.data_[response_col].values, dtype=np.float64)
+            self.data_[response_col] = response_vals / exp_vals
+            # Clear the exposure so build_bambi_model does not append a log offset.
+            self.exposure = None
+
         # Validate data compatibility with chosen family
         self._validate_data_family_compatibility()
 
@@ -237,6 +268,10 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         # Generate predictions
         self._compute_predictions()
+
+        # Restore exposure if it was temporarily cleared for response_per_exposure mode.
+        if self.response_per_exposure and self._original_exposure_col is not None:
+            self.exposure = self._original_exposure_col
 
         self._is_fitted = True
         return self
@@ -750,8 +785,22 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         User-supplied priors via ``self.priors`` always override the defaults.
         """
-        response_values = self.data_["incremental"].values
-        is_log_link = self.family.lower() not in ("gaussian", "normal")
+        # Detect effective link: use explicit self.link if set, else fall back to
+        # the family default.  t / gaussian / normal are identity-link by default.
+        from .models import _get_default_link as _gdl
+        family_lower = self.family.lower()
+        canonical = {
+            "t": "t", "student_t": "t", "studentt": "t",
+            "gaussian": "gaussian", "normal": "gaussian",
+        }.get(family_lower, family_lower)
+        effective_link = self.link if self.link else _gdl(canonical)
+        is_log_link = effective_link == "log"
+
+        # Determine the actual response column name (LHS of formula).
+        response_col = self.formula.split("~")[0].strip()
+        if response_col not in self.data_.columns:
+            response_col = "incremental"
+        response_values = self.data_[response_col].values
 
         if is_log_link:
             intercept_sigma = 1.0

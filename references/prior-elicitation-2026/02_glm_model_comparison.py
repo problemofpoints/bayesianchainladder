@@ -63,6 +63,13 @@ SPECS: dict[str, str] = {
     "M2_cal": "incremental ~ 1 + C(origin) + bs(dev_idx, df=4) + (1 | calendar)",
     # M5_cal: M5 + random calendar-period intercept.
     "M5_cal": "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)",
+    # MT2: t family, identity link, loss-ratio response (response_per_exposure=True).
+    # Same functional form as M2_devidx_bs4 but on loss-ratio scale — allows
+    # negative residuals and thick tails. LOO is on loss-ratio scale and NOT
+    # directly comparable to the gamma+log specs above.
+    "MT2": "incremental ~ 1 + C(origin) + bs(dev_idx, df=4)",
+    # MT5_cal: t family, identity link, loss-ratio, with random calendar effect.
+    "MT5_cal": "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)",
 }
 
 
@@ -72,26 +79,46 @@ def _seed_for(line: str, snl_id: str, spec: str) -> int:
     return int(h, 16) % (2**31)
 
 
-def _fit_one(triangle, formula: str, seed: int) -> dict:
+def _spec_kwargs(spec_name: str) -> dict:
+    """Per-spec family/link/response_per_exposure kwargs."""
+    if spec_name.startswith("MT"):
+        return {
+            "family": "t",
+            "link": "identity",
+            "exposure": "net_earned_premium",
+            "response_per_exposure": True,
+        }
+    return {
+        "family": "gamma",
+        "link": "log",
+        "exposure": "net_earned_premium",
+        "response_per_exposure": False,
+    }
+
+
+def _fit_one(triangle, formula: str, spec_name: str, seed: int) -> dict:
     """Fit a single BayesianChainLadderGLM and return {waic, loo, p_waic, p_loo, max_rhat}.
 
     The input triangle is multi-vdim (paid_loss, net_earned_premium, …).
     We split it into a single-vdim paid_loss triangle and a separate
     exposure triangle so that triangle_to_dataframe sees (1, 1, n_orig, n_dev).
+
+    MT* specs use family='t', link='identity', response_per_exposure=True
+    (loss-ratio scale). Their LOO is NOT directly comparable to gamma+log specs
+    (different response units / reference densities).
     """
     paid_tri = triangle["paid_loss"]
     prem_tri = triangle["net_earned_premium"]
 
+    kwargs = _spec_kwargs(spec_name)
     model = BayesianChainLadderGLM(
         formula=formula,
-        family="gamma",
-        link="log",
-        exposure="net_earned_premium",
         draws=1000,
         tune=1000,
         chains=2,
         target_accept=0.95,
         random_seed=seed,
+        **kwargs,
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -154,7 +181,7 @@ def main() -> int:
                 seed = _seed_for(line, snl_id, spec_name)
                 print(f"  {line:5s} {snl_id:14s} {spec_name:14s} seed={seed}", flush=True)
                 try:
-                    res = _fit_one(sub_tri, formula, seed)
+                    res = _fit_one(sub_tri, formula, spec_name, seed)
                     status = "ok"
                 except Exception as e:  # noqa: BLE001
                     res = {
