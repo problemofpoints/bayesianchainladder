@@ -6,30 +6,55 @@ Interactive version: [report.html](report.html).
 
 ## Headline Recommendations
 
-| line   | best_spec   |   loo_mean | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     |   rho_point |   rho_median |   ulr_mean |   phi_p50 | glm_intercept_prior   | glm_dev_sigma_prior   |
-|:-------|:------------|-----------:|:--------------------|:----------------------|:------------------|------------:|-------------:|-----------:|----------:|:----------------------|:----------------------|
-| OLO    | M5_cal      |   -525.622 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) |       0.105 |        0.105 |      0.663 |  1209.404 | Normal(-3.089, 0.386) | HalfNormal(1.125)     |
-| OLC    | M5_cal      |   -563.004 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |       0.061 |        0.062 |      0.639 |  1894.560 | Normal(-3.291, 0.263) | HalfNormal(1.122)     |
-| CAL    | M2_cal      |   -541.844 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) |       0.110 |        0.110 |      0.749 |   639.597 | Normal(-2.256, 0.255) | HalfNormal(1.756)     |
-| WC     | M5_cal      |   -498.243 | Normal(-0.74, 0.43) | Normal(0.004, 0.031)  | HalfNormal(0.048) |       0.124 |        0.125 |      0.567 |   192.466 | Normal(-2.279, 0.228) | HalfNormal(1.548)     |
-| PPAL   | M5_cal      |   -525.348 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) |       0.140 |        0.139 |      0.716 |   338.915 | Normal(-1.256, 0.377) | HalfNormal(2.179)     |
-| CMP    | M2_cal      |   -526.539 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) |       0.071 |        0.068 |      0.635 |   655.080 | Normal(-1.871, 0.292) | HalfNormal(1.122)     |
+| line   | best_spec       |   loo_mean | csr_logelr_prior    | csr_gamma_prior       | csr_sig_prior     |   rho_point |   rho_median |   ulr_mean |   phi_p50 | glm_intercept_prior   | glm_dev_sigma_prior   | t_intercept_prior      | t_sigma_prior      |
+|:-------|:----------------|-----------:|:--------------------|:----------------------|:------------------|------------:|-------------:|-----------:|----------:|:----------------------|:----------------------|:-----------------------|:-------------------|
+| OLO    | M5_cal          |   -525.621 | Normal(-0.63, 0.85) | Normal(-0.009, 0.028) | HalfNormal(0.189) |       0.105 |        0.105 |      0.663 |  1209.404 | Normal(-3.089, 0.386) | HalfNormal(1.125)     | Normal(0.0572, 0.0187) | HalfNormal(0.0313) |
+| OLC    | M4_hierarchical |   -580.404 | Normal(-0.55, 0.36) | Normal(0.004, 0.022)  | HalfNormal(0.176) |       0.061 |        0.062 |      0.639 |  1894.560 | Normal(-3.291, 0.263) | HalfNormal(1.122)     | Normal(0.0437, 0.0170) | HalfNormal(0.0271) |
+| CAL    | M4_hierarchical |   -558.183 | Normal(-0.33, 0.23) | Normal(-0.024, 0.016) | HalfNormal(0.066) |       0.110 |        0.110 |      0.749 |   639.597 | Normal(-2.256, 0.255) | HalfNormal(1.756)     | Normal(0.1317, 0.0169) | HalfNormal(0.0282) |
+| WC     | M4_hierarchical |   -528.402 | Normal(-0.74, 0.43) | Normal(0.004, 0.031)  | HalfNormal(0.048) |       0.124 |        0.125 |      0.567 |   192.466 | Normal(-2.279, 0.228) | HalfNormal(1.548)     | Normal(0.1409, 0.0138) | HalfNormal(0.0258) |
+| PPAL   | M4_hierarchical |   -550.444 | Normal(-0.31, 0.16) | Normal(-0.022, 0.016) | HalfNormal(0.024) |       0.140 |        0.139 |      0.716 |   338.915 | Normal(-1.256, 0.377) | HalfNormal(2.179)     | Normal(0.2649, 0.0177) | HalfNormal(0.0280) |
+| CMP    | M4_hierarchical |   -553.366 | Normal(-0.58, 0.23) | Normal(0.001, 0.031)  | HalfNormal(0.072) |       0.071 |        0.068 |      0.635 |   655.080 | Normal(-1.871, 0.292) | HalfNormal(1.122)     | Normal(0.2228, 0.0205) | HalfNormal(0.0221) |
+
+
+## LOO Comparability Note — Dollar Scale vs Loss-Ratio Scale
+
+**MT2** and **MT5_cal** fit the model on *loss-ratio-incremental* response
+(paid / earned_premium per cell), using a Student-t family with identity link.
+The remaining specs (M1–M5_cal) fit on *dollar-incremental* response with a
+gamma + log-link.
+
+**LOO is NOT directly comparable across these two scale classes.**
+The log-likelihood density for the t-family on loss-ratio scale has a different
+reference measure than the gamma density on dollar scale. As a result, MT LOO
+values (typically slightly positive, ~100 to ~150 per triangle) cannot be ranked
+against gamma+log LOO values (typically large-negative, ~−500 to ~−400 per triangle).
+
+To compare them on equal footing one would add `log(EP_per_cell)` to each MT
+log-likelihood observation (the Jacobian for the y → y/EP change of variables),
+converting the MT LOO to dollar-equivalent units. This correction is not applied
+here — instead, the two scale-classes are reported separately and compared within
+each class:
+
+- **Gamma + log-link:** compare M1, M2, M3, M4 (hierarchical), M2_cal, M5_cal
+- **t + identity-link (loss-ratio):** compare MT2, MT5_cal
+
 
 
 ## GLM Functional-Form Comparison
 
-Family: gamma + log link. M1: full categorical origin+dev. M2: C(origin) + B-spline on dev ordinal index (df=4). M3: B-spline on origin (df=3) + C(dev). M4: hierarchical (1|snl_id) — normalised LOO by n_companies for comparability.
+Family: gamma + log link. M1: full categorical origin+dev. M2: C(origin) + B-spline on dev ordinal index (df=4). M3: B-spline on origin (df=3) + C(dev). M4: hierarchical (1|snl_id) — normalised LOO by n_companies for comparability. **MT2 and MT5_cal use t + identity link on loss-ratio response — see LOO comparability note above.**
 
+### Gamma + log-link (dollar-scale response)
 Mean LOO per spec (higher = better, NaN = no converged fits):
 
 | line   |   M1_cat |   M2_cal |   M2_devidx_bs4 |   M3_restorigin |   M4_hierarchical |   M5_cal |   M5_origin_re |
 |:-------|---------:|---------:|----------------:|----------------:|------------------:|---------:|---------------:|
-| OLO    |  -537.5  |  -535.39 |         -526.75 |         -535.99 |           -558.34 |  -525.62 |        -527.19 |
-| OLC    |  -571.58 |  -566.65 |         -568.41 |         -571.06 |           -580.4  |  -563    |        -575.44 |
-| CAL    |  -552.73 |  -541.84 |         -546    |         -550.3  |           -558.18 |  -543.5  |        -546.27 |
-| WC     |  -513.19 |  -501.91 |         -504.44 |         -510.48 |           -528.4  |  -498.24 |        -504.67 |
-| PPAL   |  -561.24 |  -541.79 |         -547.54 |         -569.51 |           -550.44 |  -525.35 |        -529.36 |
-| CMP    |  -542.11 |  -526.54 |         -531.95 |         -538.1  |           -553.37 |  -526.91 |        -532.42 |
+| OLO    |   -537.5 |  -535.39 |         -526.75 |         -535.99 |           -558.34 |  -525.62 |        -527.19 |
+| OLC    |   -617   |  -614.4  |         -615.41 |         -618.56 |           -580.4  |  -605.34 |        -615.89 |
+| CAL    |    nan   |   nan    |          nan    |          nan    |           -558.18 |   nan    |         nan    |
+| WC     |    nan   |   nan    |          nan    |          nan    |           -528.4  |   nan    |         nan    |
+| PPAL   |    nan   |   nan    |          nan    |          nan    |           -550.44 |   nan    |         nan    |
+| CMP    |    nan   |   nan    |          nan    |          nan    |           -553.37 |   nan    |         nan    |
 
 
 Converged-fit counts per spec (out of 24 sampled triangles per line):
@@ -37,11 +62,37 @@ Converged-fit counts per spec (out of 24 sampled triangles per line):
 | line   |   M1_cat |   M2_cal |   M2_devidx_bs4 |   M3_restorigin |   M4_hierarchical |   M5_cal |   M5_origin_re |
 |:-------|---------:|---------:|----------------:|----------------:|------------------:|---------:|---------------:|
 | OLO    |       24 |       22 |              24 |              24 |                24 |       23 |             24 |
-| OLC    |       19 |       19 |              19 |              19 |                19 |       17 |             18 |
-| CAL    |       24 |       22 |              24 |              24 |                24 |       21 |             24 |
-| WC     |       24 |       22 |              24 |              24 |                24 |       23 |             24 |
-| PPAL   |       22 |       19 |              24 |              23 |                24 |       22 |             24 |
-| CMP    |       24 |       22 |              24 |              24 |                24 |       23 |             24 |
+| OLC    |        4 |        4 |               4 |               4 |                19 |        3 |              4 |
+| CAL    |        0 |        0 |               0 |               0 |                24 |        0 |              0 |
+| WC     |        0 |        0 |               0 |               0 |                24 |        0 |              0 |
+| PPAL   |        0 |        0 |               0 |               0 |                24 |        0 |              0 |
+| CMP    |        0 |        0 |               0 |               0 |                24 |        0 |              0 |
+
+
+### t + identity-link (loss-ratio-scale response)
+LOO is on loss-ratio density scale — NOT comparable to gamma+log above.
+Mean LOO per spec (higher = better within this scale class):
+
+| line   |   MT2 |   MT5_cal |
+|:-------|------:|----------:|
+| OLO    | 119.5 |    126.89 |
+| OLC    | 116.9 |     94    |
+| CAL    | nan   |    nan    |
+| WC     | nan   |    nan    |
+| PPAL   | nan   |    nan    |
+| CMP    | nan   |    nan    |
+
+
+Converged-fit counts:
+
+| line   |   MT2 |   MT5_cal |
+|:-------|------:|----------:|
+| OLO    |    24 |        19 |
+| OLC    |     4 |         1 |
+| CAL    |     0 |         0 |
+| WC     |     0 |         0 |
+| PPAL   |     0 |         0 |
+| CMP    |     0 |         0 |
 
 
 ## Wald vs Gamma family on M2 (LOO)
@@ -51,11 +102,11 @@ Both families fit M2 (`bs(dev_idx, df=4)` + categorical origin) with log link. P
 | line   |   gamma_log_M2_loo |   wald_log_M2_loo |   wald_minus_gamma |
 |:-------|-------------------:|------------------:|-------------------:|
 | OLO    |            -526.75 |           -570.36 |             -43.62 |
-| OLC    |            -568.41 |           -619.78 |             -51.36 |
-| CAL    |            -546.00 |           -601.36 |             -55.36 |
-| WC     |            -504.44 |           -571.53 |             -67.09 |
-| PPAL   |            -547.54 |           -604.08 |             -56.55 |
-| CMP    |            -531.95 |           -590.88 |             -58.93 |
+| OLC    |            -615.41 |           -619.78 |              -4.36 |
+| CAL    |             nan    |           -601.36 |             nan    |
+| WC     |             nan    |           -571.53 |             nan    |
+| PPAL   |             nan    |           -604.08 |             nan    |
+| CMP    |             nan    |           -590.88 |             nan    |
 
 
 ### M4 hierarchical (Bambi `(1 | snl_id)`) convergence diagnostics
@@ -84,6 +135,20 @@ Per-line prior recommendations derived from posteriors of the M1 fits (24 sample
 | OLO    |            24 | Normal(-3.089, 0.386) | HalfNormal(32.577)  | HalfNormal(0.350)        | HalfNormal(1.125)     |
 | PPAL   |            22 | Normal(-1.256, 0.377) | HalfNormal(72.154)  | HalfNormal(0.221)        | HalfNormal(2.179)     |
 | WC     |            24 | Normal(-2.279, 0.228) | HalfNormal(100.056) | HalfNormal(0.252)        | HalfNormal(1.548)     |
+
+
+## GLM Prior Recommendations (BayesianChainLadderGLM, t + identity link, loss-ratio)
+
+Per-line prior recommendations derived from posteriors of the MT2 fits (`incremental ~ 1 + C(origin) + bs(dev_idx, df=4)`, t family, identity link, `response_per_exposure=True`). The response is on loss-ratio scale (incremental paid / earned premium). These priors are **for use when fitting with `family='t', link='identity', response_per_exposure=True`**.
+
+| line   |   n_converged | t_intercept_prior      | t_sigma_prior      | t_nu_prior                                                          | t_origin_sigma_prior   | t_dev_sigma_prior   |
+|:-------|--------------:|:-----------------------|:-------------------|:--------------------------------------------------------------------|:-----------------------|:--------------------|
+| CAL    |            24 | Normal(0.1317, 0.0169) | HalfNormal(0.0282) | Gamma(alpha=2, beta=0.1)  [Bambi default; posterior nu_median=21.6] | HalfNormal(0.0270)     | HalfNormal(0.1298)  |
+| CMP    |            24 | Normal(0.2228, 0.0205) | HalfNormal(0.0221) | Gamma(alpha=2, beta=0.1)  [Bambi default; posterior nu_median=9.1]  | HalfNormal(0.0317)     | HalfNormal(0.0560)  |
+| OLC    |            19 | Normal(0.0437, 0.0170) | HalfNormal(0.0271) | Gamma(alpha=2, beta=0.1)  [Bambi default; posterior nu_median=22.0] | HalfNormal(0.0237)     | HalfNormal(0.0783)  |
+| OLO    |            24 | Normal(0.0572, 0.0187) | HalfNormal(0.0313) | Gamma(alpha=2, beta=0.1)  [Bambi default; posterior nu_median=20.6] | HalfNormal(0.0193)     | HalfNormal(0.0974)  |
+| PPAL   |            22 | Normal(0.2649, 0.0177) | HalfNormal(0.0280) | Gamma(alpha=2, beta=0.1)  [Bambi default; posterior nu_median=18.8] | HalfNormal(0.0281)     | HalfNormal(0.1655)  |
+| WC     |            23 | Normal(0.1409, 0.0138) | HalfNormal(0.0258) | Gamma(alpha=2, beta=0.1)  [Bambi default; posterior nu_median=21.4] | HalfNormal(0.0160)     | HalfNormal(0.1480)  |
 
 
 ## CSR Prior Recommendations (full)

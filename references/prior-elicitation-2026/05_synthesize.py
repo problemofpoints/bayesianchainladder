@@ -46,6 +46,10 @@ def _read_parquet(path: Path) -> pd.DataFrame:
 def _rank_glm_specs() -> tuple[pd.DataFrame, pd.DataFrame]:
     """For each line, produce mean LOO per spec and pick a winner.
 
+    MT* specs (t family, loss-ratio scale) are excluded from the winner
+    selection because their LOO is on a different response scale than the
+    gamma+log specs.
+
     Returns (combined, winners). Both DataFrames may be empty if no cache
     files exist yet.
     """
@@ -86,12 +90,18 @@ def _rank_glm_specs() -> tuple[pd.DataFrame, pd.DataFrame]:
     if combined.empty:
         return combined, pd.DataFrame(columns=["line", "best_spec", "loo_mean"])
 
-    winners = (
-        combined.sort_values("loo_mean", ascending=False)
-        .drop_duplicates("line")
-        .rename(columns={"spec": "best_spec"})
-        [["line", "best_spec", "loo_mean"]]
-    )
+    # Winner selection uses only dollar-scale (gamma+log) specs.
+    # MT* specs are on loss-ratio scale so their LOO cannot be compared directly.
+    dollar_specs = combined[~combined["spec"].str.startswith("MT")]
+    if dollar_specs.empty:
+        winners = pd.DataFrame(columns=["line", "best_spec", "loo_mean"])
+    else:
+        winners = (
+            dollar_specs.sort_values("loo_mean", ascending=False)
+            .drop_duplicates("line")
+            .rename(columns={"spec": "best_spec"})
+            [["line", "best_spec", "loo_mean"]]
+        )
     return combined, winners
 
 
@@ -191,6 +201,33 @@ def _build_wald_comparison_section() -> str:
     return "\n".join(out)
 
 
+def _build_loo_scale_caveat() -> str:
+    """Build the LOO comparability caveat section for MT vs gamma specs."""
+    return """\n## LOO Comparability Note — Dollar Scale vs Loss-Ratio Scale
+
+**MT2** and **MT5_cal** fit the model on *loss-ratio-incremental* response
+(paid / earned_premium per cell), using a Student-t family with identity link.
+The remaining specs (M1–M5_cal) fit on *dollar-incremental* response with a
+gamma + log-link.
+
+**LOO is NOT directly comparable across these two scale classes.**
+The log-likelihood density for the t-family on loss-ratio scale has a different
+reference measure than the gamma density on dollar scale. As a result, MT LOO
+values (typically slightly positive, ~100 to ~150 per triangle) cannot be ranked
+against gamma+log LOO values (typically large-negative, ~−500 to ~−400 per triangle).
+
+To compare them on equal footing one would add `log(EP_per_cell)` to each MT
+log-likelihood observation (the Jacobian for the y → y/EP change of variables),
+converting the MT LOO to dollar-equivalent units. This correction is not applied
+here — instead, the two scale-classes are reported separately and compared within
+each class:
+
+- **Gamma + log-link:** compare M1, M2, M3, M4 (hierarchical), M2_cal, M5_cal
+- **t + identity-link (loss-ratio):** compare MT2, MT5_cal
+
+"""
+
+
 def _build_readme(
     combined: pd.DataFrame,
     winners: pd.DataFrame,
@@ -199,6 +236,7 @@ def _build_readme(
     descriptive: pd.DataFrame,
     rec: pd.DataFrame,
     glm_priors: pd.DataFrame | None = None,
+    glm_t_priors: pd.DataFrame | None = None,
 ) -> str:
     lines_out: list[str] = []
     lines_out.append("# Prior Elicitation 2026 — Per-Line Recommendations\n")
@@ -211,34 +249,68 @@ def _build_readme(
     lines_out.append("## Headline Recommendations\n")
     lines_out.append(_format_md_recommendations(rec) + "\n")
 
+    lines_out.append(_build_loo_scale_caveat())
+
     lines_out.append("\n## GLM Functional-Form Comparison\n")
     lines_out.append(
         "Family: gamma + log link. M1: full categorical origin+dev. "
         "M2: C(origin) + B-spline on dev ordinal index (df=4). "
         "M3: B-spline on origin (df=3) + C(dev). "
-        "M4: hierarchical (1|snl_id) — normalised LOO by n_companies for comparability.\n"
+        "M4: hierarchical (1|snl_id) — normalised LOO by n_companies for comparability. "
+        "**MT2 and MT5_cal use t + identity link on loss-ratio response — see LOO "
+        "comparability note above.**\n"
     )
     if not combined.empty:
-        pivot = (
-            combined.pivot(index="line", columns="spec", values="loo_mean")
-            .reindex(LINES)
-            .round(2)
-        )
-        lines_out.append(
-            "Mean LOO per spec (higher = better, NaN = no converged fits):\n"
-        )
-        lines_out.append(pivot.to_markdown() + "\n")
+        # Split into dollar-scale and loss-ratio-scale for separate display
+        dollar_combined = combined[~combined["spec"].str.startswith("MT")]
+        mt_combined = combined[combined["spec"].str.startswith("MT")]
 
-        n_pivot = (
-            combined.pivot(index="line", columns="spec", values="n")
-            .reindex(LINES)
-            .fillna(0)
-            .astype(int)
-        )
-        lines_out.append(
-            "\nConverged-fit counts per spec (out of 24 sampled triangles per line):\n"
-        )
-        lines_out.append(n_pivot.to_markdown() + "\n")
+        if not dollar_combined.empty:
+            pivot = (
+                dollar_combined.pivot(index="line", columns="spec", values="loo_mean")
+                .reindex(LINES)
+                .round(2)
+            )
+            lines_out.append(
+                "### Gamma + log-link (dollar-scale response)\n"
+                "Mean LOO per spec (higher = better, NaN = no converged fits):\n"
+            )
+            lines_out.append(pivot.to_markdown() + "\n")
+
+            n_pivot = (
+                dollar_combined.pivot(index="line", columns="spec", values="n")
+                .reindex(LINES)
+                .fillna(0)
+                .astype(int)
+            )
+            lines_out.append(
+                "\nConverged-fit counts per spec (out of 24 sampled triangles per line):\n"
+            )
+            lines_out.append(n_pivot.to_markdown() + "\n")
+
+        if not mt_combined.empty:
+            mt_pivot = (
+                mt_combined.pivot(index="line", columns="spec", values="loo_mean")
+                .reindex(LINES)
+                .round(2)
+            )
+            lines_out.append(
+                "\n### t + identity-link (loss-ratio-scale response)\n"
+                "LOO is on loss-ratio density scale — NOT comparable to gamma+log above.\n"
+                "Mean LOO per spec (higher = better within this scale class):\n"
+            )
+            lines_out.append(mt_pivot.to_markdown() + "\n")
+
+            mt_n_pivot = (
+                mt_combined.pivot(index="line", columns="spec", values="n")
+                .reindex(LINES)
+                .fillna(0)
+                .astype(int)
+            )
+            lines_out.append(
+                "\nConverged-fit counts:\n"
+            )
+            lines_out.append(mt_n_pivot.to_markdown() + "\n")
     else:
         lines_out.append("_GLM fits not yet available (sweeps still running)._\n")
 
@@ -301,6 +373,35 @@ def _build_readme(
             + "\n"
         )
 
+    glm_t_priors_path = cache_path("glm_t_priors_by_line.parquet")
+    if glm_t_priors_path.exists():
+        _glm_t_priors = glm_t_priors if glm_t_priors is not None else _read_parquet(glm_t_priors_path)
+        lines_out.append(
+            "\n## GLM Prior Recommendations (BayesianChainLadderGLM, t + identity link, loss-ratio)\n"
+        )
+        lines_out.append(
+            "Per-line prior recommendations derived from posteriors of the "
+            "MT2 fits (`incremental ~ 1 + C(origin) + bs(dev_idx, df=4)`, "
+            "t family, identity link, `response_per_exposure=True`). "
+            "The response is on loss-ratio scale (incremental paid / earned premium). "
+            "These priors are **for use when fitting with `family='t', link='identity', "
+            "response_per_exposure=True`**.\n"
+        )
+        lines_out.append(
+            _glm_t_priors[
+                [
+                    "line",
+                    "n_converged",
+                    "t_intercept_prior",
+                    "t_sigma_prior",
+                    "t_nu_prior",
+                    "t_origin_sigma_prior",
+                    "t_dev_sigma_prior",
+                ]
+            ].to_markdown(index=False)
+            + "\n"
+        )
+
     if not csr_agg.empty:
         lines_out.append("\n## CSR Prior Recommendations (full)\n")
         keep = [
@@ -351,6 +452,7 @@ def _payload_for_html(
     descriptive: pd.DataFrame,
     rec: pd.DataFrame,
     glm_priors: pd.DataFrame | None = None,
+    glm_t_priors: pd.DataFrame | None = None,
 ) -> dict:
     """Convert pandas DataFrames into JSON-serialisable list-of-dicts payload."""
     glm_path = cache_path("glm_per_triangle_fits.parquet")
@@ -384,6 +486,16 @@ def _payload_for_html(
         avail = [c for c in keep_cols if c in glm_priors.columns]
         glm_priors_rows = glm_priors[avail].to_dict("records")
 
+    glm_t_priors_rows: list[dict] = []
+    if glm_t_priors is not None and not glm_t_priors.empty:
+        t_keep_cols = [
+            "line", "n_converged",
+            "t_intercept_prior", "t_sigma_prior", "t_nu_prior",
+            "t_origin_sigma_prior", "t_dev_sigma_prior",
+        ]
+        t_avail = [c for c in t_keep_cols if c in glm_t_priors.columns]
+        glm_t_priors_rows = glm_t_priors[t_avail].to_dict("records")
+
     return {
         "lines": LINES,
         "recs": rec.to_dict("records"),
@@ -393,6 +505,7 @@ def _payload_for_html(
         "rho": rho.to_dict("records"),
         "desc": descriptive.to_dict("records"),
         "glm_priors": glm_priors_rows,
+        "glm_t_priors": glm_t_priors_rows,
     }
 
 
@@ -402,11 +515,17 @@ def main() -> int:
     combined, winners = _rank_glm_specs()
     csr_agg = _aggregate_csr()
 
-    # Load GLM priors if available.
+    # Load GLM priors (gamma+log) if available.
     glm_priors_path = cache_path("glm_priors_by_line.parquet")
     glm_priors: pd.DataFrame | None = None
     if glm_priors_path.exists():
         glm_priors = _read_parquet(glm_priors_path)
+
+    # Load GLM t-family priors (loss-ratio) if available.
+    glm_t_priors_path = cache_path("glm_t_priors_by_line.parquet")
+    glm_t_priors: pd.DataFrame | None = None
+    if glm_t_priors_path.exists():
+        glm_t_priors = _read_parquet(glm_t_priors_path)
 
     # Build the headline recommendations frame.
     rec = pd.DataFrame({"line": LINES})
@@ -432,12 +551,21 @@ def main() -> int:
     if glm_priors is not None and not glm_priors.empty:
         glm_priors_short = glm_priors[["line", "glm_intercept_prior", "glm_dev_sigma_prior"]]
         rec = rec.merge(glm_priors_short, on="line", how="left")
+    if glm_t_priors is not None and not glm_t_priors.empty:
+        t_priors_short = glm_t_priors[["line", "t_intercept_prior", "t_sigma_prior"]]
+        rec = rec.merge(t_priors_short, on="line", how="left")
 
-    md = _build_readme(combined, winners, csr_agg, rho, descriptive, rec, glm_priors=glm_priors)
+    md = _build_readme(
+        combined, winners, csr_agg, rho, descriptive, rec,
+        glm_priors=glm_priors, glm_t_priors=glm_t_priors,
+    )
     readme_path = ANALYSIS_DIR / "README.md"
     readme_path.write_text(md, encoding="utf-8")
 
-    html_payload = _payload_for_html(combined, winners, csr_agg, rho, descriptive, rec, glm_priors=glm_priors)
+    html_payload = _payload_for_html(
+        combined, winners, csr_agg, rho, descriptive, rec,
+        glm_priors=glm_priors, glm_t_priors=glm_t_priors,
+    )
     html = render_html(html_payload)
     html_path = ANALYSIS_DIR / "report.html"
     html_path.write_text(html, encoding="utf-8")
