@@ -22,7 +22,9 @@ Exposure: net_earned_premium. Light fits: 1000 draws / 1000 tune /
 2 chains / target_accept=0.95. Random seed deterministic per (line, snl_id, spec).
 
 Output:
-  cache/glm_per_triangle_fits.parquet — one row per (line, snl_id, spec)
+  cache/glm_per_triangle_fits_v2.parquet — one row per (line, snl_id, spec)
+  (v2 adds reserve stats: ibnr_total_median, ibnr_total_cv, ibnr_p10/p90,
+   ult_total_median, ult_total_cv, pct_error_vs_booked, sum_log_ep_obs, n_obs)
 
 Run: uv run python references/prior-elicitation-2026/02_glm_model_comparison.py
 """
@@ -97,7 +99,7 @@ def _spec_kwargs(spec_name: str) -> dict:
 
 
 def _fit_one(triangle, formula: str, spec_name: str, seed: int) -> dict:
-    """Fit a single BayesianChainLadderGLM and return {waic, loo, p_waic, p_loo, max_rhat}.
+    """Fit a single BayesianChainLadderGLM and return diagnostic + reserve stats.
 
     The input triangle is multi-vdim (paid_loss, net_earned_premium, …).
     We split it into a single-vdim paid_loss triangle and a separate
@@ -105,8 +107,11 @@ def _fit_one(triangle, formula: str, spec_name: str, seed: int) -> dict:
 
     MT* specs use family='t', link='identity', response_per_exposure=True
     (loss-ratio scale). Their LOO is NOT directly comparable to gamma+log specs
-    (different response units / reference densities).
+    (different response units / reference densities) without a Jacobian correction
+    — see sum_log_ep_obs in the returned dict.
     """
+    import arviz as az
+
     paid_tri = triangle["paid_loss"]
     prem_tri = triangle["net_earned_premium"]
 
@@ -127,21 +132,84 @@ def _fit_one(triangle, formula: str, spec_name: str, seed: int) -> dict:
     waic = compute_waic(model.idata)
     loo = compute_loo(model.idata)
     # Convergence diagnostic: max r-hat across all named posterior variables.
-    import arviz as az
-
     summ = az.summary(model.idata, kind="diagnostics")
     max_rhat = float(summ["r_hat"].max()) if "r_hat" in summ.columns else float("nan")
+
+    # -------------------------------------------------------------------------
+    # Reserve stats — total IBNR/Ultimate posterior summaries.
+    # -------------------------------------------------------------------------
+    reserves = model.reserves_posterior_  # xr.DataArray (origin, sample)
+    total_ibnr_samples = reserves.sum(dim="origin").values.flatten()
+    total_ibnr_samples = total_ibnr_samples[np.isfinite(total_ibnr_samples)]
+
+    # Latest diagonal cumulative paid (dollar scale, already in paid_tri).
+    latest_cum_total = float(
+        np.nansum(paid_tri.latest_diagonal.values)
+    )
+
+    # booked ultimate = booked_ultimate_loss latest diagonal (if present).
+    vdims = list(triangle.vdims)
+    if "booked_ultimate_loss" in vdims:
+        booked_ult_total = float(
+            np.nansum(triangle["booked_ultimate_loss"].latest_diagonal.values)
+        )
+    else:
+        booked_ult_total = float("nan")
+
+    ibnr_median = float(np.median(total_ibnr_samples)) if total_ibnr_samples.size > 0 else float("nan")
+    ibnr_cv = float(
+        np.std(total_ibnr_samples, ddof=1) / max(abs(ibnr_median), 1.0)
+    ) if total_ibnr_samples.size > 1 else float("nan")
+    ibnr_p10 = float(np.percentile(total_ibnr_samples, 10)) if total_ibnr_samples.size > 0 else float("nan")
+    ibnr_p90 = float(np.percentile(total_ibnr_samples, 90)) if total_ibnr_samples.size > 0 else float("nan")
+
+    total_ult_samples = total_ibnr_samples + latest_cum_total
+    ult_median = float(np.median(total_ult_samples)) if total_ult_samples.size > 0 else float("nan")
+    ult_cv = float(
+        np.std(total_ult_samples, ddof=1) / max(abs(ult_median), 1.0)
+    ) if total_ult_samples.size > 1 else float("nan")
+
+    pct_error_vs_booked = (
+        float((ult_median - booked_ult_total) / booked_ult_total)
+        if np.isfinite(booked_ult_total) and booked_ult_total > 0
+        else float("nan")
+    )
+
+    # Sum of log(EP) over OBSERVED cells, for the Jacobian correction that
+    # converts MT* LOO from loss-ratio scale to dollar-equivalent scale:
+    #   log p(dollar) = log q(loss-ratio) - log(EP)
+    #   sum_n log p = sum_n log q - sum_log_ep_obs
+    data = model.data_  # long-format observed data
+    # net_earned_premium is the exposure column used for both gamma and MT specs.
+    ep_col_obs = "net_earned_premium"
+    if ep_col_obs in data.columns:
+        ep_obs_arr = np.asarray(data[ep_col_obs].values, dtype=float)
+        pos_ep = ep_obs_arr[ep_obs_arr > 0]
+        sum_log_ep_obs = float(np.sum(np.log(pos_ep))) if pos_ep.size > 0 else float("nan")
+    else:
+        sum_log_ep_obs = float("nan")
+
     return {
         "waic": float(waic.elpd_waic),
         "p_waic": float(waic.p_waic),
         "loo": float(loo.elpd_loo),
         "p_loo": float(loo.p_loo),
         "max_rhat": max_rhat,
+        "ibnr_total_median": ibnr_median,
+        "ibnr_total_cv": ibnr_cv,
+        "ibnr_total_p10": ibnr_p10,
+        "ibnr_total_p90": ibnr_p90,
+        "ult_total_median": ult_median,
+        "ult_total_cv": ult_cv,
+        "booked_ult_total": booked_ult_total,
+        "pct_error_vs_booked": pct_error_vs_booked,
+        "sum_log_ep_obs": sum_log_ep_obs,
+        "n_obs": len(data),
     }
 
 
 def _result_path() -> Path:
-    return cache_path("glm_per_triangle_fits.parquet")
+    return cache_path("glm_per_triangle_fits_v2.parquet")
 
 
 def _existing_keys() -> set[tuple[str, str, str]]:
@@ -190,6 +258,16 @@ def main() -> int:
                         "loo": float("nan"),
                         "p_loo": float("nan"),
                         "max_rhat": float("nan"),
+                        "ibnr_total_median": float("nan"),
+                        "ibnr_total_cv": float("nan"),
+                        "ibnr_total_p10": float("nan"),
+                        "ibnr_total_p90": float("nan"),
+                        "ult_total_median": float("nan"),
+                        "ult_total_cv": float("nan"),
+                        "booked_ult_total": float("nan"),
+                        "pct_error_vs_booked": float("nan"),
+                        "sum_log_ep_obs": float("nan"),
+                        "n_obs": 0,
                     }
                     status = f"error: {type(e).__name__}: {e}"
                 _append_row(
