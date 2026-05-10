@@ -153,6 +153,44 @@ def _format_md_recommendations(rec: pd.DataFrame) -> str:
     return rec.to_markdown(index=False, floatfmt=".3f")
 
 
+def _build_wald_comparison_section() -> str:
+    """Build the Wald vs gamma M2 comparison section, or empty string if not ready."""
+    wald_path = cache_path("glm_wald_m2_fits.parquet")
+    if not wald_path.exists():
+        return ""
+    wald = _read_parquet(wald_path)
+    wald_ok = wald[(wald["status"] == "ok") & (wald["max_rhat"] < 1.1)]
+    if wald_ok.empty:
+        return ""
+
+    per_path = cache_path("glm_per_triangle_fits.parquet")
+    if not per_path.exists():
+        return ""
+    per = _read_parquet(per_path)
+    per_ok = per[(per["status"] == "ok") & (per["max_rhat"] < 1.1) & (per["spec"] == "M2_devidx_bs4")]
+    if per_ok.empty:
+        return ""
+
+    gamma_m2 = per_ok.groupby("line")["loo"].mean()
+    wald_m2 = wald_ok.groupby("line")["loo"].mean()
+    cmp = pd.DataFrame({
+        "line": LINES,
+        "gamma_log_M2_loo": [gamma_m2.get(l, float("nan")) for l in LINES],
+        "wald_log_M2_loo": [wald_m2.get(l, float("nan")) for l in LINES],
+    })
+    cmp["wald_minus_gamma"] = cmp["wald_log_M2_loo"] - cmp["gamma_log_M2_loo"]
+
+    out: list[str] = []
+    out.append("\n## Wald vs Gamma family on M2 (LOO)\n")
+    out.append(
+        "Both families fit M2 (`bs(dev_idx, df=4)` + categorical origin) "
+        "with log link. Positive `wald_minus_gamma` = Wald better; "
+        "negative = gamma better.\n"
+    )
+    out.append(cmp.to_markdown(index=False, floatfmt=".2f") + "\n")
+    return "\n".join(out)
+
+
 def _build_readme(
     combined: pd.DataFrame,
     winners: pd.DataFrame,
@@ -203,6 +241,10 @@ def _build_readme(
         lines_out.append(n_pivot.to_markdown() + "\n")
     else:
         lines_out.append("_GLM fits not yet available (sweeps still running)._\n")
+
+    wald_section = _build_wald_comparison_section()
+    if wald_section:
+        lines_out.append(wald_section)
 
     hier_path = cache_path("glm_hierarchical_fits.parquet")
     if hier_path.exists():
