@@ -327,9 +327,9 @@ def _testr_bayesian_glm(
         if triangle is None:
             return None
 
-        # Gamma family cannot handle negative incrementals — skip early.
-        if family == "gamma" and _has_negative_incrementals(triangle):
-            return _negative_incrementals_skip(actual_ultimates, loss_type, train_triangles)
+        # Note: gamma family with negative incrementals is handled automatically
+        # by the auto-shift (force_positive_response=True) added in Fix 4.
+        # The legacy skip logic has been removed.
 
         # Load premium/exposure triangle
         prem_tri = load_exposure_triangle(line, group_id)
@@ -357,6 +357,7 @@ def _testr_bayesian_glm(
             random_seed=random_seed,
             init_priors_from_chainladder=init_priors_from_chainladder,
             chainladder_prior_sd=chainladder_prior_sd,
+            force_positive_response=True,
         )
 
         with warnings.catch_warnings():
