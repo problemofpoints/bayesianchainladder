@@ -522,6 +522,138 @@ class TestBayesianChainLadderGLMValidation:
         assert np.all(np.isfinite(model.ibnr_["mean"].values)), "ibnr_ mean contains non-finite values"
         assert np.all(np.isfinite(model.ultimate_["mean"].values)), "ultimate_ mean contains non-finite values"
 
+    @pytest.mark.slow
+    def test_m1_cat_drops_zero_obs_origins_and_uses_tight_dummy_priors(self):
+        """Zero-obs origin drop + tight dummy-row priors for M1_cat scenario.
+
+        Build a triangle where:
+        - Origin 2001 (first origin in genins) has ALL NaN values (zero
+          observations) — should be dropped from both data_ and future_data_
+          so no spurious design-matrix column is created for it.
+        - dev=120 has zero observations in the observed triangle (only appears
+          in future_data_) — should be added via dummy rows.
+
+        With init_priors_from_chainladder=True, the dummy-row dev=120 contrast
+        should have sigma=0.1 (tight), not the full chainladder_prior_sd=0.5.
+        Origins with real observations should keep sigma=0.5.
+
+        Verifies:
+        1. Origin 2001 (int or period) is absent from data_ and future_data_
+        2. dev=120 IS in data_ (via dummy row) and in future_data_
+        3. model._dummy_dev_levels contains 120
+        4. The C(dev) prior sigma for the dev=120 contrast is 0.1
+        5. The C(dev) prior sigma for a real-data dev contrast is 0.5
+        6. ibnr_ and ultimate_ do not include origin 2001
+        7. Fit completes without error and summaries are finite
+        """
+        import warnings
+
+        tri = cl.load_sample("genins")  # 10×10 (origins 2001-2010), all positive incremental values
+
+        # Convert to incremental and blank out origin 2001 (first row, index 0) entirely.
+        inc_tri = tri.cum_to_incr()
+        tri2 = inc_tri.copy()
+        vals = tri2.values.copy()  # shape (1, 1, 10, 10)
+        # Blank origin index 0 (2001) across ALL dev periods
+        vals[:, :, 0, :] = np.nan
+        # Also blank dev=120 (last column, index 9) for all origins
+        # so that dev=120 only appears in future_data_, never in training.
+        vals[:, :, :, 9] = np.nan
+        tri2.values = vals
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gaussian",
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=50,
+            tune=25,
+            chains=1,
+            random_seed=42,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(tri2)
+
+        # --- A. Dropped origins ---
+        # data_ must not contain origin 2001 (zero observations).
+        # Origins are stored as int or Period — compare via string or int.
+        data_origins = set(str(o) for o in model.data_["origin"].unique())
+        future_origins = set(str(o) for o in model.future_data_["origin"].unique())
+        assert not any("2001" in str(o) for o in data_origins), (
+            f"Origin 2001 should be dropped from data_: got {sorted(data_origins)}"
+        )
+        assert not any("2001" in str(o) for o in future_origins), (
+            f"Origin 2001 should be dropped from future_data_: got {sorted(future_origins)}"
+        )
+        # _dropped_zero_obs_origins should record it
+        dropped_str = [str(o) for o in model._dropped_zero_obs_origins]
+        assert any("2001" in s for s in dropped_str), (
+            f"Expected 2001 in _dropped_zero_obs_origins, got {model._dropped_zero_obs_origins}"
+        )
+
+        # --- B. dev=120 in design matrix via dummy row ---
+        train_devs = set(int(v) for v in model.data_["dev"].values)
+        assert 120 in train_devs, (
+            f"dev=120 should be in data_ via dummy row, got {sorted(train_devs)}"
+        )
+        future_devs = set(int(v) for v in model.future_data_["dev"].values)
+        assert 120 in future_devs, (
+            f"dev=120 should be in future_data_, got {sorted(future_devs)}"
+        )
+
+        # --- C. _dummy_dev_levels records dev=120 ---
+        assert 120 in model._dummy_dev_levels, (
+            f"Expected 120 in _dummy_dev_levels, got {model._dummy_dev_levels}"
+        )
+
+        # --- D. C(dev) prior sigma is tight (0.1) for dev=120 ---
+        # _build_default_priors→_build_cl_informed_priors is called inside fit().
+        # Re-call it here directly to inspect the prior dict without a full refit.
+        prior_dict = model._build_cl_informed_priors()
+        assert "C(dev)" in prior_dict, (
+            "Expected 'C(dev)' key in CL-informed priors dict"
+        )
+        dev_prior = prior_dict["C(dev)"]
+        dev_sigmas = np.asarray(dev_prior.args["sigma"], dtype=float)
+        # dev=120 is a dummy level — its sigma should be 0.1
+        # contrast_devs are obs_devs_sorted[1:]; we need to find index of 120.
+        obs_devs_sorted = sorted(int(v) for v in model.data_["dev"].dropna().unique())
+        contrast_devs = obs_devs_sorted[1:]  # exclude reference
+        assert 120 in contrast_devs, (
+            f"Expected 120 in contrast_devs {contrast_devs}"
+        )
+        idx_120 = contrast_devs.index(120)
+        assert dev_sigmas[idx_120] == pytest.approx(0.1, abs=1e-9), (
+            f"Sigma for dummy dev=120 should be 0.1, got {dev_sigmas[idx_120]}"
+        )
+
+        # --- E. A real-data dev level has sigma=0.5 ---
+        real_devs = [d for d in contrast_devs if d not in model._dummy_dev_levels]
+        assert real_devs, "Expected at least one real (non-dummy) dev level in contrast_devs"
+        idx_real = contrast_devs.index(real_devs[0])
+        assert dev_sigmas[idx_real] == pytest.approx(0.5, abs=1e-9), (
+            f"Sigma for real dev={real_devs[0]} should be 0.5, got {dev_sigmas[idx_real]}"
+        )
+
+        # --- F. ibnr_ does not include origin 2001 ---
+        if model.ibnr_ is not None:
+            ibnr_origins = [str(o) for o in model.ibnr_.index.tolist()]
+            assert not any("2001" in s for s in ibnr_origins), (
+                f"Origin 2001 should not appear in ibnr_: got {ibnr_origins}"
+            )
+
+        # --- G. Summaries are finite ---
+        assert model.ibnr_ is not None
+        assert model.ultimate_ is not None
+        assert np.all(np.isfinite(model.ibnr_["mean"].values)), (
+            "ibnr_ mean contains non-finite values"
+        )
+        assert np.all(np.isfinite(model.ultimate_["mean"].values)), (
+            "ultimate_ mean contains non-finite values"
+        )
+
 
 @pytest.fixture
 def positive_triangle():

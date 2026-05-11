@@ -210,6 +210,11 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self._original_exposure_col: str | None = None
         self._response_shift: float = 0.0
         self._n_dummy_rows: int = 0
+        # Set of dev values that were added as dummy rows (no real observations).
+        # Used by _build_cl_informed_priors to assign tighter σ to those levels.
+        self._dummy_dev_levels: set[int] = set()
+        # Origins dropped for having zero observations (all NaN in training data).
+        self._dropped_zero_obs_origins: list = []
 
     def fit(
         self,
@@ -250,6 +255,41 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.data_ = add_categorical_columns(self.data_, formula=self.formula)
         self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
 
+        # Drop origins that have ZERO observations in training data.
+        # An origin with all NaN values contributes no likelihood information.
+        # Such origins never appear in data_ (triangle_to_dataframe drops NaN cells),
+        # but they DO appear in future_data_ because get_future_dataframe generates
+        # predictions for every origin row.  We detect them as origins present in
+        # future_data_ but absent from data_, then also remove them from future_data_.
+        # Retaining them would produce purely-prior-driven predictions for that
+        # origin — an unanchored posterior that can generate extreme estimates.
+        #
+        # Additionally, origins may have rows in data_ but with ALL NaN response
+        # values (e.g. if add_categorical_columns leaves them).  We catch both cases.
+        response_col_for_drop = self.formula.split("~")[0].strip()
+        if response_col_for_drop not in self.data_.columns:
+            response_col_for_drop = "incremental"
+        data_origins_set = set(self.data_["origin"].unique().tolist())
+        future_origins_set = set(self.future_data_["origin"].unique().tolist())
+        # Case 1: origins in future_data_ but not in data_ at all (all-NaN origins)
+        absent_origins = future_origins_set - data_origins_set
+        # Case 2: origins in data_ but with zero non-NaN response values
+        zero_resp_origins: list = []
+        if response_col_for_drop in self.data_.columns:
+            obs_counts = self.data_.groupby("origin")[response_col_for_drop].count()
+            zero_resp_origins = obs_counts[obs_counts == 0].index.tolist()
+        zero_obs_origins = list(absent_origins) + zero_resp_origins
+        if zero_obs_origins:
+            self._dropped_zero_obs_origins = zero_obs_origins
+            self.data_ = self.data_[
+                ~self.data_["origin"].isin(zero_obs_origins)
+            ].reset_index(drop=True)
+            self.future_data_ = self.future_data_[
+                ~self.future_data_["origin"].isin(zero_obs_origins)
+            ].reset_index(drop=True)
+        else:
+            self._dropped_zero_obs_origins = []
+
         # Ensure every C(...) level that appears in future_data_ is also present
         # in data_.  The formulae library (used internally by Bambi) derives the
         # categorical level set from np.unique() of the actual training values —
@@ -266,8 +306,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # strip dummy rows from fitted_.  The dummy rows have negligible
         # likelihood influence when real loss values are thousands to millions.
         self._n_dummy_rows = 0
+        self._dummy_dev_levels = set()
         if len(self.future_data_) > 0:
-            self.data_, self.future_data_, self._n_dummy_rows = (
+            self.data_, self.future_data_, self._n_dummy_rows, self._dummy_dev_levels = (
                 self._pad_missing_dev_levels(
                     self.data_, self.future_data_, self.formula
                 )
@@ -375,7 +416,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         data: pd.DataFrame,
         future_data: pd.DataFrame,
         formula: str,
-    ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame, int, set[int]]:
         """Append one dummy row per C(...) level present in future_data but not in data.
 
         The formulae library (Bambi's design-matrix engine) determines categorical
@@ -415,15 +456,22 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             Future data with unified pd.Categorical levels on C(...) columns.
         n_dummy : int
             Number of dummy rows added.
+        dummy_dev_levels : set[int]
+            Set of ``dev`` column values that were added exclusively as dummy
+            rows (no real observations at those dev levels).  Used by
+            ``_build_cl_informed_priors`` to assign tighter priors to those
+            levels.
         """
         c_wrapped_cols = re.findall(r'\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)', formula)
         if not c_wrapped_cols:
             # Mark real rows and return unchanged (no C(...) terms in formula)
             data = data.copy()
             data["_obs_weight"] = 1.0
-            return data, future_data, 0
+            return data, future_data, 0, set()
 
         dummy_rows: list[pd.DataFrame] = []
+        # Track dev values that are added exclusively via dummy rows.
+        dummy_dev_levels: set[int] = set()
 
         # Determine the response column (LHS of formula)
         response_col = formula.split("~")[0].strip()
@@ -456,6 +504,12 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                     dummy[response_col] = 1.0
                 dummy["_obs_weight"] = 0.0
                 dummy_rows.append(dummy)
+                # Track dummy dev levels so callers can tighten priors on them.
+                if col == "dev":
+                    try:
+                        dummy_dev_levels.add(int(level))
+                    except (TypeError, ValueError):
+                        pass
 
         # Mark real rows regardless of whether dummy rows were added
         data = data.copy()
@@ -490,7 +544,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             if col in future_data.columns:
                 future_data[col] = pd.Categorical(future_data[col], categories=all_levels)
 
-        return padded, future_data, n_dummy
+        return padded, future_data, n_dummy, dummy_dev_levels
 
     def _compute_predictions(self) -> None:
         """Compute fitted values and future predictions."""
@@ -1274,10 +1328,21 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                     dev_mus = np.zeros(n_contrasts_dev)
 
             if len(dev_mus) > 0:
+                # Use a tight sigma (0.1) for dev levels that were added as
+                # dummy rows (zero real observations).  Those levels have no
+                # likelihood support, so a wide prior would let the posterior
+                # wander freely and produce extreme predictions.  σ=0.1 pins
+                # the coefficient close to the chain-ladder informed mean while
+                # still allowing small Bayesian updates.
+                dummy_devs = getattr(self, "_dummy_dev_levels", set())
+                dev_sigmas = np.array([
+                    0.1 if (d in dummy_devs) else sd
+                    for d in contrast_devs
+                ], dtype=float)
                 priors["C(dev)"] = bmb.Prior(
                     "Normal",
                     mu=dev_mus.astype(float),
-                    sigma=np.full(len(dev_mus), sd, dtype=float),
+                    sigma=dev_sigmas,
                 )
 
         # -------------------------------------------------------------------
