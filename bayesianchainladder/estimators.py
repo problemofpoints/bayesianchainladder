@@ -1146,20 +1146,36 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # -------------------------------------------------------------------
         re_origin_match = re.search(r'\(1\s*\|\s*origin\s*\)', self.formula)
         if re_origin_match:
-            # Empirical SD of log(ultimates) across origins
+            # Empirical SD of log(ultimates) across origins.
+            # Use exactly 1× the empirical SD as the HalfNormal scale: the
+            # random-effects pooling structure already allows the posterior to
+            # shrink or expand, so there is no need to inflate by 2×.  Tighter
+            # hyperprior reduces posterior width on per-origin RE, which in turn
+            # reduces combined spline + RE prediction uncertainty.
             valid_ults = ult_arr[ult_arr > 0]
             if valid_ults.size >= 2:
                 log_ult_sd = float(np.std(np.log(valid_ults), ddof=1))
-                # Wide enough to let the data determine the RE SD, but informed
-                # by the inter-origin variability: use 2× empirical SD.
-                hn_sigma = max(2.0 * log_ult_sd, 0.01)
+                hn_sigma = max(log_ult_sd, 0.01)
                 priors["1|origin"] = bmb.Prior(
                     "Normal",
                     mu=0,
                     sigma=bmb.Prior("HalfNormal", sigma=hn_sigma),
                 )
 
-        # (1 | calendar) — not directly informed by chain ladder; leave defaults.
+        # -------------------------------------------------------------------
+        # (1 | calendar) random intercept — weakly informative HalfNormal
+        # -------------------------------------------------------------------
+        # Calendar effects are typically small (< 20% relative impact).
+        # HalfNormal(0.2) gives a 95th percentile of ~0.4 on log scale,
+        # corresponding to roughly a ±40% calendar-year swing — weakly
+        # informative but much tighter than Bambi's sd(y)-scaled default.
+        re_cal_match = re.search(r'\(1\s*\|\s*calendar\s*\)', self.formula)
+        if re_cal_match:
+            priors["1|calendar"] = bmb.Prior(
+                "Normal",
+                mu=0,
+                sigma=bmb.Prior("HalfNormal", sigma=0.2),
+            )
 
         return priors
 

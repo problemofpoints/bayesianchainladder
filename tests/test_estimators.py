@@ -1238,3 +1238,59 @@ class TestInitPriorsFromChainladder:
             assert len(coefs) == 4, f"Expected 4 spline coefficients, got {len(coefs)}"
             assert np.all(np.isfinite(coefs)), "Spline coefs contain non-finite values"
         # else: graceful fallback is also acceptable
+
+    def test_hierarchical_origin_re_hyperprior_tighter_than_2x(self):
+        """(1|origin) hyperprior uses 1× (not 2×) the empirical log-ult SD."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        # Compute the expected empirical SD of log(ultimates) from CL
+        import chainladder as _cl
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cl_fit = _cl.Chainladder().fit(tri)
+        ult_arr = np.asarray(cl_fit.ultimate_.to_frame().values, dtype=float).flatten()
+        valid_ults = ult_arr[ult_arr > 0]
+        log_ult_sd = float(np.std(np.log(valid_ults), ddof=1))
+        expected_hn_sigma = max(log_ult_sd, 0.01)
+
+        cl_priors = model._build_cl_informed_priors()
+
+        assert "1|origin" in cl_priors, "Expected '1|origin' in CL priors"
+        re_prior = cl_priors["1|origin"]
+        inner_sigma = re_prior.args["sigma"]
+        assert hasattr(inner_sigma, "args"), "Expected HalfNormal bmb.Prior for sigma"
+        actual_hn_sigma = float(inner_sigma.args["sigma"])
+        assert abs(actual_hn_sigma - expected_hn_sigma) < 1e-6, (
+            f"Expected HalfNormal sigma={expected_hn_sigma:.4f} (1× empirical SD), "
+            f"got {actual_hn_sigma:.4f}"
+        )
+
+    def test_calendar_re_prior_constructed_weakly_informative(self):
+        """(1|calendar) formula: a weakly informative HalfNormal(0.2) hyperprior is added."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        cl_priors = model._build_cl_informed_priors()
+
+        assert "1|calendar" in cl_priors, "Expected '1|calendar' in CL priors"
+        cal_prior = cl_priors["1|calendar"]
+        inner_sigma = cal_prior.args["sigma"]
+        assert hasattr(inner_sigma, "args"), "Expected HalfNormal bmb.Prior for calendar sigma"
+        hn_sigma = float(inner_sigma.args["sigma"])
+        assert abs(hn_sigma - 0.2) < 1e-9, (
+            f"Expected HalfNormal sigma=0.2 for calendar RE, got {hn_sigma}"
+        )
