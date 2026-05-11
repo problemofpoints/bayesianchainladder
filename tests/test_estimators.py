@@ -1385,6 +1385,115 @@ class TestInitPriorsFromChainladder:
             f"Expected HalfNormal sigma=0.2 for calendar RE, got {hn_sigma}"
         )
 
+    def test_init_priors_from_chainladder_handles_sparse_levels(self):
+        """CL-informed priors handle categorical levels with zero training observations.
+
+        When the pd.Categorical column includes levels (e.g. 1981, 1982) that
+        have no rows in data_, Bambi silently drops those levels from the design
+        matrix and uses the first *observed* level as the treatment reference.
+        The prior array must match Bambi's actual column count — otherwise
+        formulae raises "Incompatible shared dimension for dot product".
+
+        This test builds a triangle where origins 1981 and 1982 are blanked
+        from data_ but still appear in the Categorical categories list, then
+        verifies:
+        - _build_cl_informed_priors() does NOT raise
+        - C(origin) prior has len == n_observed_origins - 1 (not n_total - 1)
+        - C(dev) prior length matches Bambi's actual design matrix columns
+        """
+        from bayesianchainladder.utils import prepare_model_data, add_categorical_columns
+        import bambi as bmb
+
+        tri = cl.load_sample("raa")  # 10 origins: 1981-1990, 10 devs: 12-120
+
+        data_full, future_full = prepare_model_data(tri)
+
+        # Blank origins 1981 and 1982 from training data (simulate sparse back-test
+        # triangle where these accident years have zero incremental observations).
+        all_origins = sorted(data_full["origin"].unique())  # [1981..1990]
+        data_sparse = data_full[data_full["origin"] >= 1983].copy().reset_index(drop=True)
+
+        # Force all 10 origins into the Categorical categories (as the union-level
+        # alignment code in fit() does), even though only 8 appear in data_.
+        data_sparse["origin"] = pd.Categorical(data_sparse["origin"], categories=all_origins)
+        future_full_cat = future_full.copy()
+        future_full_cat["origin"] = pd.Categorical(
+            future_full_cat["origin"], categories=all_origins
+        )
+
+        formula = "incremental ~ 1 + C(origin) + C(dev)"
+        model = BayesianChainLadderGLM(
+            formula=formula,
+            family="gaussian",
+            link="log",
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=50,
+            tune=25,
+            chains=1,
+        )
+        model.triangle_ = tri.copy()
+        model.data_ = add_categorical_columns(data_sparse, formula=formula)
+        model.future_data_ = add_categorical_columns(future_full_cat, formula=formula)
+
+        # Must not raise a dimension-mismatch error.
+        cl_priors = model._build_cl_informed_priors()
+
+        # observed origins = [1983..1990] (8 origins), so contrasts = 7
+        n_observed_origins = len(data_sparse["origin"].dropna().unique())
+        expected_origin_contrasts = n_observed_origins - 1  # 7
+
+        assert "C(origin)" in cl_priors, "Expected C(origin) in CL priors"
+        origin_mus = cl_priors["C(origin)"].args["mu"]
+        assert len(origin_mus) == expected_origin_contrasts, (
+            f"Expected {expected_origin_contrasts} origin contrasts (only observed levels), "
+            f"got {len(origin_mus)}"
+        )
+
+        # Verify the prior length matches what Bambi actually creates.
+        model_bambi = bmb.Model(formula, model.data_, family="gaussian")
+        model_bambi.build()
+        bambi_origin_cols = model_bambi.components["mu"].terms["C(origin)"].shape[1]
+        assert len(origin_mus) == bambi_origin_cols, (
+            f"Prior length {len(origin_mus)} != Bambi design matrix columns {bambi_origin_cols}"
+        )
+
+        # C(dev): verify prior length matches Bambi's design matrix as well.
+        if "C(dev)" in cl_priors:
+            dev_mus = cl_priors["C(dev)"].args["mu"]
+            bambi_dev_cols = model_bambi.components["mu"].terms["C(dev)"].shape[1]
+            assert len(dev_mus) == bambi_dev_cols, (
+                f"C(dev) prior length {len(dev_mus)} != Bambi columns {bambi_dev_cols}"
+            )
+
+    @pytest.mark.slow
+    def test_init_priors_sparse_levels_fit_succeeds(self):
+        """Full MCMC fit succeeds with sparse levels (no dimension-mismatch error)."""
+        from bayesianchainladder.utils import prepare_model_data, add_categorical_columns
+
+        tri = cl.load_sample("raa")
+        data_full, _ = prepare_model_data(tri)
+        all_origins = sorted(data_full["origin"].unique())
+
+        # Blank the oldest two origins from training
+        tri_sparse = tri[tri.origin >= "1983"].copy()
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gaussian",
+            link="log",
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=50,
+            tune=25,
+            chains=1,
+            random_seed=42,
+        )
+        # Fit must succeed without ValueError about dimension mismatch
+        model.fit(tri_sparse)
+        assert model._is_fitted
+        assert model.idata is not None
+
 
 # =============================================================================
 # Fix 4: Auto-shift tests — gamma family handles negative incrementals

@@ -1021,11 +1021,42 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         incr_pct = np.diff(np.concatenate([[0.0], cum_pct]))  # (n_devs,)
         incr_pct = np.maximum(incr_pct, 1e-10)  # guard against ≤ 0
 
-        # Reference cells: first origin, first dev
-        ref_ult = float(ult_arr[0]) if ult_arr.size > 0 else 1.0
-        ref_ult = max(ref_ult, 1e-8)
-        ref_frac = float(incr_pct[0])
-        ref_frac = max(ref_frac, 1e-10)
+        # -------------------------------------------------------------------
+        # Build lookup maps: origin/dev value → index in triangle arrays.
+        # These are used to filter prior arrays to ONLY the levels that
+        # actually have training observations — Bambi drops levels with no
+        # rows from the design matrix, so the prior array length must match.
+        # -------------------------------------------------------------------
+        def _period_to_int(p) -> int:
+            """Convert a chainladder period (Timestamp/Period/int) to int year."""
+            if hasattr(p, "year"):
+                return int(p.year)
+            if hasattr(p, "days"):
+                return max(1, round(p.days / 365))
+            return int(p)
+
+        tri_origin_vals = [_period_to_int(o) for o in tri.origin]   # list[int]
+        tri_dev_vals    = [_period_to_int(d) for d in tri.development]  # list[int]
+        origin_val_to_idx: dict[int, int] = {v: i for i, v in enumerate(tri_origin_vals)}
+        dev_val_to_idx:    dict[int, int] = {v: i for i, v in enumerate(tri_dev_vals)}
+
+        # Observed levels = values that actually appear in the training data.
+        # Bambi's treatment-coding reference = first observed level (sorted asc).
+        if self.data_ is not None:
+            obs_origins_sorted = sorted(int(v) for v in self.data_["origin"].dropna().unique())
+            obs_devs_sorted    = sorted(int(v) for v in self.data_["dev"].dropna().unique())
+        else:
+            obs_origins_sorted = tri_origin_vals
+            obs_devs_sorted    = tri_dev_vals
+
+        # Reference cells: first *observed* origin/dev (Bambi treatment reference)
+        ref_origin_idx = origin_val_to_idx.get(obs_origins_sorted[0], 0) if obs_origins_sorted else 0
+        ref_dev_idx    = dev_val_to_idx.get(obs_devs_sorted[0], 0)       if obs_devs_sorted    else 0
+
+        ref_ult   = float(ult_arr[ref_origin_idx]) if ult_arr.size > ref_origin_idx else 1.0
+        ref_ult   = max(ref_ult, 1e-8)
+        ref_frac  = float(incr_pct[ref_dev_idx]) if incr_pct.size > ref_dev_idx else 1e-10
+        ref_frac  = max(ref_frac, 1e-10)
 
         # -------------------------------------------------------------------
         # Per-origin EP (needed for identity/loss-ratio scale)
@@ -1043,28 +1074,37 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # C(origin) priors — log-contrast or linear-contrast
         # -------------------------------------------------------------------
         c_origin_match = re.search(r'\bC\s*\(\s*origin\s*\)', self.formula)
-        if c_origin_match and self.data_ is not None and len(ult_arr) >= 2:
-            # Number of contrasts = n_origins - 1 (treatment coding, ref=first)
-            n_origins = len(ult_arr)
-            n_contrasts_origin = n_origins - 1
+        if c_origin_match and self.data_ is not None and len(obs_origins_sorted) >= 2:
+            # Bambi treatment coding: contrasts for obs_origins_sorted[1:] vs [0].
+            # Only observed origins get contrast columns — levels with no training
+            # rows are silently dropped from the design matrix by formulae/Bambi.
+            contrast_origins = obs_origins_sorted[1:]  # exclude reference
+            n_contrasts_origin = len(contrast_origins)
 
             if is_log_link:
-                # Prior means = log(ult[k] / ult[ref]) for k > 0
-                origin_mus = np.log(np.maximum(ult_arr[1:], 1e-8)) - np.log(ref_ult)
+                # Prior means = log(ult[k] / ult[ref]) for each contrast origin k
+                origin_mus = np.array([
+                    np.log(max(float(ult_arr[origin_val_to_idx[o]]), 1e-8)) - np.log(ref_ult)
+                    if o in origin_val_to_idx and origin_val_to_idx[o] < len(ult_arr)
+                    else 0.0
+                    for o in contrast_origins
+                ], dtype=float)
             else:
                 # Identity link: prior on loss-ratio-scale origin effects
-                # LR[k] = ult[k] / EP[k]; contrast mu_k = LR[k]*frac[0] - LR[0]*frac[0]
+                # LR[k] = ult[k] / EP[k]; contrast mu_k = (LR[k] - LR[ref]) * frac[ref]
                 if ep_by_origin is not None:
-                    origins_sorted = sorted(ep_by_origin.keys())
-                    ep_vals = np.array([ep_by_origin.get(o, 1.0) for o in origins_sorted], dtype=float)
-                    ep_vals = np.maximum(ep_vals, 1e-8)
-                    lr_arr = ult_arr[:len(ep_vals)] / ep_vals
-                    ref_lr = float(lr_arr[0]) if lr_arr.size > 0 else 0.05
-                    origin_mus = (lr_arr[1:] - ref_lr) * ref_frac
+                    origin_mus = np.array([
+                        (
+                            float(ult_arr[origin_val_to_idx[o]]) / max(ep_by_origin.get(o, 1.0), 1e-8)
+                            - ref_ult / max(ep_by_origin.get(obs_origins_sorted[0], 1.0), 1e-8)
+                        ) * ref_frac
+                        if o in origin_val_to_idx and origin_val_to_idx[o] < len(ult_arr)
+                        else 0.0
+                        for o in contrast_origins
+                    ], dtype=float)
                 else:
                     origin_mus = np.zeros(n_contrasts_origin)
 
-            origin_mus = origin_mus[:n_contrasts_origin]
             if len(origin_mus) > 0:
                 priors["C(origin)"] = bmb.Prior(
                     "Normal",
@@ -1076,25 +1116,38 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # C(dev) priors — log-contrast or linear-contrast
         # -------------------------------------------------------------------
         c_dev_match = re.search(r'\bC\s*\(\s*dev\s*\)', self.formula)
-        if c_dev_match and n_devs >= 2:
-            n_contrasts_dev = n_devs - 1
+        if c_dev_match and len(obs_devs_sorted) >= 2:
+            # Bambi treatment coding: contrasts for obs_devs_sorted[1:] vs [0].
+            # Only dev levels that have at least one observed training row are
+            # included in the design matrix by Bambi — match that here.
+            contrast_devs = obs_devs_sorted[1:]  # exclude reference
+            n_contrasts_dev = len(contrast_devs)
 
             if is_log_link:
-                # Prior means = log(frac[j] / frac[0]) for j > 0
-                dev_mus = np.log(np.maximum(incr_pct[1:], 1e-10)) - np.log(ref_frac)
+                # Prior means = log(frac[j] / frac[ref]) for each contrast dev j
+                dev_mus = np.array([
+                    np.log(max(float(incr_pct[dev_val_to_idx[d]]), 1e-10)) - np.log(ref_frac)
+                    if d in dev_val_to_idx and dev_val_to_idx[d] < len(incr_pct)
+                    else 0.0
+                    for d in contrast_devs
+                ], dtype=float)
             else:
                 # Identity link: incremental LR deviation from reference dev
-                # ref origin LR * (frac[j] - frac[0])
-                if ep_by_origin is not None:
-                    origins_sorted = sorted(ep_by_origin.keys())
-                    ep_vals = np.array([ep_by_origin.get(o, 1.0) for o in origins_sorted], dtype=float)
-                    ep_vals = np.maximum(ep_vals, 1e-8)
-                    lr_ref = float(ult_arr[0]) / float(ep_vals[0])
-                    dev_mus = lr_ref * (incr_pct[1:] - ref_frac)
+                # ref origin LR * (frac[j] - frac[ref])
+                if ep_by_origin is not None and obs_origins_sorted:
+                    ref_ep = max(ep_by_origin.get(obs_origins_sorted[0], 1.0), 1e-8)
+                    lr_ref = ref_ult / ref_ep
+                    dev_mus = np.array([
+                        lr_ref * (
+                            float(incr_pct[dev_val_to_idx[d]]) - ref_frac
+                            if d in dev_val_to_idx and dev_val_to_idx[d] < len(incr_pct)
+                            else 0.0
+                        )
+                        for d in contrast_devs
+                    ], dtype=float)
                 else:
                     dev_mus = np.zeros(n_contrasts_dev)
 
-            dev_mus = dev_mus[:n_contrasts_dev]
             if len(dev_mus) > 0:
                 priors["C(dev)"] = bmb.Prior(
                     "Normal",
