@@ -93,6 +93,17 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         negative responses. When True, no log offset is added — the model is on
         loss-ratio scale directly. Caller must still supply ``exposure=...``.
         Default is False.
+    include_process_variance : bool, optional
+        Whether to include process variance in reserve predictions.
+        If True (default), samples from the full posterior predictive
+        distribution (``kind="response"``) for future cells, adding draws from
+        the response distribution (e.g. Gamma(α, μ/α)) on top of the
+        parameter uncertainty in μ.  This gives statistically correct
+        prediction intervals.
+        If False, uses only parameter uncertainty: the posterior of the
+        conditional mean μ is summed across future cells without any
+        within-cell sampling noise.
+        Default is True.
 
     Attributes
     ----------
@@ -157,6 +168,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         random_seed: int | None = None,
         backend: str = "bambi",
         response_per_exposure: bool = False,
+        include_process_variance: bool = True,
     ):
         super().__init__()
         self.formula = formula
@@ -171,6 +183,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.random_seed = random_seed
         self.backend = backend
         self.response_per_exposure = response_per_exposure
+        self.include_process_variance = include_process_variance
 
         # GLM-specific fitted attributes (not in base)
         self.model_: bmb.Model | None = None
@@ -326,6 +339,30 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         # Predict future cells
         if len(self.future_data_) > 0:
+            if self.include_process_variance:
+                # kind="response" samples from the full posterior predictive
+                # distribution (e.g. Gamma(α, μ/α) for gamma family), adding
+                # process variance on top of parameter uncertainty.
+                # On success the draws land in idata.posterior_predictive.
+                # Fall back to parameter-only if the call fails.
+                _pv_success = False
+                try:
+                    self.model_.predict(
+                        self.idata, data=fut_data, kind="response", inplace=True,
+                        sample_new_groups=True,
+                    )
+                    _pv_success = True
+                except Exception:
+                    pass
+
+                if _pv_success and hasattr(self.idata, "posterior_predictive"):
+                    pp = self.idata.posterior_predictive
+                    if response_name in pp:
+                        self._compute_reserves(pp[response_name])
+                        return
+                    # Otherwise fall through to parameter-only path below.
+
+            # Parameter-only path (include_process_variance=False, or fallback).
             try:
                 self.model_.predict(
                     self.idata, data=fut_data, kind="response_params", inplace=True,
@@ -920,6 +957,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             f"    family='{self.family}',\n"
             f"    draws={self.draws},\n"
             f"    tune={self.tune},\n"
+            f"    include_process_variance={self.include_process_variance},\n"
             f"    status={fitted_str}\n"
             f")"
         )
