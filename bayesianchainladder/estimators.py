@@ -1051,13 +1051,34 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         if spline_match and self.data_ is not None:
             df_spline = int(spline_match.group(1))
             try:
-                # Build the same spline basis that formulae/patsy will build.
-                # dev_idx is 1-based integer index: 1, 2, ..., n_devs.
-                dev_idx_vals = np.arange(1, n_devs + 1, dtype=float)
+                # Use the ACTUAL dev_idx values present in the training data.
+                # This is the 1-based integer index column added by
+                # add_categorical_columns for the ``dev`` column.  It may cover
+                # fewer periods than n_devs when the triangle has partial coverage
+                # (e.g., only dev=12..96 observed, not 12..120).  Building B and
+                # y_target from the same set of periods guarantees compatible shapes.
+                if "dev_idx" in self.data_.columns:
+                    dev_idx_train = np.array(
+                        sorted(self.data_["dev_idx"].unique()), dtype=float
+                    )
+                else:
+                    # Fallback: construct 1-based indices for all triangle dev periods
+                    dev_idx_train = np.arange(1, n_devs + 1, dtype=float)
+
+                n_train_devs = len(dev_idx_train)
+
+                # CL incremental fractions indexed by dev_idx (1-based).
+                # incr_pct has length n_devs (full triangle); select only the
+                # subset that corresponds to dev_idx_train.
+                dev_idx_int = dev_idx_train.astype(int)
+                valid_mask = (dev_idx_int >= 1) & (dev_idx_int <= n_devs)
+                if not np.all(valid_mask):
+                    raise ValueError("dev_idx values out of range of CL dev periods")
+                # 0-based indexing into incr_pct
+                incr_pct_train = incr_pct[dev_idx_int[valid_mask] - 1]
 
                 # Build B-spline basis via scipy (same knots as df=N default).
-                from scipy.interpolate import BSpline, make_interp_spline
-                from scipy.linalg import lstsq as sp_lstsq
+                from scipy.interpolate import BSpline
 
                 # Build basis manually using patsy-style: evenly-spaced interior
                 # knots with cubic (degree=3) B-splines, augmented boundary knots.
@@ -1067,7 +1088,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 n_interior = df_spline - degree - 1  # = 0 for df=4
                 n_interior = max(n_interior, 0)
 
-                x = dev_idx_vals
+                x = dev_idx_train
                 x_min, x_max = float(x.min()), float(x.max())
                 # Interior knots evenly spaced
                 if n_interior > 0:
@@ -1082,7 +1103,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 ])
                 # Build design matrix: one column per basis function
                 n_basis = len(knots) - degree - 1
-                B = np.zeros((len(x), n_basis))
+                B = np.zeros((n_train_devs, n_basis))
                 for k in range(n_basis):
                     c = np.zeros(n_basis)
                     c[k] = 1.0
@@ -1097,11 +1118,12 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                     )
 
                 # Target: log of incremental fractions (CL pattern on log scale)
+                # B and y_target are now both length n_train_devs.
                 if is_log_link:
-                    y_target = np.log(np.maximum(incr_pct, 1e-10))
+                    y_target = np.log(np.maximum(incr_pct_train, 1e-10))
                 else:
                     # Identity link: raw incr_pct as target (roughly)
-                    y_target = incr_pct.copy()
+                    y_target = incr_pct_train.copy()
 
                 # Least-squares fit: B @ coef ≈ y_target
                 coef, _, _, _ = np.linalg.lstsq(B, y_target, rcond=None)

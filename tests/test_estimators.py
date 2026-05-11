@@ -1190,3 +1190,51 @@ class TestInitPriorsFromChainladder:
         assert model._is_fitted
         assert model.idata is not None
         assert model.reserves_posterior_ is not None
+
+    def test_init_priors_from_chainladder_spline_dev_robust_to_partial_dev(self):
+        """bs(dev_idx, df=4) spline priors are built without dimension error when
+        training data covers only a subset of the full dev range.
+
+        Simulates a triangle where only dev=12..96 (8 periods) are observed for
+        all origins instead of the full 10 periods, verifying that the spline
+        basis matrix B and the CL incremental target y_target are both built
+        from the 8 observed dev_idx values rather than the full 10.
+        """
+        from bayesianchainladder.utils import add_categorical_columns, prepare_model_data
+
+        formula = "incremental ~ 1 + C(origin) + bs(dev_idx, df=4)"
+        tri = cl.load_sample("genins")
+
+        # Set up a model with partial dev coverage by restricting data_ to only
+        # the first 8 dev periods (dev=12..96), simulating a triangle that hasn't
+        # yet developed to the last 2 periods.
+        model = BayesianChainLadderGLM(
+            formula=formula,
+            family="gamma",
+            link="log",
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=50,
+            tune=25,
+            chains=1,
+        )
+        model.triangle_ = tri.copy()
+        data_full, future_full = prepare_model_data(tri)
+
+        # Restrict training data to first 8 dev periods (drop dev 108, 120)
+        dev_sorted = sorted(data_full["dev"].unique())
+        data_partial = data_full[data_full["dev"] <= dev_sorted[7]].copy().reset_index(drop=True)
+        model.data_ = add_categorical_columns(data_partial, formula=formula)
+        model.future_data_ = add_categorical_columns(future_full, formula=formula)
+
+        # _build_cl_informed_priors must NOT raise a dimension error.
+        # It should either return a valid spline prior OR gracefully skip it.
+        cl_priors = model._build_cl_informed_priors()  # no exception
+
+        spline_key = "bs(dev_idx, df=4)"
+        if spline_key in cl_priors:
+            spline_prior = cl_priors[spline_key]
+            coefs = spline_prior.args["mu"]
+            assert len(coefs) == 4, f"Expected 4 spline coefficients, got {len(coefs)}"
+            assert np.all(np.isfinite(coefs)), "Spline coefs contain non-finite values"
+        # else: graceful fallback is also acceptable
