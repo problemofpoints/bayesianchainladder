@@ -305,6 +305,16 @@ def _testr_bayesian_glm(
         ``load_glm_priors_for_line(line, spec)`` and pass them to the model.
         When False (default), pass ``priors=None`` so the package constructs
         adaptive data-driven priors from each triangle.
+
+    Notes
+    -----
+    ``mean_ultimate_est`` and ``mean_unpaid_est`` are named for backward
+    compatibility but are computed as the **posterior median** of finite
+    samples, not the mean.  The median is used because occasional
+    pathological draws (e.g. 10^300-magnitude values from numerical
+    instability in a small number of triangles) cause np.nanmean to be
+    dominated by outliers (Jensen-style upward bias).  The column name is
+    preserved so downstream analysis code does not need to change.
     """
     try:
         from bayesianchainladder import BayesianChainLadderGLM
@@ -361,10 +371,12 @@ def _testr_bayesian_glm(
             actual_ultimate = latest_cumulative_sum(test_tri)
 
         total_ult_samples = total_ibnr_samples + latest_observed
-        mean_ultimate = float(np.nanmean(total_ult_samples))
-        stddev_est = float(np.nanstd(total_ult_samples, ddof=1))
+        finite_ult = total_ult_samples[np.isfinite(total_ult_samples)]
+        mean_ultimate = float(np.median(finite_ult)) if finite_ult.size > 0 else float("nan")
+        finite_ibnr = total_ibnr_samples[np.isfinite(total_ibnr_samples)]
+        mean_unpaid_est = float(np.median(finite_ibnr)) if finite_ibnr.size > 0 else float("nan")
+        stddev_est = float(np.std(finite_ult, ddof=1)) if finite_ult.size > 1 else float("nan")
         actual_unpaid = actual_ultimate - latest_observed
-        mean_unpaid_est = mean_ultimate - latest_observed
         cv_unpaid_est = safe_divide(stddev_est, mean_unpaid_est)
         implied_pctl = _empirical_pctl(total_ult_samples, actual_ultimate)
 
@@ -386,6 +398,9 @@ def _testr_bayesian_glm(
 # Public GLM wrappers
 # ---------------------------------------------------------------------------
 
+# M1_cat: gamma + log, pure categorical chain-ladder-equivalent spec
+_FORMULA_M1_CAT = "incremental ~ 1 + C(origin) + C(dev)"
+
 # M2: gamma + log, fixed categorical origin + B-spline on dev_idx
 _FORMULA_M2 = "incremental ~ 1 + C(origin) + bs(dev_idx, df=4)"
 
@@ -394,6 +409,48 @@ _FORMULA_M5_CAL = "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | cal
 
 # MT5_cal: same formula, but t + identity on loss-ratio scale
 _FORMULA_MT5_CAL = "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)"
+
+
+def testr_glm_m1_cat(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    use_elicited_priors: bool = False,
+    **kwargs,
+) -> Optional[dict]:
+    """M1 spec: pure categorical chain-ladder-equivalent GLM (incremental ~ 1 + C(origin) + C(dev)).
+
+    This is the simplest categorical GLM that should asymptotically match ODP/Mack.
+    Uses gamma + log link with net-earned-premium exposure offset, identical to M2
+    except dev is treated as a fully-categorical factor rather than a B-spline.
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use the package's adaptive data-driven priors.
+    """
+    try:
+        return _testr_bayesian_glm(
+            train_triangles=train_triangles,
+            test_triangles=test_triangles,
+            loss_type=loss_type,
+            actual_ultimates=actual_ultimates,
+            line=line,
+            group_id=group_id,
+            spec="m1",
+            formula=_FORMULA_M1_CAT,
+            family="gamma",
+            link="log",
+            response_per_exposure=False,
+            use_elicited_priors=use_elicited_priors,
+            **kwargs,
+        )
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
 
 
 def testr_glm_m2(

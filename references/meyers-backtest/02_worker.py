@@ -22,6 +22,7 @@ from _common import MEYERS_TO_PRIOR_LINE
 from methods import (
     testr_correlated_bootstrap_odp,
     testr_bayesian_csr,
+    testr_glm_m1_cat,
     testr_glm_m2,
     testr_glm_m5_cal,
     testr_glm_mt5_cal,
@@ -32,6 +33,7 @@ METHODS = [
     ("bootstrap_odp",   rt.testr_bootstrap_odp,    {"n_sims": 1000, "hat_adj": True, "random_state": 22}),
     ("corr_boot_odp",   testr_correlated_bootstrap_odp, {"n_sims": 1000, "random_state": 22}),
     ("bayesian_csr",    testr_bayesian_csr,        {}),
+    ("glm_m1_cat",      testr_glm_m1_cat,          {}),
     ("glm_m2",          testr_glm_m2,              {}),
     ("glm_m5_cal",      testr_glm_m5_cal,          {}),
     ("glm_mt5_cal",     testr_glm_mt5_cal,         {}),
