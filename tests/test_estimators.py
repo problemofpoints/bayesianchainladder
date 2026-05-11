@@ -713,3 +713,132 @@ class TestResponsePerExposure:
             f"Median ultimate {median_ultimate:.2f} looks like a loss ratio, "
             "not a dollar amount — back-transform may have failed"
         )
+
+
+# ============================================================================
+# Adaptive intercept prior — offset-awareness tests
+# ============================================================================
+
+
+class TestAdaptiveInterceptPriorOffset:
+    """Unit tests for _build_default_priors with exposure offset.
+
+    These tests directly configure the minimal state on the estimator
+    (data_, exposure, formula, family, link) and call _build_default_priors()
+    without running MCMC.
+    """
+
+    def _make_estimator_with_data(
+        self,
+        incremental: np.ndarray,
+        exposure: np.ndarray,
+        exposure_col: str = "net_earned_premium",
+    ) -> BayesianChainLadderGLM:
+        """Return a BayesianChainLadderGLM with data_ populated directly."""
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            exposure=exposure_col,
+        )
+        # Manually set data_ to bypass the triangle conversion step.
+        n = len(incremental)
+        model.data_ = pd.DataFrame(
+            {
+                "incremental": incremental,
+                exposure_col: exposure,
+                "origin": [f"o{i}" for i in range(n)],
+                "dev": [1] * n,
+            }
+        )
+        return model
+
+    def test_intercept_prior_offset_aware(self):
+        """Intercept prior location adjusts for log(mean_EP) when exposure is set."""
+        target_lr = 0.3  # mean incremental / mean EP we want the prior to center on
+        mean_ep = 1_000.0
+        mean_incremental = target_lr * mean_ep  # = 300.0
+
+        # Build data with exact mean LR = 0.3
+        n = 20
+        incremental = np.full(n, mean_incremental)
+        exposure = np.full(n, mean_ep)
+
+        model = self._make_estimator_with_data(incremental, exposure)
+        priors = model._build_default_priors()
+
+        intercept_prior = priors["Intercept"]
+        # The lognormal correction is -sigma^2/2 on top of log(target_lr)
+        intercept_sigma = 1.0
+        expected_mu = np.log(target_lr) - intercept_sigma**2 / 2
+
+        assert abs(intercept_prior.args["mu"] - expected_mu) < 1e-6, (
+            f"Intercept prior mu={intercept_prior.args['mu']:.4f}, "
+            f"expected {expected_mu:.4f} (= log({target_lr}) - sigma^2/2). "
+            "Prior is not offset-aware."
+        )
+
+    def test_intercept_prior_no_exposure_unchanged(self):
+        """Without an exposure offset, the prior centers on log(mean_incremental)."""
+        mean_incremental = 300.0
+        n = 20
+        incremental = np.full(n, mean_incremental)
+        # exposure column present in data_ but not set on the model
+        exposure = np.full(n, 1_000.0)
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            exposure=None,  # no offset
+        )
+        model.data_ = pd.DataFrame(
+            {
+                "incremental": incremental,
+                "net_earned_premium": exposure,
+                "origin": [f"o{i}" for i in range(n)],
+                "dev": [1] * n,
+            }
+        )
+        priors = model._build_default_priors()
+
+        intercept_sigma = 1.0
+        expected_mu = np.log(mean_incremental) - intercept_sigma**2 / 2
+
+        assert abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6, (
+            "Without exposure, intercept prior should center on log(mean_incremental)."
+        )
+
+    def test_intercept_prior_with_zero_exposure_is_safe(self):
+        """If mean_ep == 0 the prior should silently fall back to no adjustment."""
+        n = 5
+        incremental = np.full(n, 100.0)
+        # All-zero exposure — mean_ep = 0 so the adjustment is skipped
+        exposure = np.zeros(n)
+
+        model = self._make_estimator_with_data(incremental, exposure)
+        # Should not raise; prior should be the unadjusted log(mean_incremental) - sigma^2/2
+        priors = model._build_default_priors()
+        intercept_sigma = 1.0
+        expected_mu = np.log(100.0) - intercept_sigma**2 / 2
+        assert abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6
+
+    def test_intercept_prior_offset_magnitude(self):
+        """The offset adjustment equals log(mean_EP), not just any constant."""
+        mean_ep = 5_000.0
+        mean_lr = 0.5
+        mean_incremental = mean_lr * mean_ep  # = 2500.0
+
+        n = 30
+        incremental = np.full(n, mean_incremental)
+        exposure = np.full(n, mean_ep)
+
+        model = self._make_estimator_with_data(incremental, exposure)
+        priors = model._build_default_priors()
+
+        intercept_sigma = 1.0
+        expected_mu = np.log(mean_lr) - intercept_sigma**2 / 2
+
+        assert abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6, (
+            f"Expected mu={expected_mu:.4f}, got {priors['Intercept'].args['mu']:.4f}"
+        )

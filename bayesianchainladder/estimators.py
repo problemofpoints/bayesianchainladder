@@ -833,9 +833,15 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             positive_values = response_values[response_values > 0]
             if len(positive_values) > 0:
                 # Lognormal correction: target E[exp(Intercept)] = positive_mean
-                intercept_mu = float(
-                    np.log(positive_values.mean()) - intercept_sigma**2 / 2
-                )
+                intercept_loc = float(np.log(positive_values.mean()))
+                # If an exposure offset is being applied, the intercept lives on
+                # log(response / exposure) scale, so subtract log(mean(exposure))
+                # from the prior location to keep the prior weakly informative.
+                if self.exposure is not None and self.exposure in self.data_.columns:
+                    mean_ep = float(np.nanmean(self.data_[self.exposure].values))
+                    if mean_ep > 0:
+                        intercept_loc = intercept_loc - float(np.log(mean_ep))
+                intercept_mu = intercept_loc - intercept_sigma**2 / 2
             else:
                 intercept_mu = 0.0
         else:
