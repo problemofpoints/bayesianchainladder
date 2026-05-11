@@ -447,7 +447,7 @@ def testr_glm_m1_cat(
             family="gamma",
             link="log",
             response_per_exposure=False,
-            exposure=None,
+            exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
@@ -486,7 +486,7 @@ def testr_glm_m2(
             family="gamma",
             link="log",
             response_per_exposure=False,
-            exposure=None,
+            exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
@@ -525,7 +525,7 @@ def testr_glm_m5_cal(
             family="gamma",
             link="log",
             response_per_exposure=False,
-            exposure=None,
+            exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
