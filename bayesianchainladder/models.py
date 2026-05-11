@@ -25,6 +25,7 @@ def build_bambi_model(
     link: str | None = None,
     priors: dict[str, Any] | None = None,
     offset: str | pd.Series | np.ndarray | None = None,
+    potentials: list[tuple] | None = None,
 ) -> bmb.Model:
     """
     Build a Bambi model for chain ladder GLM.
@@ -58,6 +59,13 @@ def build_bambi_model(
     offset : str or array-like, optional
         Offset term for the model (e.g., log-exposure).
         If str, should be a column name in data.
+    potentials : list of 2-tuples, optional
+        Arbitrary expressions added to the log-likelihood.  Each tuple is
+        ``(variable_name_or_tuple, constraint_fn)`` — the variable name(s)
+        are looked up in the PyMC model and passed to the constraint function.
+        See Bambi docs for details.  Primary use: zero-weight dummy rows by
+        passing a potential that subtracts their per-observation log-likelihood
+        contribution.
 
     Returns
     -------
@@ -103,6 +111,7 @@ def build_bambi_model(
         data=model_data,
         family=family_spec,
         priors=priors,
+        potentials=potentials,
     )
 
     return model

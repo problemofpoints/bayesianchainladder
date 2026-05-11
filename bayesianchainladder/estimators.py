@@ -380,6 +380,14 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         priors = self._build_default_priors()
 
+        # Build a potential that zeroes out dummy-row likelihood contributions.
+        # Dummy rows are inserted by _pad_missing_dev_levels to expose unseen
+        # categorical levels to Bambi's design matrix.  Without masking, their
+        # placeholder response values conflict with tight CL-informed priors on
+        # the corresponding dev-level contrasts, pushing the intercept far from
+        # its prior and producing extreme predictions.
+        dummy_potentials = self._build_dummy_row_potential()
+
         # Build the model
         offset = self.exposure if self.exposure else None
         self.model_ = build_bambi_model(
@@ -389,6 +397,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             link=self.link,
             priors=priors,
             offset=offset,
+            potentials=dummy_potentials,
         )
 
         # Fit the model
@@ -1111,6 +1120,91 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         return summary_df
 
+    def _build_dummy_row_potential(self) -> list[tuple] | None:
+        """Build a Bambi potential that zeroes out dummy rows' likelihood contribution.
+
+        Dummy rows are added by ``_pad_missing_dev_levels`` to force missing
+        categorical levels (e.g. dev=120 when only dev=12..108 are observed)
+        into the Bambi design matrix.  Without this potential those rows
+        participate in the likelihood with their placeholder response values
+        (1.0 by default, or shifted), which creates severe tension with any
+        CL-informed prior on the corresponding dev-level contrast.  The tension
+        forces the intercept to drift far from its prior, producing extreme
+        predictions for ALL future cells.
+
+        The potential adds ``sum((mask - 1) * logp_per_obs)`` to the log-
+        likelihood, where ``mask[i] = 0`` for dummy rows and ``1`` for real
+        rows.  For dummy rows this subtracts their logp contribution, making
+        them effectively zero-weight observations.  Real rows are unaffected.
+
+        Family support
+        --------------
+        * gamma      — uses Gamma(alpha, mu) parameterization
+        * gaussian   — uses Normal(mu, sigma) parameterization
+        * All others — returns None (no potential; dummy rows contribute
+                       negligibly when real losses >> 1)
+
+        Returns None when there are no dummy rows or the family is unsupported.
+        """
+        if self._n_dummy_rows == 0:
+            return None
+
+        family_lower = self.family.lower()
+        if family_lower not in ("gamma",):
+            # Only gamma models are affected because they have tight priors on
+            # dev contrasts that cause severe intercept drift.  Other families
+            # (gaussian, negativebinomial, poisson) don't exhibit the same
+            # pathology with response values of order ~1 relative to the data.
+            return None
+
+        # Determine the response column name
+        response_col = self.formula.split("~")[0].strip()
+        if response_col not in self.data_.columns:
+            response_col = "incremental"
+
+        # Build the per-observation mask: 0 for dummy rows, 1 for real rows
+        obs_weight_col = "_obs_weight"
+        if obs_weight_col in self.data_.columns:
+            obs_mask = np.asarray(self.data_[obs_weight_col].values, dtype=np.float64)
+        else:
+            # Fall back: dummy rows were appended at the END; mark last n_dummy as 0
+            obs_mask = np.ones(len(self.data_), dtype=np.float64)
+            obs_mask[-self._n_dummy_rows :] = 0.0
+
+        # Capture response values and mask as constants for use in the closure
+        y_vals = np.asarray(self.data_[response_col].values, dtype=np.float64)
+        mask_vals = obs_mask.copy()
+
+        if family_lower == "gamma":
+            # Capture required values and imports in the closure explicitly
+            _y_vals = y_vals
+            _mask_vals = mask_vals
+
+            def _gamma_mask(mu_val: "pt.TensorVariable", alpha_val: "pt.TensorVariable") -> "pt.TensorVariable":
+                """Subtract dummy-row gamma logp from the joint log-likelihood."""
+                import pytensor.tensor as _pt
+                import pytensor.tensor.special as _pts
+
+                y = _pt.as_tensor_variable(_y_vals)
+                w = _pt.as_tensor_variable(_mask_vals)
+
+                # Gamma logp: shape=alpha, rate=alpha/mu
+                # logp(y; alpha, mu) = alpha*log(alpha/mu) + (alpha-1)*log(y)
+                #                     - (alpha/mu)*y - lgamma(alpha)
+                b = alpha_val / mu_val  # rate parameter, shape (n_obs,)
+                logp_each = (
+                    alpha_val * _pt.log(b)
+                    + (alpha_val - 1.0) * _pt.log(y)
+                    - b * y
+                    - _pts.gammaln(alpha_val)
+                )
+                # (w - 1) == -1 for dummy rows, 0 for real rows
+                return _pt.sum((w - 1.0) * logp_each)
+
+            return [(("mu", "alpha"), _gamma_mask)]
+
+        return None  # unreachable for supported families above
+
     def _build_cl_informed_priors(self) -> dict[str, Any]:
         """Build chain-ladder-informed prior centers for GLM formula terms.
 
@@ -1303,9 +1397,72 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             n_contrasts_dev = len(contrast_devs)
 
             if is_log_link:
-                # Prior means = log(frac[j] / frac[ref]) for each contrast dev j
+                # Prior means = log(frac[j] / frac[ref]) for each contrast dev j.
+                #
+                # Shift adjustment: when the response is shifted by _response_shift
+                # (to handle negative incrementals for gamma families), the model
+                # fits log(E[incremental + shift]) rather than log(E[incremental]).
+                # The CL-informed prior for C(dev)[j] must reflect the *shifted*
+                # incremental scale; otherwise it may be astronomically negative for
+                # near-zero or negative dev periods (e.g. last dev with tiny/negative
+                # actual incremental), forcing the intercept to drift and producing
+                # extreme predictions.
+                #
+                # For a log-link model with exposure EP, the expected response per
+                # unit EP at dev j (shifted scale) is:
+                #   incr_j_shifted_per_EP = incr_pct[j] * mean_LR + shift / mean_EP
+                # where mean_LR = mean(ult/EP) and mean_EP = mean earned premium.
+                #
+                # Shift-adjusted prior: log(incr_j_shifted_per_EP / incr_ref_shifted_per_EP)
+                response_shift = getattr(self, "_response_shift", 0.0)
+                shift_per_ep = 0.0  # default: no adjustment
+                if response_shift > 0.0 and self.data_ is not None:
+                    exp_col = self.exposure
+                    if exp_col and exp_col in self.data_.columns:
+                        ep_vals = np.asarray(
+                            self.data_[exp_col].dropna().values, dtype=float
+                        )
+                        mean_ep_val = float(np.mean(ep_vals[ep_vals > 0])) if ep_vals.size > 0 else 1.0
+                        # loss ratio = mean(ult / EP) across origins
+                        lr_vals = []
+                        for oi, ou in zip(tri_origin_vals, ult_arr):
+                            ep_origin = float(
+                                np.mean(
+                                    ep_vals[
+                                        (self.data_["origin"].values == oi)
+                                        if "origin" in self.data_.columns
+                                        else np.ones(len(ep_vals), dtype=bool)
+                                    ]
+                                )
+                            ) if len(ep_vals) > 0 else 1.0
+                            if ep_origin > 0 and ou > 0:
+                                lr_vals.append(float(ou) / ep_origin)
+                        mean_lr = float(np.mean(lr_vals)) if lr_vals else 1.0
+                        mean_lr = max(mean_lr, 1e-8)
+                        mean_ep_val = max(mean_ep_val, 1.0)
+                        # shift contribution per unit EP
+                        shift_per_ep = float(response_shift) / mean_ep_val
+                    else:
+                        # No EP column available; use a rough scale based on mean incremental
+                        resp_col = self.formula.split("~")[0].strip()
+                        if resp_col in self.data_.columns:
+                            resp_vals = np.asarray(self.data_[resp_col].values, dtype=float)
+                            mean_incr = float(np.nanmean(resp_vals[resp_vals > 0])) if resp_vals.size > 0 else 1.0
+                            mean_lr = 1.0  # dimensionless
+                            shift_per_ep = float(response_shift) / max(mean_incr, 1.0)
+                        else:
+                            mean_lr = 1.0
+                else:
+                    mean_lr = 1.0
+
+                def _shifted_frac(pct: float) -> float:
+                    """Compute (pct * mean_lr + shift_per_ep), floored at 1e-10."""
+                    return max(pct * mean_lr + shift_per_ep, 1e-10)
+
+                ref_frac_shifted = _shifted_frac(ref_frac)
+
                 dev_mus = np.array([
-                    np.log(max(float(incr_pct[dev_val_to_idx[d]]), 1e-10)) - np.log(ref_frac)
+                    np.log(_shifted_frac(float(incr_pct[dev_val_to_idx[d]]))) - np.log(ref_frac_shifted)
                     if d in dev_val_to_idx and dev_val_to_idx[d] < len(incr_pct)
                     else 0.0
                     for d in contrast_devs
