@@ -71,6 +71,7 @@ def main(chunk_id: int, n_chunks: int, out_path: Path) -> int:
             kw = dict(kwargs)
             if method_label not in ("mack", "bootstrap_odp"):
                 kw["line"] = r.line
+                kw["group_id"] = r.group_id
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
