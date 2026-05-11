@@ -232,6 +232,47 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.data_ = add_categorical_columns(self.data_, formula=self.formula)
         self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
 
+        # Align categorical levels and drop future rows with unseen levels.
+        #
+        # When a triangle has fewer observed dev periods than the full 10-period
+        # range, future_data_ may contain dev values (e.g., 96, 108, 120) that
+        # never appeared in data_.  Bambi's C(dev) term would raise:
+        #   ValueError: The levels (120, 108) in 'C(dev)' are not present in
+        #   the original data set.
+        # Fix: for columns wrapped in C(...) in the formula (i.e., the only
+        # columns Bambi validates for categorical levels), restrict future_data_
+        # to levels seen in training.  Dropped future cells are those where the
+        # youngest origins require dev periods beyond the training horizon; those
+        # origins will receive a *partial* IBNR estimate (up to the last observed
+        # dev level), which slightly understates their reserves but avoids a crash.
+        if len(self.future_data_) > 0:
+            # Identify columns that appear as C(col) in the formula
+            c_wrapped_cols = set(re.findall(r'\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)', self.formula))
+            drop_mask = pd.Series(False, index=self.future_data_.index)
+            for col in c_wrapped_cols:
+                if col not in self.future_data_.columns or col not in self.data_.columns:
+                    continue
+                train_levels = set(
+                    self.data_[col].cat.categories
+                    if hasattr(self.data_[col], "cat")
+                    else self.data_[col].unique()
+                )
+                unseen = set(self.future_data_[col].unique()) - train_levels
+                if unseen:
+                    drop_mask |= self.future_data_[col].isin(unseen)
+            if drop_mask.any():
+                n_dropped = int(drop_mask.sum())
+                import warnings
+                warnings.warn(
+                    f"BayesianChainLadderGLM: dropped {n_dropped} future cell(s) "
+                    f"whose categorical levels were not observed in training data. "
+                    f"This typically affects the youngest origins at late dev periods. "
+                    f"IBNR for those origins will be a partial (lower-bound) estimate.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                self.future_data_ = self.future_data_[~drop_mask].reset_index(drop=True)
+
         # If response_per_exposure=True, divide the response by exposure in the
         # observed data so the model is on loss-ratio scale rather than dollar scale.
         # No log offset is appended in this mode.

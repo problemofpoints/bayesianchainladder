@@ -296,6 +296,58 @@ class TestBayesianChainLadderGLMValidation:
         with pytest.raises(ValueError, match="requires non-negative values"):
             model.fit(small_triangle)
 
+    @pytest.mark.slow
+    def test_unseen_dev_levels_clipped_not_crash(self):
+        """Triangles where future_data_ has dev levels absent from training data
+        should silently clip those cells rather than raising:
+            ValueError: The levels (120, 108) in 'C(dev)' are not present …
+
+        We take the genins triangle and blank out the last two dev columns
+        (dev=108, 120) for ALL origins, so that the training data only 'sees'
+        dev=12..96 while future cells require dev=108 and 120.  The model must
+        not crash; future_data_ must not contain the missing dev levels.
+        """
+        import warnings
+
+        # Start from genins (all-positive incremental values).
+        tri = cl.load_sample("genins")
+
+        # Blank out the last two dev columns (dev=108, 120) for all origins.
+        # We operate on the *incremental* triangle so that cum_to_incr() does not
+        # produce spurious non-NaN values from cumulative differencing.
+        # After blanking, dev=108 and dev=120 never appear in data_ but the
+        # triangle's column headers still declare those dev periods as future cells.
+        inc_tri = tri.cum_to_incr()
+        tri2 = inc_tri.copy()
+        vals = tri2.values.copy()  # shape (1, 1, 10, 10)
+        vals[:, :, :, 8] = np.nan  # dev=108
+        vals[:, :, :, 9] = np.nan  # dev=120
+        tri2.values = vals
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gaussian",
+            draws=50,
+            tune=25,
+            chains=1,
+            random_seed=42,
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            model.fit(tri2)
+            user_warnings = [x for x in w if issubclass(x.category, UserWarning)]
+            # A warning about dropped cells should have been emitted
+            assert any("dropped" in str(x.message).lower() for x in user_warnings), \
+                "Expected a UserWarning about dropped future cells"
+
+        # future_data_ must NOT contain the unseen dev levels
+        assert 108 not in model.future_data_["dev"].values
+        assert 120 not in model.future_data_["dev"].values
+        # Model must be fitted and have reserves
+        assert model._is_fitted
+        assert model.reserves_posterior_ is not None
+
 
 @pytest.fixture
 def positive_triangle():
