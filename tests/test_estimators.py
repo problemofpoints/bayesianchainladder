@@ -297,15 +297,19 @@ class TestBayesianChainLadderGLMValidation:
             model.fit(small_triangle)
 
     @pytest.mark.slow
-    def test_unseen_dev_levels_clipped_not_crash(self):
+    @pytest.mark.slow
+    def test_unseen_dev_levels_included_in_design(self):
         """Triangles where future_data_ has dev levels absent from training data
-        should silently clip those cells rather than raising:
-            ValueError: The levels (120, 108) in 'C(dev)' are not present …
+        should include those levels in the C(dev) design matrix (not drop them).
+
+        The union of train and future dev levels is used as the categorical level
+        set, so Bambi sees all levels in both datasets.  Levels unseen in training
+        have an all-zero contrast column in training (coefficient is prior-driven),
+        enabling valid extrapolation to unobserved dev periods.
 
         We take the genins triangle and blank out the last two dev columns
         (dev=108, 120) for ALL origins, so that the training data only 'sees'
-        dev=12..96 while future cells require dev=108 and 120.  The model must
-        not crash; future_data_ must not contain the missing dev levels.
+        dev=12..96 while future cells require dev=108 and 120.
         """
         import warnings
 
@@ -313,10 +317,6 @@ class TestBayesianChainLadderGLMValidation:
         tri = cl.load_sample("genins")
 
         # Blank out the last two dev columns (dev=108, 120) for all origins.
-        # We operate on the *incremental* triangle so that cum_to_incr() does not
-        # produce spurious non-NaN values from cumulative differencing.
-        # After blanking, dev=108 and dev=120 never appear in data_ but the
-        # triangle's column headers still declare those dev periods as future cells.
         inc_tri = tri.cum_to_incr()
         tri2 = inc_tri.copy()
         vals = tri2.values.copy()  # shape (1, 1, 10, 10)
@@ -327,23 +327,32 @@ class TestBayesianChainLadderGLMValidation:
         model = BayesianChainLadderGLM(
             formula="incremental ~ 1 + C(origin) + C(dev)",
             family="gaussian",
+            init_priors_from_chainladder=True,
             draws=50,
             tune=25,
             chains=1,
             random_seed=42,
         )
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
             model.fit(tri2)
-            user_warnings = [x for x in w if issubclass(x.category, UserWarning)]
-            # A warning about dropped cells should have been emitted
-            assert any("dropped" in str(x.message).lower() for x in user_warnings), \
-                "Expected a UserWarning about dropped future cells"
 
-        # future_data_ must NOT contain the unseen dev levels
-        assert 108 not in model.future_data_["dev"].values
-        assert 120 not in model.future_data_["dev"].values
+        # future_data_ MUST contain dev 108 and 120 (no rows dropped)
+        assert 108 in model.future_data_["dev"].values, \
+            "dev=108 should be present in future_data_ (no longer dropped)"
+        assert 120 in model.future_data_["dev"].values, \
+            "dev=120 should be present in future_data_ (no longer dropped)"
+
+        # Both train and future data must have the same dev categorical levels
+        train_cats = set(model.data_["dev"].cat.categories.tolist())
+        future_cats = set(model.future_data_["dev"].cat.categories.tolist())
+        assert train_cats == future_cats, \
+            "Train and future data must share the same C(dev) categorical levels"
+
+        # All 10 dev levels (12..120) must be in the level set
+        assert len(train_cats) == 10, f"Expected 10 dev levels, got {len(train_cats)}"
+
         # Model must be fitted and have reserves
         assert model._is_fitted
         assert model.reserves_posterior_ is not None
