@@ -288,6 +288,7 @@ def _testr_bayesian_glm(
     family: str,
     link: Optional[str],
     response_per_exposure: bool = False,
+    exposure: Optional[str] = None,
     use_elicited_priors: bool = False,
     draws: int = 1000,
     tune: int = 1000,
@@ -344,7 +345,7 @@ def _testr_bayesian_glm(
             formula=formula,
             family=family,
             link=link,
-            exposure="net_earned_premium",
+            exposure=exposure,
             response_per_exposure=response_per_exposure,
             priors=priors,
             draws=draws,
@@ -446,6 +447,7 @@ def testr_glm_m1_cat(
             family="gamma",
             link="log",
             response_per_exposure=False,
+            exposure=None,
             use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
@@ -484,6 +486,7 @@ def testr_glm_m2(
             family="gamma",
             link="log",
             response_per_exposure=False,
+            exposure=None,
             use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
@@ -522,6 +525,7 @@ def testr_glm_m5_cal(
             family="gamma",
             link="log",
             response_per_exposure=False,
+            exposure=None,
             use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
@@ -560,6 +564,7 @@ def testr_glm_mt5_cal(
             family="t",
             link="identity",
             response_per_exposure=True,
+            exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
