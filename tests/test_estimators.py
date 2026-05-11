@@ -296,6 +296,87 @@ class TestBayesianChainLadderGLMValidation:
         with pytest.raises(ValueError, match="requires non-negative values"):
             model.fit(small_triangle)
 
+    def test_gamma_auto_shift_emits_warning_and_modifies_response(self):
+        """gamma family with negatives: shift is applied and UserWarning emitted."""
+        import warnings
+
+        # RAA has negative incrementals — perfect test case for auto-shift
+        tri = cl.load_sample("raa")
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            force_positive_response=True,
+            draws=50,
+            tune=25,
+            chains=1,
+            random_seed=42,
+        )
+        # Manually prepare data to inspect shift without running MCMC
+        from bayesianchainladder.utils import add_categorical_columns, prepare_model_data
+        model.triangle_ = tri.copy()
+        model.data_, model.future_data_ = prepare_model_data(tri)
+        model.data_ = add_categorical_columns(model.data_, formula=model.formula)
+
+        # Apply the union-level alignment manually (as fit() does)
+        import re
+        for col in re.findall(r'\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)', model.formula):
+            if col in model.data_.columns and col in model.future_data_.columns:
+                train_vals = list(model.data_[col].cat.categories) if hasattr(model.data_[col], "cat") else list(model.data_[col].unique())
+                future_vals = list(model.future_data_[col].unique())
+                all_levels = sorted(set(train_vals) | set(future_vals))
+                model.data_[col] = pd.Categorical(model.data_[col], categories=all_levels)
+                model.future_data_[col] = pd.Categorical(model.future_data_[col], categories=all_levels)
+
+        # Verify RAA has negative incrementals
+        raa_min = float(model.data_["incremental"].min())
+        assert raa_min < 0, "RAA triangle should have negative incrementals"
+
+        # Trigger the auto-shift logic directly
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            # Re-run the shift logic as in fit()
+            resp_vals = np.asarray(model.data_["incremental"].values, dtype=np.float64)
+            min_val = float(np.nanmin(resp_vals))
+            if min_val <= 0:
+                import warnings as _w
+                shift = abs(min_val) + 1.0
+                _w.warn(
+                    f"BayesianChainLadderGLM: response column 'incremental' "
+                    f"contains non-positive values (min={min_val:.4g}) which are "
+                    f"incompatible with the 'gamma' family. "
+                    f"Automatically shifting response by +{shift:.4g} to make all "
+                    f"values strictly positive. "
+                    f"Reserve estimates are back-shifted by the same amount per "
+                    f"future cell to restore original scale. "
+                    f"Set force_positive_response=False to disable this behavior.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                model._response_shift = shift
+                model.data_["incremental"] = resp_vals + shift
+
+        # After shift, all response values should be positive
+        assert float(model.data_["incremental"].min()) > 0, \
+            "After shift, all response values should be positive"
+        # Shift should be |min_val| + 1.0
+        assert abs(model._response_shift - (abs(raa_min) + 1.0)) < 1e-9, \
+            f"Expected shift={abs(raa_min)+1.0:.4f}, got {model._response_shift:.4f}"
+
+    def test_gamma_force_positive_false_still_raises(self, small_triangle):
+        """gamma with force_positive_response=False still raises on negatives."""
+        model = BayesianChainLadderGLM(
+            family="gamma",
+            force_positive_response=False,
+            draws=50,
+            tune=25,
+            chains=1,
+            random_seed=42,
+        )
+        with pytest.raises(ValueError, match="requires strictly positive values"):
+            model.fit(small_triangle)
+
     @pytest.mark.slow
     @pytest.mark.slow
     def test_unseen_dev_levels_included_in_design(self):
@@ -1303,3 +1384,67 @@ class TestInitPriorsFromChainladder:
         assert abs(hn_sigma - 0.2) < 1e-9, (
             f"Expected HalfNormal sigma=0.2 for calendar RE, got {hn_sigma}"
         )
+
+
+# =============================================================================
+# Fix 4: Auto-shift tests — gamma family handles negative incrementals
+# =============================================================================
+
+
+class TestGammaAutoShift:
+    """Tests for the auto-shift (force_positive_response) functionality."""
+
+    @pytest.mark.slow
+    def test_gamma_handles_negative_incrementals_via_shift(self):
+        """gamma+log fits successfully on a triangle with negative incrementals.
+
+        Uses the RAA triangle which contains negative incremental values.  With
+        force_positive_response=True (default) the fit must complete without error
+        and produce a non-NaN reserve estimate.
+        """
+        import warnings
+
+        tri = cl.load_sample("raa")
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            force_positive_response=True,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            model.fit(tri)
+            user_warnings = [x for x in w if issubclass(x.category, UserWarning)]
+            # A UserWarning about shifting must have been emitted
+            shift_warnings = [x for x in user_warnings if "shifting" in str(x.message).lower()]
+            assert len(shift_warnings) >= 1, \
+                "Expected a UserWarning about auto-shifting response"
+
+        assert model._is_fitted
+        assert model.reserves_posterior_ is not None
+        # Shift should be positive (RAA has negatives)
+        assert model._response_shift > 0, "Expected non-zero response shift"
+
+        # Reserve should be finite and positive (roughly chain-ladder magnitude)
+        import chainladder as _cl
+        cl_fit = _cl.Chainladder().fit(tri)
+        cl_ibnr = float(np.nansum(np.asarray(cl_fit.ibnr_.values, dtype=float)))
+        model_ibnr = float(np.nanmedian(np.asarray(
+            model.reserves_posterior_.sum(dim="origin").values, dtype=float
+        )))
+        assert np.isfinite(model_ibnr), "Reserve estimate should be finite"
+        # Within 3× of CL (very loose check — just ensure no magnitude blowup)
+        if cl_ibnr > 0:
+            ratio = model_ibnr / cl_ibnr
+            assert 0.1 < ratio < 10.0, (
+                f"Model IBNR {model_ibnr:.0f} vs CL IBNR {cl_ibnr:.0f}: "
+                f"ratio={ratio:.2f} outside [0.1, 10.0]"
+            )

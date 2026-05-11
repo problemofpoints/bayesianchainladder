@@ -104,6 +104,16 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         conditional mean μ is summed across future cells without any
         within-cell sampling noise.
         Default is True.
+    force_positive_response : bool, optional
+        When True (default), automatically shift the response column by
+        ``|min_value| + 1.0`` before fitting if the family requires strictly
+        positive values (``gamma``) and the data contain non-positive values.
+        A UserWarning is emitted describing the shift magnitude.  Reserve
+        estimates are back-shifted by the same amount per future cell so the
+        output is on the original data scale.  Set to False to disable the
+        shift and allow the legacy ``ValueError`` from
+        ``_validate_data_family_compatibility`` to surface instead.
+        Default is True.
 
     Attributes
     ----------
@@ -171,6 +181,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         include_process_variance: bool = True,
         init_priors_from_chainladder: bool = False,
         chainladder_prior_sd: float = 0.5,
+        force_positive_response: bool = True,
     ):
         super().__init__()
         self.formula = formula
@@ -188,6 +199,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.include_process_variance = include_process_variance
         self.init_priors_from_chainladder = init_priors_from_chainladder
         self.chainladder_prior_sd = chainladder_prior_sd
+        self.force_positive_response = force_positive_response
 
         # GLM-specific fitted attributes (not in base)
         self.model_: bmb.Model | None = None
@@ -196,6 +208,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.future_data_: pd.DataFrame | None = None
         self.fitted_: pd.DataFrame | None = None
         self._original_exposure_col: str | None = None
+        self._response_shift: float = 0.0
 
     def fit(
         self,
@@ -293,6 +306,46 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             self.data_[response_col] = response_vals / exp_vals
             # Clear the exposure so build_bambi_model does not append a log offset.
             self.exposure = None
+
+        # Auto-shift response for positive-support families when negatives present.
+        #
+        # Gamma (and other strictly-positive-support families) cannot handle
+        # non-positive incremental values.  When force_positive_response=True
+        # (the default), we automatically add a constant shift to the response
+        # so every cell is positive before fitting.  After fitting we subtract
+        # the same shift from each predicted future cell when aggregating
+        # reserves, restoring the predictions to the original scale.
+        #
+        # The shift = |min_value| + 1.0 guarantees all values are ≥ 1.0 after
+        # shifting, with a buffer that keeps the gamma distribution well-behaved.
+        self._response_shift = 0.0
+        if self.force_positive_response and not self.response_per_exposure:
+            positive_families = ("gamma",)
+            family_lower = self.family.lower()
+            if family_lower in positive_families:
+                response_col = self.formula.split("~")[0].strip()
+                if response_col not in self.data_.columns:
+                    response_col = "incremental"
+                resp_vals = np.asarray(self.data_[response_col].values, dtype=np.float64)
+                min_val = float(np.nanmin(resp_vals))
+                if min_val <= 0:
+                    import warnings as _w
+                    shift = abs(min_val) + 1.0
+                    _w.warn(
+                        f"BayesianChainLadderGLM: response column '{response_col}' "
+                        f"contains non-positive values (min={min_val:.4g}) which are "
+                        f"incompatible with the '{self.family}' family. "
+                        f"Automatically shifting response by +{shift:.4g} to make all "
+                        f"values strictly positive. "
+                        f"Reserve estimates are back-shifted by the same amount per "
+                        f"future cell to restore original scale. "
+                        f"Set force_positive_response=False to disable this behavior.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                    self._response_shift = shift
+                    self.data_ = self.data_.copy()
+                    self.data_[response_col] = resp_vals + shift
 
         # Validate data compatibility with chosen family
         self._validate_data_family_compatibility()
@@ -473,6 +526,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             if len(origin_future_idx) > 0:
                 # Map to positions in the full prediction array
                 pos = [future_start + i for i in origin_future_idx]
+                n_cells_for_origin = len(origin_future_idx)
 
                 # Sum predictions for this origin across all future cells
                 origin_preds = future_predictions.isel({obs_dim: pos})
@@ -489,7 +543,15 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                     ep_da = xr.DataArray(ep_vals, dims=[obs_dim])
                     origin_preds = origin_preds * ep_da
 
-                reserve_samples[origin] = origin_preds.sum(dim=obs_dim)
+                origin_total = origin_preds.sum(dim=obs_dim)
+
+                # Back-shift: each future cell's predicted mean is inflated by
+                # _response_shift (applied before fitting).  Subtract the total
+                # shift for this origin to restore the original scale.
+                if self._response_shift != 0.0:
+                    origin_total = origin_total - self._response_shift * n_cells_for_origin
+
+                reserve_samples[origin] = origin_total
 
         # Create DataArray with reserves by origin
         if reserve_samples:
@@ -1310,6 +1372,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             f"    tune={self.tune},\n"
             f"    include_process_variance={self.include_process_variance},\n"
             f"    init_priors_from_chainladder={self.init_priors_from_chainladder},\n"
+            f"    force_positive_response={self.force_positive_response},\n"
             f"    status={fitted_str}\n"
             f")"
         )
