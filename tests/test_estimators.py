@@ -438,6 +438,90 @@ class TestBayesianChainLadderGLMValidation:
         assert model._is_fitted
         assert model.reserves_posterior_ is not None
 
+    @pytest.mark.slow
+    def test_m1_cat_handles_missing_dev_levels_via_dummy_rows(self):
+        """C(dev) coverage via dummy-row padding for M1_cat scenario.
+
+        Build a triangle where training observations only exist for 5 of the 10
+        development periods (dev=12..60).  The youngest origins need predictions at
+        dev=72..120 — all absent from training.  Previously Bambi raised:
+            ValueError: The levels (72, 84, ...) in 'C(dev)' are not present in
+            the original data set.
+
+        The fix: _pad_missing_dev_levels adds one dummy row per missing level, so
+        formulae sees all levels during training and predict() succeeds.  This test
+        verifies that:
+
+        1. fit() completes without ValueError
+        2. future_data_ contains all 10 dev levels
+        3. fitted_ has the same number of rows as the *real* training observations
+           (dummy rows stripped out)
+        4. ibnr_ and ultimate_ are present and finite
+        """
+        import warnings
+
+        # Build a 5-origin × 10-dev triangle, but only fill in 5 development
+        # periods so that dev=72..120 never appear in training data.
+        tri = cl.load_sample("genins")  # 10×10, all positive incremental values
+
+        inc_tri = tri.cum_to_incr()
+        tri2 = inc_tri.copy()
+        vals = tri2.values.copy()  # shape (1, 1, 10, 10)
+        # Blank the last 5 dev columns for ALL origins so training has dev=12..60
+        for dev_idx in range(5, 10):
+            vals[:, :, :, dev_idx] = np.nan
+        tri2.values = vals
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gaussian",
+            init_priors_from_chainladder=True,
+            draws=50,
+            tune=25,
+            chains=1,
+            random_seed=42,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(tri2)
+
+        # future_data_ must contain the 5 dev levels that were ABSENT from
+        # training (72, 84, 96, 108, 120).  dev=12 is training-only (oldest
+        # origin); dev=24..60 appear in both.
+        future_devs = set(int(v) for v in model.future_data_["dev"].values)
+        missing_from_train = {72, 84, 96, 108, 120}
+        assert missing_from_train.issubset(future_devs), (
+            f"future_data_ must include dev levels that were absent from training: "
+            f"expected {missing_from_train}, got {sorted(future_devs)}"
+        )
+
+        # data_ must contain ALL dev levels (including the formerly-missing ones
+        # that were injected as dummy rows)
+        train_devs = set(int(v) for v in model.data_["dev"].values)
+        assert missing_from_train.issubset(train_devs), (
+            f"data_ should contain dummy rows for dev levels "
+            f"{missing_from_train - train_devs} but they are missing"
+        )
+
+        # fitted_ must align with the REAL (non-dummy) training rows only.
+        # Real rows: 10 origins × 5 observed dev periods = 50 cells, but the
+        # youngest origins have fewer observed cells (upper-left triangle).
+        # Ground truth: prepare_model_data gives the exact count before padding.
+        from bayesianchainladder.utils import prepare_model_data as _pmd
+        _data_unpadded, _ = _pmd(tri2)
+        real_row_count = len(_data_unpadded)
+        assert len(model.fitted_) == real_row_count, (
+            f"fitted_ row count {len(model.fitted_)} should equal real training "
+            f"rows {real_row_count} (dummy rows should be stripped)"
+        )
+
+        # Reserve summaries must be present and finite
+        assert model.ibnr_ is not None
+        assert model.ultimate_ is not None
+        assert np.all(np.isfinite(model.ibnr_["mean"].values)), "ibnr_ mean contains non-finite values"
+        assert np.all(np.isfinite(model.ultimate_["mean"].values)), "ultimate_ mean contains non-finite values"
+
 
 @pytest.fixture
 def positive_triangle():

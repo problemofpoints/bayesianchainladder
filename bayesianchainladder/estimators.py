@@ -209,6 +209,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.fitted_: pd.DataFrame | None = None
         self._original_exposure_col: str | None = None
         self._response_shift: float = 0.0
+        self._n_dummy_rows: int = 0
 
     def fit(
         self,
@@ -249,42 +250,28 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.data_ = add_categorical_columns(self.data_, formula=self.formula)
         self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
 
-        # Align categorical levels for C(...) columns using the UNION of
-        # train and future dev levels.
+        # Ensure every C(...) level that appears in future_data_ is also present
+        # in data_.  The formulae library (used internally by Bambi) derives the
+        # categorical level set from np.unique() of the actual training values —
+        # it ignores pd.Categorical dtype categories.  If a dev level (e.g., 108)
+        # appears only in future_data_, predict() raises:
+        #   ValueError: The levels (108) in 'C(dev)' are not present in the original data set.
         #
-        # When a triangle has fewer observed dev periods than the full range,
-        # future_data_ may contain dev values (e.g., 108, 120) that never
-        # appeared in data_.  Previously these rows were dropped, producing a
-        # partial (lower-bound) IBNR estimate for the youngest origins.
-        #
-        # The correct fix: set the pd.Categorical levels on BOTH data_ and
-        # future_data_ to the union of all levels in train ∪ future.  Bambi
-        # then includes a contrast column for every level in both datasets.
-        # For levels unseen in training the contrast column is always 0 in
-        # training data, so the coefficient is purely prior-driven — with
-        # CL-informed priors this gives defensible extrapolation; without them
-        # it falls back to Normal(0, σ) centred at the reference level.
-        # No future rows are dropped; IBNR estimates remain complete.
+        # Fix: for each C(...) column, add one dummy training row per missing
+        # level.  Dummy rows use:
+        #   - the first observed origin (arbitrary; origin effect is independent)
+        #   - a small positive response value (1.0) so count families are happy
+        #   - _obs_weight = 0  (real rows carry _obs_weight = 1)
+        # The _obs_weight column is carried through so _compute_predictions can
+        # strip dummy rows from fitted_.  The dummy rows have negligible
+        # likelihood influence when real loss values are thousands to millions.
+        self._n_dummy_rows = 0
         if len(self.future_data_) > 0:
-            c_wrapped_cols = set(re.findall(r'\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)', self.formula))
-            for col in c_wrapped_cols:
-                if col not in self.future_data_.columns or col not in self.data_.columns:
-                    continue
-                # Compute union of all levels from both frames
-                train_vals = (
-                    list(self.data_[col].cat.categories)
-                    if hasattr(self.data_[col], "cat")
-                    else list(self.data_[col].unique())
+            self.data_, self.future_data_, self._n_dummy_rows = (
+                self._pad_missing_dev_levels(
+                    self.data_, self.future_data_, self.formula
                 )
-                future_vals = list(self.future_data_[col].unique())
-                all_levels = sorted(set(train_vals) | set(future_vals))
-                # Re-encode both frames with the unified level set
-                self.data_[col] = pd.Categorical(
-                    self.data_[col], categories=all_levels
-                )
-                self.future_data_[col] = pd.Categorical(
-                    self.future_data_[col], categories=all_levels
-                )
+            )
 
         # If response_per_exposure=True, divide the response by exposure in the
         # observed data so the model is on loss-ratio scale rather than dollar scale.
@@ -383,6 +370,128 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self._is_fitted = True
         return self
 
+    @staticmethod
+    def _pad_missing_dev_levels(
+        data: pd.DataFrame,
+        future_data: pd.DataFrame,
+        formula: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+        """Append one dummy row per C(...) level present in future_data but not in data.
+
+        The formulae library (Bambi's design-matrix engine) determines categorical
+        levels from ``np.unique()`` of the actual training values — it ignores
+        pd.Categorical dtype categories.  If a level appears only in future_data,
+        Bambi raises ``ValueError: The levels (...) are not present in the original
+        data set`` at predict-time.
+
+        This method guarantees every future level is seen during training by
+        inserting one lightweight dummy row per missing level.  Dummy rows carry:
+
+        * ``_obs_weight = 0``  (real rows get ``_obs_weight = 1``)
+        * response value = small positive constant (1.0), safe for all families
+        * ``origin`` = first observed origin (its effect is independent of ``dev``)
+        * other numeric columns copied from the first real row
+
+        The caller (``fit``) stores the dummy-row count in ``self._n_dummy_rows``
+        so that ``_compute_predictions`` can strip those rows from ``fitted_``.
+
+        Both ``data`` and ``future_data`` are returned with unified pd.Categorical
+        level sets on every C(...) column so that dtype comparisons work correctly.
+
+        Parameters
+        ----------
+        data : pd.DataFrame
+            Training data (observed cells).
+        future_data : pd.DataFrame
+            Future (prediction) data.
+        formula : str
+            Bambi formula string used to identify C(...) columns.
+
+        Returns
+        -------
+        padded_data : pd.DataFrame
+            Training data extended with dummy rows (or unchanged if none needed).
+        updated_future : pd.DataFrame
+            Future data with unified pd.Categorical levels on C(...) columns.
+        n_dummy : int
+            Number of dummy rows added.
+        """
+        c_wrapped_cols = re.findall(r'\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)', formula)
+        if not c_wrapped_cols:
+            # Mark real rows and return unchanged (no C(...) terms in formula)
+            data = data.copy()
+            data["_obs_weight"] = 1.0
+            return data, future_data, 0
+
+        dummy_rows: list[pd.DataFrame] = []
+
+        # Determine the response column (LHS of formula)
+        response_col = formula.split("~")[0].strip()
+        if response_col not in data.columns:
+            response_col = "incremental"
+
+        # Reference row: first real row — copy all columns from here for dummy rows
+        ref_row = data.iloc[[0]].copy()
+
+        for col in c_wrapped_cols:
+            if col not in future_data.columns or col not in data.columns:
+                continue
+            train_vals = set(data[col].dropna().unique().tolist())
+            # Cast to the same type for comparison (handles int/str mix in Categorical)
+            try:
+                future_vals = set(int(v) for v in future_data[col].dropna().unique())
+                train_vals_cast = set(int(v) for v in train_vals)
+            except (TypeError, ValueError):
+                future_vals = set(future_data[col].dropna().unique().tolist())
+                train_vals_cast = train_vals
+
+            missing = sorted(future_vals - train_vals_cast)
+            for level in missing:
+                dummy = ref_row.copy()
+                dummy[col] = level
+                # Small positive response value — valid for all supported families.
+                # With Meyers-scale data (thousands to millions), a single row with
+                # value 1.0 has negligible likelihood influence.
+                if response_col in dummy.columns:
+                    dummy[response_col] = 1.0
+                dummy["_obs_weight"] = 0.0
+                dummy_rows.append(dummy)
+
+        # Mark real rows regardless of whether dummy rows were added
+        data = data.copy()
+        data["_obs_weight"] = 1.0
+
+        if dummy_rows:
+            padded = pd.concat([data] + dummy_rows, ignore_index=True)
+            n_dummy = len(dummy_rows)
+        else:
+            padded = data
+            n_dummy = 0
+
+        # Re-apply unified pd.Categorical level set on every C(...) column.
+        # pd.concat loses Categorical dtype; we also want train/future to agree.
+        future_data = future_data.copy()
+        for col in c_wrapped_cols:
+            if col not in padded.columns:
+                continue
+            try:
+                all_levels = sorted(
+                    set(int(v) for v in padded[col].dropna().unique())
+                    | set(int(v) for v in future_data[col].dropna().unique()
+                          if col in future_data.columns)
+                )
+            except (TypeError, ValueError):
+                all_levels = sorted(
+                    set(padded[col].dropna().unique().tolist())
+                    | (set(future_data[col].dropna().unique().tolist())
+                       if col in future_data.columns else set())
+                )
+            padded[col] = pd.Categorical(padded[col], categories=all_levels)
+            if col in future_data.columns:
+                future_data[col] = pd.Categorical(future_data[col], categories=all_levels)
+
+        return padded, future_data, n_dummy
+
     def _compute_predictions(self) -> None:
         """Compute fitted values and future predictions."""
         # When an exposure offset is used, build_bambi_model adds a `logoffset`
@@ -426,56 +535,72 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             mean_name = response_name
             posterior_data = self.idata.posterior_predictive
 
-        # Extract fitted values
+        # Extract fitted values — strip dummy rows (added by _pad_missing_dev_levels)
+        # before storing fitted_, so it aligns with the original observed data.
         fitted_mean = posterior_data[mean_name].mean(dim=["chain", "draw"])
-        self.fitted_ = self.data_.copy()
-        self.fitted_["fitted_mean"] = fitted_mean.values
+        fitted_data = self.data_.copy()
+        fitted_data["fitted_mean"] = fitted_mean.values
+        if self._n_dummy_rows > 0:
+            # Dummy rows were appended at the END of data_; keep only real rows.
+            fitted_data = fitted_data.iloc[: len(fitted_data) - self._n_dummy_rows].copy()
+        self.fitted_ = fitted_data
 
-        # Predict future cells
-        if len(self.future_data_) > 0:
-            if self.include_process_variance:
-                # kind="response" samples from the full posterior predictive
-                # distribution (e.g. Gamma(α, μ/α) for gamma family), adding
-                # process variance on top of parameter uncertainty.
-                # On success the draws land in idata.posterior_predictive.
-                # Fall back to parameter-only if the call fails.
-                _pv_success = False
+        # Predict future cells.
+        # Use formulae's "silent" mode so that any C(...) level in fut_data that
+        # is not in the training data is treated as the reference level (all-zero
+        # contrast) rather than raising a ValueError.  The dummy-row padding above
+        # ensures every future level IS present in training, so this guard only
+        # fires if some edge case slips through (e.g. C(calendar) extrapolation).
+        import formulae as _formulae
+        _prev_unseen = _formulae.config["EVAL_UNSEEN_CATEGORIES"]
+        _formulae.config["EVAL_UNSEEN_CATEGORIES"] = "silent"
+        try:
+            if len(self.future_data_) > 0:
+                if self.include_process_variance:
+                    # kind="response" samples from the full posterior predictive
+                    # distribution (e.g. Gamma(α, μ/α) for gamma family), adding
+                    # process variance on top of parameter uncertainty.
+                    # On success the draws land in idata.posterior_predictive.
+                    # Fall back to parameter-only if the call fails.
+                    _pv_success = False
+                    try:
+                        self.model_.predict(
+                            self.idata, data=fut_data, kind="response", inplace=True,
+                            sample_new_groups=True,
+                        )
+                        _pv_success = True
+                    except Exception:
+                        pass
+
+                    if _pv_success and hasattr(self.idata, "posterior_predictive"):
+                        pp = self.idata.posterior_predictive
+                        if response_name in pp:
+                            self._compute_reserves(pp[response_name])
+                            return
+                        # Otherwise fall through to parameter-only path below.
+
+                # Parameter-only path (include_process_variance=False, or fallback).
                 try:
                     self.model_.predict(
-                        self.idata, data=fut_data, kind="response", inplace=True,
+                        self.idata, data=fut_data, kind="response_params", inplace=True,
                         sample_new_groups=True,
                     )
-                    _pv_success = True
-                except Exception:
-                    pass
+                except (TypeError, ValueError):
+                    self.model_.predict(
+                        self.idata, data=fut_data, kind="mean", inplace=True,
+                        sample_new_groups=True,
+                    )
 
-                if _pv_success and hasattr(self.idata, "posterior_predictive"):
-                    pp = self.idata.posterior_predictive
-                    if response_name in pp:
-                        self._compute_reserves(pp[response_name])
-                        return
-                    # Otherwise fall through to parameter-only path below.
+                # Get the future predictions using same name discovery
+                if mean_name in self.idata.posterior:
+                    future_mean = self.idata.posterior[mean_name]
+                else:
+                    future_mean = self.idata.posterior_predictive[mean_name]
 
-            # Parameter-only path (include_process_variance=False, or fallback).
-            try:
-                self.model_.predict(
-                    self.idata, data=fut_data, kind="response_params", inplace=True,
-                    sample_new_groups=True,
-                )
-            except (TypeError, ValueError):
-                self.model_.predict(
-                    self.idata, data=fut_data, kind="mean", inplace=True,
-                    sample_new_groups=True,
-                )
-
-            # Get the future predictions using same name discovery
-            if mean_name in self.idata.posterior:
-                future_mean = self.idata.posterior[mean_name]
-            else:
-                future_mean = self.idata.posterior_predictive[mean_name]
-
-            # Compute reserves by origin
-            self._compute_reserves(future_mean)
+                # Compute reserves by origin
+                self._compute_reserves(future_mean)
+        finally:
+            _formulae.config["EVAL_UNSEEN_CATEGORIES"] = _prev_unseen
 
     def _compute_reserves(self, future_predictions: xr.DataArray) -> None:
         """Compute reserve distributions from future predictions.
