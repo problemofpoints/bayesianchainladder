@@ -288,6 +288,7 @@ def _testr_bayesian_glm(
     family: str,
     link: Optional[str],
     response_per_exposure: bool = False,
+    use_elicited_priors: bool = False,
     draws: int = 1000,
     tune: int = 1000,
     chains: int = 2,
@@ -295,10 +296,19 @@ def _testr_bayesian_glm(
     random_seed: int = 22,
     **kwargs,
 ) -> Optional[dict]:
-    """Generic BayesianChainLadderGLM back-test wrapper (internal)."""
+    """Generic BayesianChainLadderGLM back-test wrapper (internal).
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors via
+        ``load_glm_priors_for_line(line, spec)`` and pass them to the model.
+        When False (default), pass ``priors=None`` so the package constructs
+        adaptive data-driven priors from each triangle.
+    """
     try:
         from bayesianchainladder import BayesianChainLadderGLM
-        from _common import load_glm_priors_for_line, load_exposure_triangle
+        from _common import load_exposure_triangle
 
         triangle = _get_triangle(train_triangles, loss_type)
         if triangle is None:
@@ -311,10 +321,11 @@ def _testr_bayesian_glm(
         # Load premium/exposure triangle
         prem_tri = load_exposure_triangle(line, group_id)
 
-        # Load priors (best effort — fall back to defaults if they fail)
+        # Load priors only when explicitly requested; otherwise use adaptive defaults.
         priors = None
-        if line:
+        if use_elicited_priors and line:
             try:
+                from _common import load_glm_priors_for_line
                 priors = load_glm_priors_for_line(line, spec)
             except Exception:
                 priors = None  # fall back to adaptive defaults
@@ -392,9 +403,17 @@ def testr_glm_m2(
     actual_ultimates: Optional[dict] = None,
     line: str = "",
     group_id: int = 0,
+    use_elicited_priors: bool = False,
     **kwargs,
 ) -> Optional[dict]:
-    """BCL_GLM_M2: gamma + log, C(origin) + bs(dev_idx, df=4), exposure offset."""
+    """BCL_GLM_M2: gamma + log, C(origin) + bs(dev_idx, df=4), exposure offset.
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use the package's adaptive data-driven priors.
+    """
     try:
         return _testr_bayesian_glm(
             train_triangles=train_triangles,
@@ -408,6 +427,7 @@ def testr_glm_m2(
             family="gamma",
             link="log",
             response_per_exposure=False,
+            use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
     except Exception as e:
@@ -421,9 +441,17 @@ def testr_glm_m5_cal(
     actual_ultimates: Optional[dict] = None,
     line: str = "",
     group_id: int = 0,
+    use_elicited_priors: bool = False,
     **kwargs,
 ) -> Optional[dict]:
-    """BCL_GLM_M5_cal: gamma + log, (1|origin) + bs(dev_idx,4) + (1|calendar), exposure offset."""
+    """BCL_GLM_M5_cal: gamma + log, (1|origin) + bs(dev_idx,4) + (1|calendar), exposure offset.
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use the package's adaptive data-driven priors.
+    """
     try:
         return _testr_bayesian_glm(
             train_triangles=train_triangles,
@@ -437,6 +465,7 @@ def testr_glm_m5_cal(
             family="gamma",
             link="log",
             response_per_exposure=False,
+            use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
     except Exception as e:
@@ -450,9 +479,17 @@ def testr_glm_mt5_cal(
     actual_ultimates: Optional[dict] = None,
     line: str = "",
     group_id: int = 0,
+    use_elicited_priors: bool = False,
     **kwargs,
 ) -> Optional[dict]:
-    """BCL_GLM_MT5_cal: t + identity, loss-ratio, (1|origin) + bs(dev_idx,4) + (1|calendar)."""
+    """BCL_GLM_MT5_cal: t + identity, loss-ratio, (1|origin) + bs(dev_idx,4) + (1|calendar).
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use the package's adaptive data-driven priors.
+    """
     try:
         return _testr_bayesian_glm(
             train_triangles=train_triangles,
@@ -466,6 +503,7 @@ def testr_glm_mt5_cal(
             family="t",
             link="identity",
             response_per_exposure=True,
+            use_elicited_priors=use_elicited_priors,
             **kwargs,
         )
     except Exception as e:
