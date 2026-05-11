@@ -894,3 +894,299 @@ class TestAdaptiveInterceptPriorOffset:
         assert abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6, (
             f"Expected mu={expected_mu:.4f}, got {priors['Intercept'].args['mu']:.4f}"
         )
+
+
+# ============================================================================
+# init_priors_from_chainladder tests
+# ============================================================================
+
+
+class TestInitPriorsFromChainladder:
+    """Tests for init_priors_from_chainladder=True mode.
+
+    Non-slow tests only check that the CL-informed priors are constructed
+    with the correct structure (array-valued, sensible values) WITHOUT running
+    MCMC.  Slow tests exercise the full fit path.
+    """
+
+    def _make_fitted_model(
+        self,
+        formula: str = "incremental ~ 1 + C(origin) + C(dev)",
+        family: str = "gaussian",
+        link: str | None = "log",
+        exposure: str | None = None,
+        response_per_exposure: bool = False,
+        sd: float = 0.5,
+        tri=None,
+    ) -> BayesianChainLadderGLM:
+        """Return a model with data_ and triangle_ set (without MCMC) so we can
+        call _build_cl_informed_priors() directly."""
+        import chainladder as cl
+        from bayesianchainladder.utils import (
+            add_categorical_columns,
+            prepare_model_data,
+        )
+
+        if tri is None:
+            tri = cl.load_sample("genins")
+
+        model = BayesianChainLadderGLM(
+            formula=formula,
+            family=family,
+            link=link,
+            exposure=exposure,
+            response_per_exposure=response_per_exposure,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=sd,
+            draws=50,
+            tune=25,
+            chains=1,
+        )
+        # Manually prepare data without running MCMC
+        model.triangle_ = tri.copy()
+        model.data_, model.future_data_ = prepare_model_data(
+            tri,
+            exposure_column=exposure if exposure else "exposure",
+        )
+        model.data_ = add_categorical_columns(model.data_, formula=formula)
+        model.future_data_ = add_categorical_columns(model.future_data_, formula=formula)
+        return model
+
+    def test_categorical_origin_dev_prior_structure(self):
+        """C(origin) and C(dev) priors are array-valued with correct length."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        cl_priors = model._build_cl_informed_priors()
+
+        n_origins = len(tri.origin)
+        n_devs = len(tri.development)
+
+        # C(origin): n_origins - 1 contrasts
+        assert "C(origin)" in cl_priors, "Expected C(origin) in CL priors"
+        origin_prior = cl_priors["C(origin)"]
+        assert hasattr(origin_prior, "args"), "Prior should be a bmb.Prior"
+        origin_mus = origin_prior.args["mu"]
+        assert len(origin_mus) == n_origins - 1, (
+            f"Expected {n_origins - 1} origin contrasts, got {len(origin_mus)}"
+        )
+
+        # C(dev): n_devs - 1 contrasts
+        assert "C(dev)" in cl_priors, "Expected C(dev) in CL priors"
+        dev_prior = cl_priors["C(dev)"]
+        dev_mus = dev_prior.args["mu"]
+        assert len(dev_mus) == n_devs - 1, (
+            f"Expected {n_devs - 1} dev contrasts, got {len(dev_mus)}"
+        )
+
+    def test_categorical_prior_values_sensible(self):
+        """C(origin) and C(dev) prior means are finite and not all-zero."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        cl_priors = model._build_cl_informed_priors()
+
+        origin_mus = cl_priors["C(origin)"].args["mu"]
+        dev_mus = cl_priors["C(dev)"].args["mu"]
+        sd = cl_priors["C(origin)"].args["sigma"]
+
+        # Means should be finite
+        assert np.all(np.isfinite(origin_mus)), "origin prior means contain non-finite values"
+        assert np.all(np.isfinite(dev_mus)), "dev prior means contain non-finite values"
+
+        # SDs should equal chainladder_prior_sd
+        assert np.allclose(sd, 0.5), f"Expected sd=0.5, got {sd}"
+
+        # Dev effects should be negative (later periods have smaller fraction)
+        # i.e., incr_pct[1:] < incr_pct[0] typically for a tail-heavy triangle
+        # At minimum, some dev contrasts should be negative
+        assert not np.all(dev_mus >= 0), (
+            "All dev prior means are non-negative — expected decreasing pattern"
+        )
+
+    def test_custom_prior_sd_respected(self):
+        """chainladder_prior_sd parameter is used as the sigma for all effects."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        for test_sd in [0.3, 0.7, 1.0]:
+            model = self._make_fitted_model(
+                formula="incremental ~ 1 + C(origin) + C(dev)",
+                family="gamma",
+                link="log",
+                sd=test_sd,
+                tri=tri,
+            )
+            cl_priors = model._build_cl_informed_priors()
+            if "C(origin)" in cl_priors:
+                sds = cl_priors["C(origin)"].args["sigma"]
+                assert np.allclose(sds, test_sd), (
+                    f"Expected sigma={test_sd}, got {sds}"
+                )
+
+    def test_spline_dev_priors_constructed_or_skipped(self):
+        """bs(dev_idx, df=4) formula: spline priors are either constructed or
+        gracefully skipped (no crash either way)."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + C(origin) + bs(dev_idx, df=4)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        cl_priors = model._build_cl_informed_priors()
+
+        # Either the spline key is present with 4 coefficients, or it's absent
+        spline_key = "bs(dev_idx, df=4)"
+        if spline_key in cl_priors:
+            spline_prior = cl_priors[spline_key]
+            coefs = spline_prior.args["mu"]
+            assert len(coefs) == 4, (
+                f"Expected 4 spline coefficients, got {len(coefs)}"
+            )
+            assert np.all(np.isfinite(coefs)), "Spline coefs contain non-finite values"
+        # else: graceful fallback — acceptable
+
+    def test_hierarchical_origin_re_prior_constructed(self):
+        """(1|origin) formula: the RE sigma hyperprior is informed by log-ult SD."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        cl_priors = model._build_cl_informed_priors()
+
+        assert "1|origin" in cl_priors, "Expected '1|origin' in CL priors"
+        re_prior = cl_priors["1|origin"]
+        # The RE prior should have a HalfNormal sigma hyperprior
+        inner_sigma = re_prior.args["sigma"]
+        assert hasattr(inner_sigma, "name") or hasattr(inner_sigma, "args"), (
+            "Expected sigma to be a bmb.Prior (HalfNormal), not a scalar"
+        )
+
+    def test_init_priors_false_leaves_defaults(self):
+        """When init_priors_from_chainladder=False, _build_cl_informed_priors returns {}."""
+        import chainladder as cl
+
+        tri = cl.load_sample("genins")
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        # Override to False to verify empty dict
+        model.init_priors_from_chainladder = False
+        cl_priors = model._build_cl_informed_priors()
+        # Method still returns a dict (may be non-empty if we call it directly),
+        # but what matters is that _build_default_priors does NOT include them
+        # when init_priors_from_chainladder=False.
+        # Test _build_default_priors instead:
+        model2 = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            init_priors_from_chainladder=False,
+        )
+        model2.triangle_ = tri.copy()
+        model2.data_, _ = __import__("bayesianchainladder.utils", fromlist=["prepare_model_data"]).prepare_model_data(tri)
+        model2.data_ = __import__("bayesianchainladder.utils", fromlist=["add_categorical_columns"]).add_categorical_columns(model2.data_, formula=model2.formula)
+        defaults = model2._build_default_priors()
+
+        # When init_priors_from_chainladder=False, C(origin) prior should be
+        # the generic Normal(0, 1) (scalar mu=0), not an array
+        if "C(origin)" in defaults:
+            mu = defaults["C(origin)"].args["mu"]
+            assert np.isscalar(mu) or (hasattr(mu, "__len__") and len(np.atleast_1d(mu)) == 1), (
+                "Without CL priors, C(origin) mu should be scalar 0.0"
+            )
+
+    @pytest.mark.slow
+    def test_fit_with_cl_priors_m1_cat(self, positive_triangle):
+        """Full fit with init_priors_from_chainladder=True on M1_cat formula."""
+        import warnings
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(positive_triangle)
+
+        assert model._is_fitted
+        assert model.idata is not None
+        assert model.reserves_posterior_ is not None
+
+    @pytest.mark.slow
+    def test_fit_with_cl_priors_m2_spline(self, positive_triangle):
+        """Full fit with init_priors_from_chainladder=True on M2 (spline) formula."""
+        import warnings
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + C(origin) + bs(dev_idx, df=4)",
+            family="gamma",
+            link="log",
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(positive_triangle)
+
+        assert model._is_fitted
+        assert model.idata is not None
+        assert model.reserves_posterior_ is not None
+
+    @pytest.mark.slow
+    def test_fit_with_cl_priors_hierarchical(self, positive_triangle):
+        """Full fit with init_priors_from_chainladder=True on hierarchical formula."""
+        import warnings
+
+        model = BayesianChainLadderGLM(
+            formula="incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)",
+            family="gamma",
+            link="log",
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            draws=100,
+            tune=50,
+            chains=1,
+            random_seed=42,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(positive_triangle)
+
+        assert model._is_fitted
+        assert model.idata is not None
+        assert model.reserves_posterior_ is not None

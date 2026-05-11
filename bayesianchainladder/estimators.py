@@ -169,6 +169,8 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         backend: str = "bambi",
         response_per_exposure: bool = False,
         include_process_variance: bool = True,
+        init_priors_from_chainladder: bool = False,
+        chainladder_prior_sd: float = 0.5,
     ):
         super().__init__()
         self.formula = formula
@@ -184,6 +186,8 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self.backend = backend
         self.response_per_exposure = response_per_exposure
         self.include_process_variance = include_process_variance
+        self.init_priors_from_chainladder = init_priors_from_chainladder
+        self.chainladder_prior_sd = chainladder_prior_sd
 
         # GLM-specific fitted attributes (not in base)
         self.model_: bmb.Model | None = None
@@ -870,6 +874,273 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         return summary_df
 
+    def _build_cl_informed_priors(self) -> dict[str, Any]:
+        """Build chain-ladder-informed prior centers for GLM formula terms.
+
+        Runs a deterministic ``cl.Chainladder()`` on the training triangle and
+        extracts per-origin ultimates and per-dev incremental fractions.  These
+        become the prior *centers* (mu) for each formula term; SDs are set to
+        ``self.chainladder_prior_sd`` uniformly.
+
+        Supported formula components
+        ----------------------------
+        * ``C(origin)``   — log-contrast priors relative to reference origin
+        * ``C(dev)``      — log-contrast priors relative to reference dev
+        * ``bs(dev_idx, df=N)`` — least-squares projection of CL log-incremental
+          pattern onto the spline basis (fallback: skip / leave defaults)
+        * ``(1 | origin)`` — HalfNormal hyperprior on RE sigma scaled to the
+          empirical SD of log-ultimates
+        * ``(1 | calendar)`` — not informed from CL; left to defaults
+
+        For identity-link (``response_per_exposure=True``) models the contrasts
+        are on loss-ratio scale rather than log scale.
+
+        Returns
+        -------
+        dict
+            Bambi-compatible priors dict with informed entries for recognised
+            terms.  Entries for unrecognised / unsupported terms are omitted
+            (Bambi will use its own defaults for those).
+        """
+        import chainladder as cl
+        import warnings
+
+        priors: dict[str, Any] = {}
+        tri = self.triangle_
+        sd = float(self.chainladder_prior_sd)
+
+        # -------------------------------------------------------------------
+        # Detect effective link: log vs identity
+        # -------------------------------------------------------------------
+        from .models import _get_default_link as _gdl
+        family_lower = self.family.lower()
+        canonical = {
+            "t": "t", "student_t": "t", "studentt": "t",
+            "gaussian": "gaussian", "normal": "gaussian",
+        }.get(family_lower, family_lower)
+        effective_link = self.link if self.link else _gdl(canonical)
+        is_log_link = (effective_link == "log")
+        # If response_per_exposure is True the transformed response is on
+        # loss-ratio scale (identity link effective).
+        is_identity = not is_log_link
+
+        # -------------------------------------------------------------------
+        # Run chain ladder on the training triangle
+        # -------------------------------------------------------------------
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                cl_fit = cl.Chainladder().fit(tri)
+        except Exception as e:
+            import warnings as _w
+            _w.warn(
+                f"BayesianChainLadderGLM: could not fit chain ladder for "
+                f"init_priors_from_chainladder ({e}); using default priors.",
+                UserWarning,
+                stacklevel=5,
+            )
+            return priors
+
+        # Ultimate and incremental-fraction extraction
+        try:
+            ult_frame = cl_fit.ultimate_.to_frame()
+            ult_arr = np.asarray(ult_frame.values, dtype=float).flatten()
+            cdf_frame = cl_fit.cdf_.to_frame()
+            cdf_arr = np.asarray(cdf_frame.values, dtype=float).flatten()
+        except Exception:
+            return priors
+
+        # Number of dev periods in the full triangle
+        n_devs = len(tri.development)
+        cdf_for_devs = cdf_arr[:n_devs]
+
+        # Cumulative pct at each dev = 1 / CDF (CDF is from that dev to ult).
+        # CDF values < 1 mean we're still developing; CDF = 1 means done.
+        cum_pct = 1.0 / np.maximum(cdf_for_devs, 1e-8)  # (n_devs,)
+        cum_pct = np.clip(cum_pct, 0.0, 1.0)
+
+        # Incremental pct = diff of cumulative pct (first cell = cum_pct[0])
+        incr_pct = np.diff(np.concatenate([[0.0], cum_pct]))  # (n_devs,)
+        incr_pct = np.maximum(incr_pct, 1e-10)  # guard against ≤ 0
+
+        # Reference cells: first origin, first dev
+        ref_ult = float(ult_arr[0]) if ult_arr.size > 0 else 1.0
+        ref_ult = max(ref_ult, 1e-8)
+        ref_frac = float(incr_pct[0])
+        ref_frac = max(ref_frac, 1e-10)
+
+        # -------------------------------------------------------------------
+        # Per-origin EP (needed for identity/loss-ratio scale)
+        # -------------------------------------------------------------------
+        ep_by_origin: dict[int, float] | None = None
+        if is_identity and self.data_ is not None:
+            # _original_exposure_col holds the exposure col name before it was cleared
+            exp_col = self._original_exposure_col if self._original_exposure_col else self.exposure
+            if exp_col and exp_col in self.data_.columns:
+                ep_by_origin = (
+                    self.data_.groupby("origin")[exp_col].first().to_dict()
+                )
+
+        # -------------------------------------------------------------------
+        # C(origin) priors — log-contrast or linear-contrast
+        # -------------------------------------------------------------------
+        c_origin_match = re.search(r'\bC\s*\(\s*origin\s*\)', self.formula)
+        if c_origin_match and self.data_ is not None and len(ult_arr) >= 2:
+            # Number of contrasts = n_origins - 1 (treatment coding, ref=first)
+            n_origins = len(ult_arr)
+            n_contrasts_origin = n_origins - 1
+
+            if is_log_link:
+                # Prior means = log(ult[k] / ult[ref]) for k > 0
+                origin_mus = np.log(np.maximum(ult_arr[1:], 1e-8)) - np.log(ref_ult)
+            else:
+                # Identity link: prior on loss-ratio-scale origin effects
+                # LR[k] = ult[k] / EP[k]; contrast mu_k = LR[k]*frac[0] - LR[0]*frac[0]
+                if ep_by_origin is not None:
+                    origins_sorted = sorted(ep_by_origin.keys())
+                    ep_vals = np.array([ep_by_origin.get(o, 1.0) for o in origins_sorted], dtype=float)
+                    ep_vals = np.maximum(ep_vals, 1e-8)
+                    lr_arr = ult_arr[:len(ep_vals)] / ep_vals
+                    ref_lr = float(lr_arr[0]) if lr_arr.size > 0 else 0.05
+                    origin_mus = (lr_arr[1:] - ref_lr) * ref_frac
+                else:
+                    origin_mus = np.zeros(n_contrasts_origin)
+
+            origin_mus = origin_mus[:n_contrasts_origin]
+            if len(origin_mus) > 0:
+                priors["C(origin)"] = bmb.Prior(
+                    "Normal",
+                    mu=origin_mus.astype(float),
+                    sigma=np.full(len(origin_mus), sd, dtype=float),
+                )
+
+        # -------------------------------------------------------------------
+        # C(dev) priors — log-contrast or linear-contrast
+        # -------------------------------------------------------------------
+        c_dev_match = re.search(r'\bC\s*\(\s*dev\s*\)', self.formula)
+        if c_dev_match and n_devs >= 2:
+            n_contrasts_dev = n_devs - 1
+
+            if is_log_link:
+                # Prior means = log(frac[j] / frac[0]) for j > 0
+                dev_mus = np.log(np.maximum(incr_pct[1:], 1e-10)) - np.log(ref_frac)
+            else:
+                # Identity link: incremental LR deviation from reference dev
+                # ref origin LR * (frac[j] - frac[0])
+                if ep_by_origin is not None:
+                    origins_sorted = sorted(ep_by_origin.keys())
+                    ep_vals = np.array([ep_by_origin.get(o, 1.0) for o in origins_sorted], dtype=float)
+                    ep_vals = np.maximum(ep_vals, 1e-8)
+                    lr_ref = float(ult_arr[0]) / float(ep_vals[0])
+                    dev_mus = lr_ref * (incr_pct[1:] - ref_frac)
+                else:
+                    dev_mus = np.zeros(n_contrasts_dev)
+
+            dev_mus = dev_mus[:n_contrasts_dev]
+            if len(dev_mus) > 0:
+                priors["C(dev)"] = bmb.Prior(
+                    "Normal",
+                    mu=dev_mus.astype(float),
+                    sigma=np.full(len(dev_mus), sd, dtype=float),
+                )
+
+        # -------------------------------------------------------------------
+        # bs(dev_idx, df=N) spline priors — project CL pattern onto basis
+        # -------------------------------------------------------------------
+        spline_match = re.search(r'\bbs\s*\(\s*dev_idx\s*,\s*df\s*=\s*(\d+)\s*\)', self.formula)
+        if spline_match and self.data_ is not None:
+            df_spline = int(spline_match.group(1))
+            try:
+                # Build the same spline basis that formulae/patsy will build.
+                # dev_idx is 1-based integer index: 1, 2, ..., n_devs.
+                dev_idx_vals = np.arange(1, n_devs + 1, dtype=float)
+
+                # Build B-spline basis via scipy (same knots as df=N default).
+                from scipy.interpolate import BSpline, make_interp_spline
+                from scipy.linalg import lstsq as sp_lstsq
+
+                # Build basis manually using patsy-style: evenly-spaced interior
+                # knots with cubic (degree=3) B-splines, augmented boundary knots.
+                # df = n_interior_knots + degree + 1 - include_intercept
+                # For df=4, degree=3: n_interior_knots = 0  (no interior knots)
+                degree = 3
+                n_interior = df_spline - degree - 1  # = 0 for df=4
+                n_interior = max(n_interior, 0)
+
+                x = dev_idx_vals
+                x_min, x_max = float(x.min()), float(x.max())
+                # Interior knots evenly spaced
+                if n_interior > 0:
+                    interior_knots = np.linspace(x_min, x_max, n_interior + 2)[1:-1]
+                else:
+                    interior_knots = np.array([])
+                # Full knot vector: boundary repeated (degree+1) times each
+                knots = np.concatenate([
+                    np.repeat(x_min, degree + 1),
+                    interior_knots,
+                    np.repeat(x_max, degree + 1),
+                ])
+                # Build design matrix: one column per basis function
+                n_basis = len(knots) - degree - 1
+                B = np.zeros((len(x), n_basis))
+                for k in range(n_basis):
+                    c = np.zeros(n_basis)
+                    c[k] = 1.0
+                    spl = BSpline(knots, c, degree)
+                    B[:, k] = spl(x)
+
+                # If matrix is wrong size, skip
+                if B.shape[1] != df_spline:
+                    raise ValueError(
+                        f"Spline basis shape mismatch: got {B.shape[1]} columns, "
+                        f"expected {df_spline}"
+                    )
+
+                # Target: log of incremental fractions (CL pattern on log scale)
+                if is_log_link:
+                    y_target = np.log(np.maximum(incr_pct, 1e-10))
+                else:
+                    # Identity link: raw incr_pct as target (roughly)
+                    y_target = incr_pct.copy()
+
+                # Least-squares fit: B @ coef ≈ y_target
+                coef, _, _, _ = np.linalg.lstsq(B, y_target, rcond=None)
+
+                # Sanity check: coefficients should be finite and not huge
+                if np.all(np.isfinite(coef)) and np.all(np.abs(coef) < 50.0):
+                    spline_key = f"bs(dev_idx, df={df_spline})"
+                    priors[spline_key] = bmb.Prior(
+                        "Normal",
+                        mu=coef.astype(float),
+                        sigma=np.full(df_spline, sd, dtype=float),
+                    )
+                # else: skip spline priors; fall back to Bambi defaults
+            except Exception:
+                # Spline projection failed; leave defaults (no entry added)
+                pass
+
+        # -------------------------------------------------------------------
+        # (1 | origin) random intercept — HalfNormal on sigma
+        # -------------------------------------------------------------------
+        re_origin_match = re.search(r'\(1\s*\|\s*origin\s*\)', self.formula)
+        if re_origin_match:
+            # Empirical SD of log(ultimates) across origins
+            valid_ults = ult_arr[ult_arr > 0]
+            if valid_ults.size >= 2:
+                log_ult_sd = float(np.std(np.log(valid_ults), ddof=1))
+                # Wide enough to let the data determine the RE SD, but informed
+                # by the inter-origin variability: use 2× empirical SD.
+                hn_sigma = max(2.0 * log_ult_sd, 0.01)
+                priors["1|origin"] = bmb.Prior(
+                    "Normal",
+                    mu=0,
+                    sigma=bmb.Prior("HalfNormal", sigma=hn_sigma),
+                )
+
+        # (1 | calendar) — not directly informed by chain ladder; leave defaults.
+
+        return priors
+
     def _build_default_priors(self) -> dict[str, Any]:
         """Build data-adaptive default priors, with user priors layered on top.
 
@@ -939,6 +1210,11 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 key = re.sub(r"\s+", "", term)
                 defaults[key] = bmb.Prior("Normal", mu=0.0, sigma=1.0)
 
+        # Layer chain-ladder-informed priors on top of defaults (before user priors)
+        if self.init_priors_from_chainladder and self.triangle_ is not None:
+            cl_priors = self._build_cl_informed_priors()
+            defaults.update(cl_priors)
+
         if self.priors:
             defaults.update(self.priors)
 
@@ -999,6 +1275,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             f"    draws={self.draws},\n"
             f"    tune={self.tune},\n"
             f"    include_process_variance={self.include_process_variance},\n"
+            f"    init_priors_from_chainladder={self.init_priors_from_chainladder},\n"
             f"    status={fitted_str}\n"
             f")"
         )
