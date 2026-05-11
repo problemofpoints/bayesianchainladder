@@ -290,6 +290,8 @@ def _testr_bayesian_glm(
     response_per_exposure: bool = False,
     exposure: Optional[str] = None,
     use_elicited_priors: bool = False,
+    init_priors_from_chainladder: bool = False,
+    chainladder_prior_sd: float = 0.5,
     draws: int = 1000,
     tune: int = 1000,
     chains: int = 2,
@@ -353,6 +355,8 @@ def _testr_bayesian_glm(
             chains=chains,
             target_accept=target_accept,
             random_seed=random_seed,
+            init_priors_from_chainladder=init_priors_from_chainladder,
+            chainladder_prior_sd=chainladder_prior_sd,
         )
 
         with warnings.catch_warnings():
@@ -427,12 +431,13 @@ def testr_glm_m1_cat(
     This is the simplest categorical GLM that should asymptotically match ODP/Mack.
     Uses gamma + log link with net-earned-premium exposure offset, identical to M2
     except dev is treated as a fully-categorical factor rather than a B-spline.
+    CL-informed priors are always enabled (init_priors_from_chainladder=True).
 
     Parameters
     ----------
     use_elicited_priors : bool, default False
         When True, load line-specific elicited priors; when False (default),
-        use the package's adaptive data-driven priors.
+        use CL-informed priors (init_priors_from_chainladder=True).
     """
     try:
         return _testr_bayesian_glm(
@@ -449,6 +454,8 @@ def testr_glm_m1_cat(
             response_per_exposure=False,
             exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
             **kwargs,
         )
     except Exception as e:
@@ -467,11 +474,13 @@ def testr_glm_m2(
 ) -> Optional[dict]:
     """BCL_GLM_M2: gamma + log, C(origin) + bs(dev_idx, df=4), exposure offset.
 
+    CL-informed priors are always enabled (init_priors_from_chainladder=True).
+
     Parameters
     ----------
     use_elicited_priors : bool, default False
         When True, load line-specific elicited priors; when False (default),
-        use the package's adaptive data-driven priors.
+        use CL-informed priors (init_priors_from_chainladder=True).
     """
     try:
         return _testr_bayesian_glm(
@@ -488,6 +497,8 @@ def testr_glm_m2(
             response_per_exposure=False,
             exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
             **kwargs,
         )
     except Exception as e:
@@ -506,11 +517,15 @@ def testr_glm_m5_cal(
 ) -> Optional[dict]:
     """BCL_GLM_M5_cal: gamma + log, (1|origin) + bs(dev_idx,4) + (1|calendar), exposure offset.
 
+    CL-informed priors are always enabled: (1|origin) sigma hyperprior is scaled
+    to the empirical SD of log-ultimates across origins; spline priors are
+    projected from the CL incremental pattern.
+
     Parameters
     ----------
     use_elicited_priors : bool, default False
         When True, load line-specific elicited priors; when False (default),
-        use the package's adaptive data-driven priors.
+        use CL-informed priors (init_priors_from_chainladder=True).
     """
     try:
         return _testr_bayesian_glm(
@@ -527,6 +542,8 @@ def testr_glm_m5_cal(
             response_per_exposure=False,
             exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
             **kwargs,
         )
     except Exception as e:
@@ -545,11 +562,15 @@ def testr_glm_mt5_cal(
 ) -> Optional[dict]:
     """BCL_GLM_MT5_cal: t + identity, loss-ratio, (1|origin) + bs(dev_idx,4) + (1|calendar).
 
+    CL-informed priors are always enabled: (1|origin) sigma hyperprior is scaled
+    to the empirical SD of log-ultimates across origins; spline priors are
+    projected from the CL incremental loss-ratio pattern (identity scale).
+
     Parameters
     ----------
     use_elicited_priors : bool, default False
         When True, load line-specific elicited priors; when False (default),
-        use the package's adaptive data-driven priors.
+        use CL-informed priors (init_priors_from_chainladder=True).
     """
     try:
         return _testr_bayesian_glm(
@@ -566,6 +587,8 @@ def testr_glm_mt5_cal(
             response_per_exposure=True,
             exposure="net_earned_premium",
             use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
             **kwargs,
         )
     except Exception as e:
