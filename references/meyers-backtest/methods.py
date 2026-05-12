@@ -594,3 +594,44 @@ def testr_glm_mt5_cal(
         )
     except Exception as e:
         return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+def testr_glm_mt5_cal_gaussian(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    **kwargs,
+) -> Optional[dict]:
+    """MT5_cal with Gaussian family (thinner tails than t-family).
+
+    Same structure as MT5_cal but uses family="gaussian" instead of "t".
+    Hypothesis: if actual incremental loss-ratio variability is not heavy-tailed,
+    Gaussian (thinner tails) may improve calibration over the t-family, which
+    tends to push actuals toward lower percentiles due to excess tail mass.
+
+    CL-informed priors are always enabled (init_priors_from_chainladder=True).
+    """
+    try:
+        return _testr_bayesian_glm(
+            train_triangles=train_triangles,
+            test_triangles=test_triangles,
+            loss_type=loss_type,
+            actual_ultimates=actual_ultimates,
+            line=line,
+            group_id=group_id,
+            spec="MT5_cal",
+            formula=_FORMULA_MT5_CAL,
+            family="gaussian",
+            link="identity",
+            response_per_exposure=True,
+            exposure="net_earned_premium",
+            use_elicited_priors=False,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            **kwargs,
+        )
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
