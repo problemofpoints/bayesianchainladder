@@ -1,0 +1,4 @@
+# Large data files - excluded from git
+schedp_long.csv
+schedp_results.csv
+schedp_samples.parquet
