@@ -864,6 +864,7 @@ def _parametric_bootstrap_and_aggregate(
     aggregator,
     residual_dist="normal",
     process_variance="lognormal",
+    apriori_sigma=0.15,
 ):
     """Parametric bootstrap (lognormal process variance by default) with BF or CC aggregation.
 
@@ -879,6 +880,13 @@ def _parametric_bootstrap_and_aggregate(
         Calendar-year correlation. 0 → independent; >0 → correlated.
     apriori : float
         A-priori expected loss ratio (only used when aggregator='bf').
+    apriori_sigma : float
+        Standard deviation of the a-priori loss ratio.  When > 0, each
+        bootstrap sample draws its own apriori from Normal(apriori,
+        apriori_sigma) (BF) or Normal(cc_apriori, apriori_sigma) (CC),
+        propagating apriori uncertainty into the reserve distribution.
+        Default 0.15.  Set to 0 to recover the old deterministic-apriori
+        behaviour (variance collapse).
     random_seed : int or None
     aggregator : {'chainladder', 'bf', 'cc'}
         Final aggregation method applied to each resampled triangle.
@@ -1016,11 +1024,13 @@ def _parametric_bootstrap_and_aggregate(
     prem_broadcast.kdims = np.array([[str(s)] for s in range(n_sims)], dtype=object)
 
     if aggregator == "bf":
-        model = cl.BornhuetterFerguson(apriori=apriori).fit(
-            stacked_dev, sample_weight=prem_broadcast
-        )
+        model = cl.BornhuetterFerguson(
+            apriori=apriori, apriori_sigma=apriori_sigma, random_state=random_seed
+        ).fit(stacked_dev, sample_weight=prem_broadcast)
     elif aggregator == "cc":
-        model = cl.CapeCod().fit(stacked_dev, sample_weight=prem_broadcast)
+        model = cl.CapeCod(
+            apriori_sigma=apriori_sigma, random_state=random_seed
+        ).fit(stacked_dev, sample_weight=prem_broadcast)
     else:
         model = cl.Chainladder().fit(stacked_dev)
 
@@ -1034,7 +1044,7 @@ def _parametric_bootstrap_and_aggregate(
 
 def _run_odp_bf(
     loss_tri, exposure_tri, apriori=0.65, n_sims=1000, random_seed=None,
-    residual_dist="normal", process_variance="lognormal",
+    residual_dist="normal", process_variance="lognormal", apriori_sigma=0.15,
 ):
     """Run parametric independent bootstrap (rho=0) + Bornhuetter-Ferguson.
 
@@ -1046,12 +1056,13 @@ def _run_odp_bf(
         loss_tri, exposure_tri, n_sims=n_sims, rho=0.0, apriori=apriori,
         random_seed=random_seed, aggregator="bf",
         residual_dist=residual_dist, process_variance=process_variance,
+        apriori_sigma=apriori_sigma,
     )
 
 
 def _run_odp_cc(
     loss_tri, exposure_tri, n_sims=1000, random_seed=None,
-    residual_dist="normal", process_variance="lognormal",
+    residual_dist="normal", process_variance="lognormal", apriori_sigma=0.15,
 ):
     """Run parametric independent bootstrap (rho=0) + Cape Cod.
 
@@ -1063,30 +1074,33 @@ def _run_odp_cc(
         loss_tri, exposure_tri, n_sims=n_sims, rho=0.0, apriori=0.65,
         random_seed=random_seed, aggregator="cc",
         residual_dist=residual_dist, process_variance=process_variance,
+        apriori_sigma=apriori_sigma,
     )
 
 
 def _run_odp_corr_bf(
     loss_tri, exposure_tri, apriori=0.65, n_sims=1000, rho=0.3, random_seed=None,
-    residual_dist="normal", process_variance="lognormal",
+    residual_dist="normal", process_variance="lognormal", apriori_sigma=0.15,
 ):
     """Run parametric correlated bootstrap (rho>0) + Bornhuetter-Ferguson."""
     return _parametric_bootstrap_and_aggregate(
         loss_tri, exposure_tri, n_sims=n_sims, rho=rho, apriori=apriori,
         random_seed=random_seed, aggregator="bf",
         residual_dist=residual_dist, process_variance=process_variance,
+        apriori_sigma=apriori_sigma,
     )
 
 
 def _run_odp_corr_cc(
     loss_tri, exposure_tri, n_sims=1000, rho=0.3, random_seed=None,
-    residual_dist="normal", process_variance="lognormal",
+    residual_dist="normal", process_variance="lognormal", apriori_sigma=0.15,
 ):
     """Run parametric correlated bootstrap (rho>0) + Cape Cod."""
     return _parametric_bootstrap_and_aggregate(
         loss_tri, exposure_tri, n_sims=n_sims, rho=rho, apriori=0.65,
         random_seed=random_seed, aggregator="cc",
         residual_dist=residual_dist, process_variance=process_variance,
+        apriori_sigma=apriori_sigma,
     )
 
 
@@ -1231,6 +1245,7 @@ def run_methods_on_triangle(
     n_sims=5000,
     rho=0.1,
     apriori=0.65,
+    apriori_sigma=0.15,
     random_seed=None,
     lob="unknown",
     group_id="unknown",
@@ -1256,6 +1271,9 @@ def run_methods_on_triangle(
     n_sims : int
     rho : float
     apriori : float
+    apriori_sigma : float
+        Standard deviation of the a-priori loss ratio for BF/CC methods.
+        Default 0.15.  Set to 0 for deterministic apriori (variance collapse).
     random_seed : int or None
     lob, group_id : str
     loss_type : str
@@ -1317,7 +1335,7 @@ def run_methods_on_triangle(
                 per_origin_sim = _run_odp_bf(
                     loss_tri, exposure_tri, apriori=apriori, n_sims=n_sims,
                     random_seed=random_seed, residual_dist=residual_dist,
-                    process_variance=process_variance,
+                    process_variance=process_variance, apriori_sigma=apriori_sigma,
                 )
             elif method == "odp_cc":
                 if exposure_tri is None:
@@ -1329,7 +1347,7 @@ def run_methods_on_triangle(
                 per_origin_sim = _run_odp_cc(
                     loss_tri, exposure_tri, n_sims=n_sims,
                     random_seed=random_seed, residual_dist=residual_dist,
-                    process_variance=process_variance,
+                    process_variance=process_variance, apriori_sigma=apriori_sigma,
                 )
             elif method == "odp_corr_bf":
                 if exposure_tri is None:
@@ -1341,7 +1359,7 @@ def run_methods_on_triangle(
                 per_origin_sim = _run_odp_corr_bf(
                     loss_tri, exposure_tri, apriori=apriori, n_sims=n_sims, rho=rho,
                     random_seed=random_seed, residual_dist=residual_dist,
-                    process_variance=process_variance,
+                    process_variance=process_variance, apriori_sigma=apriori_sigma,
                 )
             elif method == "odp_corr_cc":
                 if exposure_tri is None:
@@ -1353,7 +1371,7 @@ def run_methods_on_triangle(
                 per_origin_sim = _run_odp_corr_cc(
                     loss_tri, exposure_tri, n_sims=n_sims, rho=rho,
                     random_seed=random_seed, residual_dist=residual_dist,
-                    process_variance=process_variance,
+                    process_variance=process_variance, apriori_sigma=apriori_sigma,
                 )
             else:
                 log.warning("Unknown method: %s — skipped", method)
@@ -1393,6 +1411,7 @@ def iterate_triangles(
     n_sims=5000,
     rho=0.1,
     apriori=0.65,
+    apriori_sigma=0.15,
     random_seed=None,
     collect_samples=False,
     residual_dist="normal",
@@ -1410,7 +1429,7 @@ def iterate_triangles(
     methods : list[str]
     loss_cols : list[str]
         Loss columns to model (e.g. ["paid"] or ["paid", "case_incurred"]).
-    n_sims, rho, apriori, random_seed : forwarded to run_methods_on_triangle
+    n_sims, rho, apriori, apriori_sigma, random_seed : forwarded to run_methods_on_triangle
     collect_samples : bool
         If True, also accumulate full total-IBNR sample arrays.
     residual_dist : {'normal', 't', 'skewt'}
@@ -1499,6 +1518,7 @@ def iterate_triangles(
                     n_sims=n_sims,
                     rho=rho,
                     apriori=apriori,
+                    apriori_sigma=apriori_sigma,
                     random_seed=random_seed,
                     lob=lob,
                     group_id=group_id,
@@ -1534,7 +1554,7 @@ def iterate_triangles(
 
 def _run_single_group(args):
     """Worker function for multiprocessing pool."""
-    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples, residual_dist, process_variance = args
+    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, apriori_sigma, random_seed, collect_samples, residual_dist, process_variance = args
     all_rows = []
     all_sample_chunks = []
 
@@ -1569,6 +1589,7 @@ def _run_single_group(args):
                 loss_tri, prem_series, methods=methods,
                 paid_per_origin=paid_per_origin,
                 n_sims=n_sims, rho=rho, apriori=apriori,
+                apriori_sigma=apriori_sigma,
                 random_seed=random_seed, lob=lob, group_id=group_id,
                 loss_type=loss_col, collect_samples=collect_samples,
                 residual_dist=residual_dist, process_variance=process_variance,
@@ -1582,7 +1603,8 @@ def _run_single_group(args):
 
 
 def iterate_triangles_parallel(
-    df, methods, loss_cols, n_sims=5000, rho=0.1, apriori=0.65, random_seed=None, n_jobs=1,
+    df, methods, loss_cols, n_sims=5000, rho=0.1, apriori=0.65, apriori_sigma=0.15,
+    random_seed=None, n_jobs=1,
     collect_samples=False, residual_dist="normal", process_variance="odp",
 ):
     """Parallel version of iterate_triangles using multiprocessing.Pool."""
@@ -1606,7 +1628,7 @@ def iterate_triangles_parallel(
 
     groups = list(df.groupby(["lob", "group_id"]))
     tasks = [
-        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples, residual_dist, process_variance)
+        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, apriori_sigma, random_seed, collect_samples, residual_dist, process_variance)
         for (lob, gid), sub in groups
     ]
 
@@ -1692,6 +1714,17 @@ def parse_args(argv=None):
     p.add_argument(
         "--apriori", type=float, default=0.65,
         help="A-priori expected loss ratio for odp_bf"
+    )
+    p.add_argument(
+        "--apriori-sigma", type=float, default=0.15,
+        dest="apriori_sigma",
+        help=(
+            "Standard deviation of the a-priori loss ratio for BF/CC methods.  "
+            "Controls how much apriori uncertainty contributes to the reserve "
+            "distribution.  Default 0.15 (empirical cross-triangle LR std across "
+            "Meyers lines).  Set to 0 to use a deterministic apriori (WARNING: "
+            "this causes near-zero BF/CC variance — the pre-fix behaviour)."
+        ),
     )
     p.add_argument(
         "--n-jobs", type=int, default=1,
@@ -1808,8 +1841,9 @@ def main(argv=None):
         list(df["lob"].unique()) if "lob" in df.columns else ["all"],
     )
     log.info(
-        "Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f | residual_dist=%s | process_variance=%s",
-        args.methods, args.n_sims, args.rho, args.apriori, args.residual_dist, args.process_variance,
+        "Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f | apriori_sigma=%.3f | residual_dist=%s | process_variance=%s",
+        args.methods, args.n_sims, args.rho, args.apriori, args.apriori_sigma,
+        args.residual_dist, args.process_variance,
     )
 
     collect_samples = args.save_samples is not None
@@ -1825,6 +1859,7 @@ def main(argv=None):
             n_sims=args.n_sims,
             rho=args.rho,
             apriori=args.apriori,
+            apriori_sigma=args.apriori_sigma,
             random_seed=args.random_seed,
             n_jobs=args.n_jobs,
             collect_samples=collect_samples,
@@ -1839,6 +1874,7 @@ def main(argv=None):
             n_sims=args.n_sims,
             rho=args.rho,
             apriori=args.apriori,
+            apriori_sigma=args.apriori_sigma,
             random_seed=args.random_seed,
             collect_samples=collect_samples,
             residual_dist=args.residual_dist,

@@ -32,23 +32,30 @@ and `scipy` — no `bayesianchainladder` package needed.
 
 ### Calibration results (Meyers 2015, 200 triangles, lognormal PV, rho=0.3, n=5000)
 
-KS statistic against uniform — lower is better calibrated (ideal = 0, uniform CDF):
+KS statistic against uniform — lower is better calibrated (ideal = 0, uniform CDF).
+v1 = old code (apriori_sigma=0, deterministic apriori — variance collapse).
+v2 = current code (apriori_sigma=0.15 — default).
 
-| Method | Paid KS | Case-Incurred KS | Notes |
-|--------|:-------:|:----------------:|-------|
-| `mack` | 0.266 | 0.175 | Under-dispersed |
-| `odp` | 0.261 | **0.066** | Best for case_incurred |
-| `odp_param` | 0.176 | 0.200 | |
-| `odp_corr` | **0.151** | 0.208 | Best for paid |
-| `odp_bf` | 0.467 | 0.522 | Over-reserved with apriori=0.65 |
-| `odp_cc` | 0.476 | 0.545 | Over-reserved with default ELR |
-| `odp_corr_bf` | 0.438 | 0.490 | Over-reserved with apriori=0.65 |
-| `odp_corr_cc` | 0.341 | 0.453 | Closest of BF/CC group |
+| Method | Paid KS (v1) | Paid KS (v2) | Case KS (v1) | Case KS (v2) | Notes |
+|--------|:-----------:|:------------:|:------------:|:------------:|-------|
+| `mack` | 0.266 | 0.266 | 0.175 | 0.175 | Under-dispersed |
+| `odp` | 0.261 | 0.261 | **0.066** | **0.066** | Best for case_incurred |
+| `odp_param` | 0.176 | 0.176 | 0.200 | 0.200 | |
+| `odp_corr` | **0.151** | **0.151** | 0.208 | 0.208 | Best for paid |
+| `odp_bf` | 0.467 | 0.240 | 0.522 | 0.449 | Large improvement from apriori_sigma fix |
+| `odp_cc` | 0.476 | 0.336 | 0.545 | 0.506 | |
+| `odp_corr_bf` | 0.438 | 0.230 | 0.490 | 0.412 | Best BF/CC paid after fix |
+| `odp_corr_cc` | 0.341 | 0.268 | 0.453 | 0.421 | |
 
-**Note on BF/CC methods**: The high KS values reflect the Meyers (2015) triangles
-being systematically well-developed relative to the fixed `apriori=0.65`. When using
-BF/CC, calibrate `--apriori` to your book's historical ELR; the 0.65 default is a
-placeholder and will over-reserve in portfolios with lower loss ratios.
+**Note on `--apriori-sigma`**: Prior to the fix, `cl.BornhuetterFerguson` was called with
+`apriori_sigma=0` (the chainladder default), treating the a-priori as deterministic.
+This causes near-zero BF/CC variance because IBNR = (1 − 1/CDF) × apriori × premium is
+essentially deterministic when apriori is fixed — only the tiny bootstrap noise on the
+latest diagonal varies across simulations.  The fix passes `apriori_sigma=0.15` so each
+simulation samples its own apriori from Normal(apriori, 0.15) (BF) or
+Normal(cc_apriori, 0.15) (CC), propagating apriori uncertainty into the reserve
+distribution.  Empirical cross-triangle loss-ratio std across Meyers lines is ~0.15,
+making this a reasonable default.  Set `--apriori-sigma 0` to recover the old behaviour.
 
 ## Defaults
 
@@ -58,6 +65,7 @@ placeholder and will over-reserve in portfolios with lower loss ratios.
 | `--rho` | `0.3` | Mid-point of Clark/Ding/Zhou (2022) empirical range 0.2–0.4 |
 | `--n-sims` | `5000` | Reduces Monte Carlo noise at tail percentiles (p95) |
 | `--apriori` | `0.65` | Expected loss ratio for BF; override with your own estimate |
+| `--apriori-sigma` | `0.15` | Std dev of the a-priori LR for BF/CC; prevents variance collapse (see note above) |
 
 ## Process variance options (`--process-variance`)
 
@@ -134,6 +142,7 @@ python run_stochastic_reserving.py \
   --n-sims 5000 \
   --rho 0.3 \
   --apriori 0.65 \
+  --apriori-sigma 0.15 \
   --process-variance lognormal \
   --n-jobs 4
 ```
@@ -155,6 +164,9 @@ python run_stochastic_reserving.py \
 --rho FLOAT           Calendar-year correlation for odp_corr / odp_corr_bf / odp_corr_cc
                         (default: 0.3; set 0 for independent)
 --apriori FLOAT       Expected loss ratio for odp_bf / odp_corr_bf (default: 0.65)
+--apriori-sigma FLOAT Std dev of a-priori LR for BF/CC methods (default: 0.15).
+                        Controls how much apriori uncertainty widens the BF/CC reserve
+                        distribution. Set 0 for deterministic apriori (variance collapse).
 --process-variance PV Process variance model for parametric methods (default: lognormal)
                         Choices: lognormal (default), odp, gamma, negbin
 --residual-dist DIST  Residual distribution for ODP path only (default: normal)
@@ -190,24 +202,25 @@ python run_stochastic_reserving.py \
   --save-samples meyers_samples.parquet \
   --loss-col both \
   --methods mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc \
-  --n-sims 5000 --rho 0.3 --apriori 0.65 \
+  --n-sims 5000 --rho 0.3 --apriori 0.65 --apriori-sigma 0.15 \
   --process-variance lognormal \
   --n-jobs 4 --random-seed 22
 ```
 
-### Example output (n_sims=1000, lognormal PV, rho=0.3, example_input.csv)
+### Example output (n_sims=1000, lognormal PV, rho=0.3, apriori_sigma=0.15, example_input.csv)
 
 ```
 loss_type  method       mean_ibnr    cv    p95
-paid       mack         18,671,000  0.105  21,883,000
-paid       odp          18,806,000  0.162  24,583,000
 paid       odp_param    18,716,000  0.094  21,852,000
-paid       odp_corr     18,685,000  0.123  22,634,000
-paid       odp_bf       14,049,000  0.029  14,723,000
-paid       odp_cc       19,887,000  0.055  21,653,000
-paid       odp_corr_bf  14,039,000  0.043  15,049,000
-paid       odp_corr_cc  19,903,000  0.104  23,459,000
+paid       odp_bf       14,132,000  0.243  19,824,000
+paid       odp_corr_bf  14,121,000  0.245  19,968,000
+paid       odp_cc       19,965,000  0.167  25,758,000
+paid       odp_corr_cc  19,972,000  0.187  26,453,000
 ```
+
+The BF/CC CV values of 0.17–0.25 are now comparable to `odp_param` (0.09) and
+`odp_corr` (0.12), reflecting the apriori uncertainty contribution. Before the fix
+(apriori_sigma=0) the BF/CC CV was 0.03–0.05 — near-zero variance collapse.
 
 ## Design Notes
 
