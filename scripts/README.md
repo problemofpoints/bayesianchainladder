@@ -101,7 +101,6 @@ python run_stochastic_reserving.py \
 --random-seed INT     Random seed for reproducibility
 --origin-col NAME     Column name for origin year (default: origin)
 --dev-col NAME        Column name for development period (default: dev)
---paid-col NAME       Deprecated alias for --loss-col (for backward compatibility)
 ```
 
 ## Examples

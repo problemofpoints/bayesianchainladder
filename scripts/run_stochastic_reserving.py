@@ -969,14 +969,6 @@ def parse_args(argv=None):
     p.add_argument(
         "--dev-col", default="dev", help="Name of the development column"
     )
-    # Keep --paid-col for backward compatibility; --loss-col supersedes it.
-    p.add_argument(
-        "--paid-col", default=None,
-        help=(
-            "Deprecated alias for --loss-col. If provided, overrides --loss-col "
-            "when --loss-col is still the default 'paid'."
-        ),
-    )
     return p.parse_args(argv)
 
 
@@ -1004,17 +996,7 @@ def main(argv=None):
     df["dev"] = df["dev"].astype(int)
 
     # Resolve loss columns
-    # --paid-col is a legacy alias; honour it only when --loss-col is at its default.
-    loss_col_str = args.loss_col
-    if args.paid_col is not None and args.loss_col == "paid":
-        log.warning(
-            "--paid-col is deprecated; use --loss-col instead. "
-            "Treating --paid-col %s as --loss-col %s.",
-            args.paid_col, args.paid_col,
-        )
-        loss_col_str = args.paid_col
-
-    loss_cols = _parse_loss_cols(loss_col_str)
+    loss_cols = _parse_loss_cols(args.loss_col)
     log.info("Loss column(s): %s", loss_cols)
 
     # Coerce each requested loss column to numeric; warn if absent
