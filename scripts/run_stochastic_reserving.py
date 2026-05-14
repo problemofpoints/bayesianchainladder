@@ -496,6 +496,14 @@ def _samples_to_rows(
         Latest-diagonal values of the *paid* column.  Always used as the
         offset for IBNR: ``mean_ibnr = mean_ultimate - paid_to_date``.
     origins, lob, group_id, loss_type, method : forwarded to output rows
+
+    Returns
+    -------
+    rows : list[dict]
+        Per-origin + Total summary rows (output DataFrame schema).
+    total_ibnr_samples : ndarray or None
+        1-D array of total (summed-across-origins) IBNR samples after paid
+        re-anchoring.  ``None`` if no finite samples were found.
     """
     rows = []
     total_loss_to_date = 0.0
@@ -583,7 +591,7 @@ def _samples_to_rows(
         "ibnr_p95": float(t_p95),
     })
 
-    return rows
+    return rows, all_total_ibnr
 
 
 def run_methods_on_triangle(
@@ -598,6 +606,7 @@ def run_methods_on_triangle(
     lob="unknown",
     group_id="unknown",
     loss_type="paid",
+    collect_samples=False,
 ):
     """Run all requested methods on a single (loss, premium) triangle pair.
 
@@ -620,10 +629,18 @@ def run_methods_on_triangle(
     loss_type : str
         Label for the loss column being modelled (e.g. "paid", "case_incurred").
         Passed through to output rows unchanged.
+    collect_samples : bool
+        If True, also return a list of dicts with total-IBNR sample arrays
+        keyed by (lob, group_id, loss_type, method).
 
     Returns
     -------
-    list[dict] — rows for the output DataFrame
+    all_rows : list[dict]
+        Rows for the output DataFrame.
+    sample_chunks : list[dict]
+        Only populated when ``collect_samples=True``.  Each dict has keys
+        ``lob``, ``group_id``, ``loss_type``, ``method``, ``sample_idx``
+        (0-based), and ``total_ibnr``.  Empty list when ``collect_samples=False``.
     """
     origins = [str(o) for o in loss_tri.origin]
     loss_per_origin = _loss_to_date_per_origin(loss_tri)
@@ -634,6 +651,7 @@ def run_methods_on_triangle(
     )
 
     all_rows = []
+    sample_chunks = []
 
     for method in methods:
         try:
@@ -667,11 +685,22 @@ def run_methods_on_triangle(
                 log.warning("Unknown method: %s — skipped", method)
                 continue
 
-            rows = _samples_to_rows(
+            rows, total_ibnr_samples = _samples_to_rows(
                 per_origin_sim, loss_per_origin, paid_per_origin,
                 origins, lob, group_id, loss_type, method,
             )
             all_rows.extend(rows)
+
+            if collect_samples and total_ibnr_samples is not None and len(total_ibnr_samples) > 0:
+                for idx, val in enumerate(total_ibnr_samples):
+                    sample_chunks.append({
+                        "lob": lob,
+                        "group_id": group_id,
+                        "loss_type": loss_type,
+                        "method": method,
+                        "sample_idx": idx,
+                        "total_ibnr": float(val),
+                    })
 
         except Exception as exc:
             log.error(
@@ -680,7 +709,7 @@ def run_methods_on_triangle(
                 exc_info=True,
             )
 
-    return all_rows
+    return all_rows, sample_chunks
 
 
 def iterate_triangles(
@@ -691,6 +720,7 @@ def iterate_triangles(
     rho=0.1,
     apriori=0.65,
     random_seed=None,
+    collect_samples=False,
 ):
     """Iterate over all (lob, group_id, loss_col) combinations and run all methods.
 
@@ -705,10 +735,15 @@ def iterate_triangles(
     loss_cols : list[str]
         Loss columns to model (e.g. ["paid"] or ["paid", "case_incurred"]).
     n_sims, rho, apriori, random_seed : forwarded to run_methods_on_triangle
+    collect_samples : bool
+        If True, also accumulate full total-IBNR sample arrays.
 
     Returns
     -------
-    pd.DataFrame with output schema
+    results_df : pd.DataFrame with output schema
+    samples_df : pd.DataFrame or None
+        Only populated when ``collect_samples=True`` — columns are
+        lob, group_id, loss_type, method, sample_idx, total_ibnr.
     """
     if "paid" not in df.columns:
         raise ValueError(
@@ -737,6 +772,7 @@ def iterate_triangles(
     )
 
     all_rows = []
+    all_sample_chunks = []
     for (lob, group_id), sub_df in iterator:
         # Build the paid latest-diagonal Series ONCE per (lob, group_id) so that
         # every loss_col shares the same paid_to_date offset for IBNR.
@@ -775,7 +811,7 @@ def iterate_triangles(
                         .astype(float)
                     )
 
-                rows = run_methods_on_triangle(
+                rows, sample_chunks = run_methods_on_triangle(
                     loss_tri,
                     prem_series,
                     methods=methods,
@@ -787,8 +823,11 @@ def iterate_triangles(
                     lob=lob,
                     group_id=group_id,
                     loss_type=loss_col,
+                    collect_samples=collect_samples,
                 )
                 all_rows.extend(rows)
+                if collect_samples:
+                    all_sample_chunks.extend(sample_chunks)
 
             except Exception as exc:
                 log.error(
@@ -796,15 +835,15 @@ def iterate_triangles(
                     lob, group_id, loss_col, exc, exc_info=True,
                 )
 
-    if not all_rows:
-        return pd.DataFrame(columns=[
-            "lob", "group_id", "loss_type", "method", "accident_year",
-            "loss_to_date", "paid_to_date",
-            "mean_ultimate", "mean_ibnr", "cv_ibnr",
-            "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
-        ])
-
-    return pd.DataFrame(all_rows)
+    _empty_cols = [
+        "lob", "group_id", "loss_type", "method", "accident_year",
+        "loss_to_date", "paid_to_date",
+        "mean_ultimate", "mean_ibnr", "cv_ibnr",
+        "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
+    ]
+    results_df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame(columns=_empty_cols)
+    samples_df = pd.DataFrame(all_sample_chunks) if collect_samples else None
+    return results_df, samples_df
 
 
 # ---------------------------------------------------------------------------
@@ -813,8 +852,9 @@ def iterate_triangles(
 
 def _run_single_group(args):
     """Worker function for multiprocessing pool."""
-    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, random_seed = args
+    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples = args
     all_rows = []
+    all_sample_chunks = []
 
     # Build paid latest-diagonal once for this group.
     if "paid" not in sub_df.columns:
@@ -822,7 +862,7 @@ def _run_single_group(args):
             "lob=%s group_id=%s: `paid` column missing — cannot compute IBNR offset",
             lob, group_id,
         )
-        return all_rows
+        return all_rows, all_sample_chunks
     try:
         paid_tri = df_to_triangle(sub_df, value_col="paid")
         paid_per_origin = _loss_to_date_per_origin(paid_tri)
@@ -831,7 +871,7 @@ def _run_single_group(args):
             "lob=%s group_id=%s: failed to build paid triangle for IBNR offset: %s",
             lob, group_id, exc,
         )
-        return all_rows
+        return all_rows, all_sample_chunks
 
     for loss_col in loss_cols:
         if loss_col not in sub_df.columns or sub_df[loss_col].isna().all():
@@ -843,21 +883,24 @@ def _run_single_group(args):
             if "premium" in sub_df.columns and sub_df["premium"].notna().any():
                 prem_series = sub_df.groupby("origin")["premium"].first().astype(float)
 
-            rows = run_methods_on_triangle(
+            rows, sample_chunks = run_methods_on_triangle(
                 loss_tri, prem_series, methods=methods,
                 paid_per_origin=paid_per_origin,
                 n_sims=n_sims, rho=rho, apriori=apriori,
                 random_seed=random_seed, lob=lob, group_id=group_id,
-                loss_type=loss_col,
+                loss_type=loss_col, collect_samples=collect_samples,
             )
             all_rows.extend(rows)
+            if collect_samples:
+                all_sample_chunks.extend(sample_chunks)
         except Exception as exc:
             log.error("lob=%s group_id=%s loss_col=%s: worker failed: %s", lob, group_id, loss_col, exc)
-    return all_rows
+    return all_rows, all_sample_chunks
 
 
 def iterate_triangles_parallel(
-    df, methods, loss_cols, n_sims=5000, rho=0.1, apriori=0.65, random_seed=None, n_jobs=1
+    df, methods, loss_cols, n_sims=5000, rho=0.1, apriori=0.65, random_seed=None, n_jobs=1,
+    collect_samples=False,
 ):
     """Parallel version of iterate_triangles using multiprocessing.Pool."""
     import multiprocessing
@@ -880,22 +923,29 @@ def iterate_triangles_parallel(
 
     groups = list(df.groupby(["lob", "group_id"]))
     tasks = [
-        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, random_seed)
+        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples)
         for (lob, gid), sub in groups
     ]
 
     with multiprocessing.Pool(processes=n_jobs) as pool:
         results = pool.map(_run_single_group, tasks)
 
-    all_rows = [row for group_rows in results for row in group_rows]
-    if not all_rows:
-        return pd.DataFrame(columns=[
-            "lob", "group_id", "loss_type", "method", "accident_year",
-            "loss_to_date", "paid_to_date",
-            "mean_ultimate", "mean_ibnr", "cv_ibnr",
-            "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
-        ])
-    return pd.DataFrame(all_rows)
+    all_rows = []
+    all_sample_chunks = []
+    for group_rows, group_samples in results:
+        all_rows.extend(group_rows)
+        if collect_samples:
+            all_sample_chunks.extend(group_samples)
+
+    _empty_cols = [
+        "lob", "group_id", "loss_type", "method", "accident_year",
+        "loss_to_date", "paid_to_date",
+        "mean_ultimate", "mean_ibnr", "cv_ibnr",
+        "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
+    ]
+    results_df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame(columns=_empty_cols)
+    samples_df = pd.DataFrame(all_sample_chunks) if collect_samples else None
+    return results_df, samples_df
 
 
 # ---------------------------------------------------------------------------
@@ -964,6 +1014,19 @@ def parse_args(argv=None):
         help="Random seed for reproducibility"
     )
     p.add_argument(
+        "--save-samples",
+        default=None,
+        metavar="PATH",
+        help=(
+            "If set, write a parquet file with one row per "
+            "(lob, group_id, loss_type, method, sample_idx) containing the "
+            "simulated total IBNR (summed across all origin years).  "
+            "Enables exact implied-percentile computation against actual ultimates. "
+            "With 200 triangles × 2 loss types × 5 methods × 5000 sims = 10M rows, "
+            "parquet keeps the file manageable. Omit this flag to keep output unchanged."
+        ),
+    )
+    p.add_argument(
         "--origin-col", default="origin", help="Name of the origin column"
     )
     p.add_argument(
@@ -1030,9 +1093,13 @@ def main(argv=None):
         args.methods, args.n_sims, args.rho, args.apriori,
     )
 
+    collect_samples = args.save_samples is not None
+    if collect_samples:
+        log.info("Sample collection enabled — samples will be written to %s", args.save_samples)
+
     if args.n_jobs > 1:
         log.info("Running in parallel with %d workers", args.n_jobs)
-        results = iterate_triangles_parallel(
+        results, samples_df = iterate_triangles_parallel(
             df,
             methods=args.methods,
             loss_cols=loss_cols,
@@ -1041,9 +1108,10 @@ def main(argv=None):
             apriori=args.apriori,
             random_seed=args.random_seed,
             n_jobs=args.n_jobs,
+            collect_samples=collect_samples,
         )
     else:
-        results = iterate_triangles(
+        results, samples_df = iterate_triangles(
             df,
             methods=args.methods,
             loss_cols=loss_cols,
@@ -1051,6 +1119,7 @@ def main(argv=None):
             rho=args.rho,
             apriori=args.apriori,
             random_seed=args.random_seed,
+            collect_samples=collect_samples,
         )
 
     if results.empty:
@@ -1073,6 +1142,24 @@ def main(argv=None):
                     f"cv={row['cv_ibnr']:.3f} | "
                     f"p95={row['ibnr_p95']:>12,.0f}"
                 )
+
+    if collect_samples and samples_df is not None and not samples_df.empty:
+        import pathlib
+        samples_path = pathlib.Path(args.save_samples)
+        samples_path.parent.mkdir(parents=True, exist_ok=True)
+        # Cast types for parquet efficiency
+        samples_df["group_id"] = samples_df["group_id"].astype(str)
+        samples_df["sample_idx"] = samples_df["sample_idx"].astype("int32")
+        samples_df["total_ibnr"] = samples_df["total_ibnr"].astype("float32")
+        samples_df.to_parquet(samples_path, index=False, compression="snappy")
+        log.info(
+            "Samples written to %s (%d rows, %d unique (lob,group_id,loss_type,method) combos)",
+            args.save_samples,
+            len(samples_df),
+            samples_df.groupby(["lob", "group_id", "loss_type", "method"]).ngroups,
+        )
+    elif collect_samples:
+        log.warning("--save-samples requested but no samples were collected.")
 
     return results
 
