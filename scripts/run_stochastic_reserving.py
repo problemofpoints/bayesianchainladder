@@ -24,9 +24,29 @@ odp_param : ODP Bootstrap, parametric Normal (rho=0)
               no residual resampling artifacts.  Use this to isolate the effect of
               non-parametric resampling vs. correlation.
 odp_corr  : Correlated ODP Bootstrap (Clark/Ding/Zhou 2022 Gaussian copula)
-              Parametric Normal sampling with calendar-year correlation rho (default 0.1).
+              Parametric sampling with calendar-year correlation rho (default 0.1).
+              Residual distribution is controlled by --residual-dist:
+                normal  — Normal(0, 1) quantiles (default)
+                t       — Student-t(df) quantiles; df derived from empirical excess kurtosis
+                           via moment-matching: df = 6/ek + 4, clamped to [3, 15].
+                skewt   — Hansen 1994 skew-t quantiles; df from kurtosis (clamped [3, 15])
+                           and skew param from empirical skewness (clamped [-0.95, 0.95]).
 odp_bf    : ODP Bootstrap + Bornhuetter-Ferguson (requires premium)
 odp_cc    : ODP Bootstrap + Cape Cod (requires premium)
+
+Residual distribution options (--residual-dist)
+-----------------------------------------------
+Only applies to odp_corr (and odp_param).  mack/odp/odp_bf/odp_cc are unaffected.
+
+  normal  : Standard Normal (backward-compatible default).
+  t       : Student-t with empirically-derived df via moment-matching to excess kurtosis.
+              df = 6 / excess_kurtosis + 4, clamped to [3, 15].
+              df=3 → heaviest allowed tails; df=15 → near-Normal.
+              For df>2 the t distribution has variance df/(df-2); we divide by
+              sqrt(df/(df-2)) to normalise variance to 1 before scaling by sqrt(phi*mu).
+  skewt   : Hansen (1994) skew-t.  Parameters: df (from kurtosis, as above) and
+              lambda (skewness parameter in (-1, 1)) derived from empirical skewness.
+              Implemented as a piecewise rescaling of the standard-t CDF / PPF.
 
 Input CSV format
 ----------------
@@ -98,6 +118,155 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# Residual distribution helpers for the correlated ODP bootstrap
+# ---------------------------------------------------------------------------
+
+def _t_df_from_kurtosis(residuals: np.ndarray, df_floor: float = 3.0, df_ceil: float = 15.0) -> float:
+    """Derive Student-t degrees of freedom by moment-matching to excess kurtosis.
+
+    For Student-t(df): excess kurtosis = 6 / (df - 4) when df > 4.
+    Solving: df = 6 / ek + 4.
+
+    Parameters
+    ----------
+    residuals : ndarray
+        Finite standardised Pearson residuals.
+    df_floor : float
+        Minimum df (heaviest allowed tails).  Default 3.
+    df_ceil : float
+        Maximum df (near-Normal).  Default 15.
+
+    Returns
+    -------
+    float
+        Clamped df estimate in [df_floor, df_ceil].
+
+    Notes
+    -----
+    Negative or zero excess kurtosis → df_ceil (platykurtic / Normal-like).
+    The formula df = 6/ek + 4 requires ek > 0 and df > 4 to be strictly
+    valid; we clamp the result to [df_floor, df_ceil] as a safety net.
+    """
+    r = residuals[np.isfinite(residuals)]
+    if len(r) < 4:
+        return df_ceil
+    ek = float(stats.kurtosis(r, fisher=True))  # excess kurtosis (Normal=0)
+    if ek <= 0:
+        return df_ceil
+    implied = 6.0 / ek + 4.0
+    return float(np.clip(implied, df_floor, df_ceil))
+
+
+def _hansen_skewt_ppf(u: np.ndarray, df: float, lam: float) -> np.ndarray:
+    """Inverse CDF (PPF) of the Hansen (1994) skew-t distribution.
+
+    Returns samples from the zero-mean, unit-variance Hansen (1994) skew-t.
+
+    The CDF is a piecewise rescaling of the *standardised* Student-t CDF
+    (i.e. with variance normalised to 1, not df/(df-2)):
+
+        F(x) = (1-lam) * Ft_std( (bx + a) / (1-lam) )     x < -a/b
+        F(x) = (1+lam) * Ft_std( (bx + a) / (1+lam) ) - lam   x >= -a/b
+
+    where Ft_std is the standardised-t CDF (t.cdf(z*sqrt(df/(df-2)), df)),
+    and the normalising constants are:
+
+        c = Gamma((df+1)/2) / (sqrt(pi*(df-2)) * Gamma(df/2))
+        a = 4 * lam * c * (df-2) / (df-1)   # ensures E[x] = 0
+        b = sqrt(1 + 3*lam^2 - a^2)          # ensures Var(x) = 1
+
+    The key subtlety is that stats.t.ppf draws from t with variance df/(df-2),
+    so we divide each quantile by sqrt(df/(df-2)) to get the standardised-t
+    quantile before applying the piecewise rescaling.
+
+    Parameters
+    ----------
+    u : ndarray of floats in (0, 1)
+        Uniform samples (from the Gaussian copula).
+    df : float
+        Degrees of freedom (> 2).
+    lam : float
+        Skewness parameter in (-1, 1).  lam>0 → right-skewed; lam<0 → left.
+
+    Returns
+    -------
+    ndarray
+        Samples from the standardised (mean=0, variance=1) Hansen skew-t.
+
+    References
+    ----------
+    Hansen, B.E. (1994). Autoregressive conditional density estimation.
+    Journal of Business & Economic Statistics 12(4): 705–712.
+    """
+    import math
+    lam = float(np.clip(lam, -0.999, 0.999))
+    df = max(df, 2.001)
+
+    # Constants (Hansen 1994, equations 3–5)
+    c = (
+        math.gamma((df + 1) / 2)
+        / (math.sqrt(math.pi * (df - 2)) * math.gamma(df / 2))
+    )
+    a = 4.0 * lam * c * (df - 2) / (df - 1)   # mean-zero constraint
+    b = float(np.sqrt(max(1.0 + 3.0 * lam ** 2 - a ** 2, 1e-12)))  # unit-variance
+
+    # Variance correction: stats.t.ppf gives t with Var = df/(df-2); divide by
+    # sqrt(df/(df-2)) to obtain the standardised-t (Var = 1) quantile.
+    t_scale = float(np.sqrt(df / (df - 2.0)))
+
+    u = np.asarray(u, dtype=float)
+    u_threshold = (1.0 - lam) / 2.0  # F(-a/b) = (1-lam)/2
+
+    out = np.empty_like(u)
+    left = u < u_threshold
+    right = ~left
+
+    # Left branch  (x < -a/b): F(x) = (1-lam)*Ft_std((bx+a)/(1-lam))
+    #   => Ft_std((bx+a)/(1-lam)) = u/(1-lam)
+    #   => (bx+a)/(1-lam) = stdT.ppf(u/(1-lam))
+    #   => x = ((1-lam)*stdT.ppf(u/(1-lam)) - a) / b
+    if np.any(left):
+        ul = np.clip(u[left] / (1.0 - lam), 1e-12, 1.0 - 1e-12)
+        std_t = stats.t.ppf(ul, df) / t_scale  # standardised-t quantile
+        out[left] = ((1.0 - lam) * std_t - a) / b
+
+    # Right branch (x >= -a/b): F(x) = (1+lam)*Ft_std((bx+a)/(1+lam)) - lam
+    #   => (1+lam)*Ft_std((bx+a)/(1+lam)) = u + lam
+    #   => Ft_std((bx+a)/(1+lam)) = (u+lam)/(1+lam)
+    #   => x = ((1+lam)*stdT.ppf((u+lam)/(1+lam)) - a) / b
+    if np.any(right):
+        ur = np.clip((u[right] + lam) / (1.0 + lam), 1e-12, 1.0 - 1e-12)
+        std_t = stats.t.ppf(ur, df) / t_scale  # standardised-t quantile
+        out[right] = ((1.0 + lam) * std_t - a) / b
+
+    return out
+
+
+def _skewness_to_hansen_lambda(skewness: float) -> float:
+    """Map empirical skewness to a Hansen-lambda parameter.
+
+    Uses an empirical approximation: for moderate skewness |s| < 1,
+    lambda ≈ skewness / 2 works well (exact for small lambda via Taylor
+    expansion of the Hansen skewness formula).  We clamp to (-0.95, 0.95).
+    """
+    lam = skewness / 2.0
+    return float(np.clip(lam, -0.95, 0.95))
+
+
+def _get_residual_params(residuals: np.ndarray) -> dict:
+    """Compute residual distribution parameters from observed standardised residuals.
+
+    Returns a dict with keys: ``df`` (Student-t df, clamped [3, 15]) and
+    ``lam`` (Hansen skew-t lambda, clamped [-0.95, 0.95]).
+    """
+    r = residuals[np.isfinite(residuals)]
+    df = _t_df_from_kurtosis(r, df_floor=3.0, df_ceil=15.0)
+    skewness = float(stats.skew(r)) if len(r) >= 3 else 0.0
+    lam = _skewness_to_hansen_lambda(skewness)
+    return {"df": df, "lam": lam}
+
+
+# ---------------------------------------------------------------------------
 # Correlated ODP Bootstrap (inlined from Clark/Ding/Zhou 2022)
 # ---------------------------------------------------------------------------
 
@@ -142,7 +311,9 @@ def _generate_correlated_uniforms(n_cells, n_sims, corr_matrix, rng):
     return stats.norm.cdf(correlated_normals)
 
 
-def _correlated_odp_bootstrap(triangle, n_sims, rho, hat_adj=True, random_state=None):
+def _correlated_odp_bootstrap(
+    triangle, n_sims, rho, hat_adj=True, random_state=None, residual_dist="normal"
+):
     """Run the correlated ODP bootstrap (Clark/Ding/Zhou 2022).
 
     Parameters
@@ -157,6 +328,17 @@ def _correlated_odp_bootstrap(triangle, n_sims, rho, hat_adj=True, random_state=
         Apply Shapland hat-matrix adjustment.
     random_state : int or None
         Seed for reproducibility.
+    residual_dist : {'normal', 't', 'skewt'}
+        Residual distribution to use for the quantile transform step:
+
+        * ``'normal'``: standard Normal PPF (backward-compatible default).
+        * ``'t'``: Student-t PPF with df estimated from empirical excess
+          kurtosis via moment-matching (df = 6/ek + 4, clamped [3, 15]).
+          The t-variate is then divided by sqrt(df/(df-2)) to normalise its
+          variance back to 1 before multiplying by sqrt(phi * fitted).
+        * ``'skewt'``: Hansen (1994) skew-t PPF.  df from kurtosis (clamped
+          [3, 15]) and lambda from empirical skewness (clamped [-0.95, 0.95]).
+          Already mean-0, variance-1 by construction.
 
     Returns
     -------
@@ -203,6 +385,32 @@ def _correlated_odp_bootstrap(triangle, n_sims, rho, hat_adj=True, random_state=
     pearson_chi_sq = np.nansum(standardized_resid ** 2)
     phi = pearson_chi_sq / degree_freedom
 
+    # Derive residual distribution parameters from the observed residuals
+    # (moment-matching on this triangle's empirical residuals)
+    residual_params = _get_residual_params(standardized_resid)
+    t_df = residual_params["df"]
+    skewt_lam = residual_params["lam"]
+
+    def _apply_quantile_transform(u: np.ndarray) -> np.ndarray:
+        """Map uniform samples u ∈ (0,1) → standardised residuals.
+
+        The returned array has mean≈0 and variance≈1 regardless of which
+        distribution is used, so downstream scaling by sqrt(phi * fitted)
+        is consistent across residual_dist choices.
+        """
+        if residual_dist == "t":
+            # Student-t(df) has variance df/(df-2) for df>2; normalise to 1.
+            z = stats.t.ppf(u, df=t_df)
+            if t_df > 2.0:
+                z = z / float(np.sqrt(t_df / (t_df - 2.0)))
+            return z
+        elif residual_dist == "skewt":
+            # Hansen skew-t is already mean-0, variance-1 by construction.
+            return _hansen_skewt_ppf(u, df=t_df, lam=skewt_lam)
+        else:
+            # Normal (default, backward-compatible)
+            return stats.norm.ppf(u)
+
     if rho != 0.0:
         corr_matrix, valid_indices = _build_full_correlation_matrix(
             n_origin, n_dev, nan_triangle, rho
@@ -210,12 +418,12 @@ def _correlated_odp_bootstrap(triangle, n_sims, rho, hat_adj=True, random_state=
         n_cells = len(valid_indices)
         correlated_u = _generate_correlated_uniforms(n_cells, n_sims, corr_matrix, rng)
 
-        # Parametric (Normal) correlated sampling
+        # Parametric correlated sampling
         resampled_incr = np.zeros((n_sims, n_origin, n_dev))
         for cell_idx, (i, j) in enumerate(valid_indices):
             fitted_val = fitted_safe[i, j]
             std_dev = np.sqrt(phi * fitted_val)
-            z = stats.norm.ppf(correlated_u[:, cell_idx])
+            z = _apply_quantile_transform(correlated_u[:, cell_idx])
             resampled_incr[:, i, j] = exp_incr[i, j] + std_dev * z
         for i in range(n_origin):
             for j in range(n_dev):
@@ -224,9 +432,10 @@ def _correlated_odp_bootstrap(triangle, n_sims, rho, hat_adj=True, random_state=
 
         resampled_triangles = np.cumsum(resampled_incr, axis=2)  # (n_sims, n_origin, n_dev)
     else:
-        # Independent parametric (Normal) sampling
+        # Independent parametric sampling
         std_dev = np.sqrt(phi * fitted_safe)
-        z = rng.standard_normal(size=(n_sims,) + exp_incr.shape)
+        raw_u = rng.uniform(0.0, 1.0, size=(n_sims,) + exp_incr.shape)
+        z = _apply_quantile_transform(raw_u)
         resampled_incr = exp_incr + std_dev * z
         resampled_triangles = np.cumsum(resampled_incr, axis=2)
 
@@ -426,14 +635,15 @@ def _run_odp_bootstrap(loss_tri, n_sims=1000, random_seed=None):
     return per_sim_per_origin.T  # (n_origin, n_sims)
 
 
-def _run_correlated_odp(loss_tri, n_sims=1000, rho=0.1, random_seed=None):
+def _run_correlated_odp(loss_tri, n_sims=1000, rho=0.1, random_seed=None, residual_dist="normal"):
     """Run correlated ODP bootstrap (Clark/Ding/Zhou 2022) via inline implementation."""
     return _correlated_odp_bootstrap(
-        loss_tri, n_sims=n_sims, rho=rho, hat_adj=True, random_state=random_seed
+        loss_tri, n_sims=n_sims, rho=rho, hat_adj=True, random_state=random_seed,
+        residual_dist=residual_dist,
     )
 
 
-def _run_odp_param(loss_tri, n_sims=1000, random_seed=None):
+def _run_odp_param(loss_tri, n_sims=1000, random_seed=None, residual_dist="normal"):
     """Run parametric ODP bootstrap with independent (rho=0) Normal sampling.
 
     Uses the same Gaussian-copula machinery as odp_corr but with rho hard-coded
@@ -442,7 +652,8 @@ def _run_odp_param(loss_tri, n_sims=1000, random_seed=None):
     Pearson residuals, so it is robust to triangles with negative incrementals.
     """
     return _correlated_odp_bootstrap(
-        loss_tri, n_sims=n_sims, rho=0.0, hat_adj=True, random_state=random_seed
+        loss_tri, n_sims=n_sims, rho=0.0, hat_adj=True, random_state=random_seed,
+        residual_dist=residual_dist,
     )
 
 
@@ -630,6 +841,7 @@ def run_methods_on_triangle(
     group_id="unknown",
     loss_type="paid",
     collect_samples=False,
+    residual_dist="normal",
 ):
     """Run all requested methods on a single (loss, premium) triangle pair.
 
@@ -655,6 +867,9 @@ def run_methods_on_triangle(
     collect_samples : bool
         If True, also return a list of dicts with total-IBNR sample arrays
         keyed by (lob, group_id, loss_type, method).
+    residual_dist : {'normal', 't', 'skewt'}
+        Residual distribution to use for odp_corr and odp_param.  See module
+        docstring for details.
 
     Returns
     -------
@@ -683,9 +898,14 @@ def run_methods_on_triangle(
             elif method == "odp":
                 per_origin_sim = _run_odp_bootstrap(loss_tri, n_sims=n_sims, random_seed=random_seed)
             elif method == "odp_param":
-                per_origin_sim = _run_odp_param(loss_tri, n_sims=n_sims, random_seed=random_seed)
+                per_origin_sim = _run_odp_param(
+                    loss_tri, n_sims=n_sims, random_seed=random_seed, residual_dist=residual_dist
+                )
             elif method == "odp_corr":
-                per_origin_sim = _run_correlated_odp(loss_tri, n_sims=n_sims, rho=rho, random_seed=random_seed)
+                per_origin_sim = _run_correlated_odp(
+                    loss_tri, n_sims=n_sims, rho=rho, random_seed=random_seed,
+                    residual_dist=residual_dist,
+                )
             elif method == "odp_bf":
                 if exposure_tri is None:
                     log.warning(
@@ -746,6 +966,7 @@ def iterate_triangles(
     apriori=0.65,
     random_seed=None,
     collect_samples=False,
+    residual_dist="normal",
 ):
     """Iterate over all (lob, group_id, loss_col) combinations and run all methods.
 
@@ -762,6 +983,8 @@ def iterate_triangles(
     n_sims, rho, apriori, random_seed : forwarded to run_methods_on_triangle
     collect_samples : bool
         If True, also accumulate full total-IBNR sample arrays.
+    residual_dist : {'normal', 't', 'skewt'}
+        Residual distribution for odp_corr / odp_param.
 
     Returns
     -------
@@ -849,6 +1072,7 @@ def iterate_triangles(
                     group_id=group_id,
                     loss_type=loss_col,
                     collect_samples=collect_samples,
+                    residual_dist=residual_dist,
                 )
                 all_rows.extend(rows)
                 if collect_samples:
@@ -877,7 +1101,7 @@ def iterate_triangles(
 
 def _run_single_group(args):
     """Worker function for multiprocessing pool."""
-    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples = args
+    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples, residual_dist = args
     all_rows = []
     all_sample_chunks = []
 
@@ -914,6 +1138,7 @@ def _run_single_group(args):
                 n_sims=n_sims, rho=rho, apriori=apriori,
                 random_seed=random_seed, lob=lob, group_id=group_id,
                 loss_type=loss_col, collect_samples=collect_samples,
+                residual_dist=residual_dist,
             )
             all_rows.extend(rows)
             if collect_samples:
@@ -925,7 +1150,7 @@ def _run_single_group(args):
 
 def iterate_triangles_parallel(
     df, methods, loss_cols, n_sims=5000, rho=0.1, apriori=0.65, random_seed=None, n_jobs=1,
-    collect_samples=False,
+    collect_samples=False, residual_dist="normal",
 ):
     """Parallel version of iterate_triangles using multiprocessing.Pool."""
     import multiprocessing
@@ -948,7 +1173,7 @@ def iterate_triangles_parallel(
 
     groups = list(df.groupby(["lob", "group_id"]))
     tasks = [
-        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples)
+        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, random_seed, collect_samples, residual_dist)
         for (lob, gid), sub in groups
     ]
 
@@ -1053,6 +1278,21 @@ def parse_args(argv=None):
         ),
     )
     p.add_argument(
+        "--residual-dist",
+        default="normal",
+        choices=["normal", "t", "skewt"],
+        metavar="DIST",
+        help=(
+            "Residual distribution for odp_corr / odp_param.  "
+            "Choices: normal (default), t, skewt.  "
+            "normal: Normal(0,1) PPF (backward-compatible).  "
+            "t: Student-t PPF; df derived from empirical excess kurtosis via "
+            "moment-matching (df = 6/ek + 4, clamped [3, 15]).  "
+            "skewt: Hansen (1994) skew-t PPF; df from kurtosis, skew from "
+            "empirical skewness (lambda clamped [-0.95, 0.95])."
+        ),
+    )
+    p.add_argument(
         "--origin-col", default="origin", help="Name of the origin column"
     )
     p.add_argument(
@@ -1115,8 +1355,8 @@ def main(argv=None):
         list(df["lob"].unique()) if "lob" in df.columns else ["all"],
     )
     log.info(
-        "Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f",
-        args.methods, args.n_sims, args.rho, args.apriori,
+        "Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f | residual_dist=%s",
+        args.methods, args.n_sims, args.rho, args.apriori, args.residual_dist,
     )
 
     collect_samples = args.save_samples is not None
@@ -1135,6 +1375,7 @@ def main(argv=None):
             random_seed=args.random_seed,
             n_jobs=args.n_jobs,
             collect_samples=collect_samples,
+            residual_dist=args.residual_dist,
         )
     else:
         results, samples_df = iterate_triangles(
@@ -1146,6 +1387,7 @@ def main(argv=None):
             apriori=args.apriori,
             random_seed=args.random_seed,
             collect_samples=collect_samples,
+            residual_dist=args.residual_dist,
         )
 
     if results.empty:
