@@ -14,7 +14,17 @@ Methods
 -------
 mack      : Mack Chain Ladder (normal approximation per Mack 1993)
 odp       : ODP Bootstrap (chainladder.BootstrapODPSample + Chainladder)
+              Non-parametric residual bootstrap — resamples empirical Pearson residuals.
+              Can generate wild IBNR distributions when triangles have negative or near-zero
+              incrementals (e.g. case reserve releases), because those cells produce huge
+              Pearson residuals that inflate resampled triangles.
+odp_param : ODP Bootstrap, parametric Normal (rho=0)
+              Same Gaussian-copula machinery as odp_corr but with rho hard-coded to 0.
+              Samples from Normal(fitted, sqrt(phi*fitted)) independently per cell —
+              no residual resampling artifacts.  Use this to isolate the effect of
+              non-parametric resampling vs. correlation.
 odp_corr  : Correlated ODP Bootstrap (Clark/Ding/Zhou 2022 Gaussian copula)
+              Parametric Normal sampling with calendar-year correlation rho (default 0.1).
 odp_bf    : ODP Bootstrap + Bornhuetter-Ferguson (requires premium)
 odp_cc    : ODP Bootstrap + Cape Cod (requires premium)
 
@@ -423,6 +433,19 @@ def _run_correlated_odp(loss_tri, n_sims=1000, rho=0.1, random_seed=None):
     )
 
 
+def _run_odp_param(loss_tri, n_sims=1000, random_seed=None):
+    """Run parametric ODP bootstrap with independent (rho=0) Normal sampling.
+
+    Uses the same Gaussian-copula machinery as odp_corr but with rho hard-coded
+    to 0.  Unlike the non-parametric ``odp`` method, this draws from a fitted
+    Normal(mu, sqrt(phi*mu)) distribution rather than resampling empirical
+    Pearson residuals, so it is robust to triangles with negative incrementals.
+    """
+    return _correlated_odp_bootstrap(
+        loss_tri, n_sims=n_sims, rho=0.0, hat_adj=True, random_state=random_seed
+    )
+
+
 def _run_odp_bf(loss_tri, exposure_tri, apriori=0.65, n_sims=1000, random_seed=None):
     """Run ODP bootstrap + Bornhuetter-Ferguson."""
     prepared = loss_tri.copy()
@@ -616,7 +639,7 @@ def run_methods_on_triangle(
     prem_series : pd.Series or None
         Premium per origin year (int index). Required for odp_bf and odp_cc.
     methods : list[str]
-        Any subset of {"mack", "odp", "odp_corr", "odp_bf", "odp_cc"}.
+        Any subset of {"mack", "odp", "odp_param", "odp_corr", "odp_bf", "odp_cc"}.
     paid_per_origin : pd.Series
         Latest-diagonal paid values per origin.  Always used as the offset for
         IBNR computation (``mean_ibnr = mean_ultimate - paid_to_date``),
@@ -659,6 +682,8 @@ def run_methods_on_triangle(
                 per_origin_sim, _ = _run_mack(loss_tri, n_samples=n_sims, random_seed=random_seed)
             elif method == "odp":
                 per_origin_sim = _run_odp_bootstrap(loss_tri, n_sims=n_sims, random_seed=random_seed)
+            elif method == "odp_param":
+                per_origin_sim = _run_odp_param(loss_tri, n_sims=n_sims, random_seed=random_seed)
             elif method == "odp_corr":
                 per_origin_sim = _run_correlated_odp(loss_tri, n_sims=n_sims, rho=rho, random_seed=random_seed)
             elif method == "odp_bf":
@@ -978,10 +1003,11 @@ def parse_args(argv=None):
         "--methods",
         nargs="+",
         default=["mack", "odp", "odp_corr", "odp_bf", "odp_cc"],
-        choices=["mack", "odp", "odp_corr", "odp_bf", "odp_cc"],
+        choices=["mack", "odp", "odp_param", "odp_corr", "odp_bf", "odp_cc"],
         metavar="METHOD",
         help=(
-            "Methods to run. Choices: mack odp odp_corr odp_bf odp_cc. "
+            "Methods to run. Choices: mack odp odp_param odp_corr odp_bf odp_cc. "
+            "odp_param is parametric Normal with rho=0 (no residual-resampling artifacts). "
             "odp_bf and odp_cc require a 'premium' column."
         ),
     )

@@ -56,3 +56,63 @@ Delta = case_incurred KS − paid KS (negative = case_incurred is better calibra
 - `figures/standalone_implied_pctl_grid.png` — 4×10 histogram grid
 - `figures/standalone_pp_paid.png` — PP chart for paid (all methods)
 - `figures/standalone_pp_case_incurred.png` — PP chart for case_incurred
+
+---
+
+## v2 Analysis: Parametric vs Non-Parametric Bootstrap
+
+Added `odp_param` (parametric Normal, rho=0) to isolate:
+1. Non-parametric residual resampling artifacts (odp vs odp_param)
+2. Pure calendar-year correlation effect (odp_param vs odp_corr)
+
+- **Data**: 200 Meyers triangles, 5,000 sims per method
+- **Script**: `scripts/run_stochastic_reserving.py` (v2 with odp_param)
+- **Outputs**: `cache/meyers_standalone_results_v2.csv`, `meyers_standalone_samples_v2.parquet`
+
+### Calibration table (6 methods × 2 loss types)
+
+| Method | Loss type | N | Mean pctl | % in 50% | % in 80% | KS stat | Med |%err| | Med CV(IBNR) |
+|--------|-----------|---|-----------|----------|----------|---------|------------|--------------|
+| ODP (non-param) | Case Incurred | 200 | 0.523 | 50.0% | 74.5% | 0.0658 | 2.96% | 0.442 |
+| ODP+CC | Case Incurred | 200 | 0.498 | 47.0% | 74.0% | 0.0678 | 2.95% | 0.413 |
+| ODP+BF | Case Incurred | 200 | 0.515 | 46.0% | 71.0% | 0.0852 | 3.08% | 0.376 |
+| Mack | Case Incurred | 200 | 0.527 | 31.0% | 53.5% | 0.1750 | 2.79% | 0.135 |
+| ODP param (rho=0) | Case Incurred | 200 | 0.525 | 15.5% | 27.5% | 0.3222 | 2.75% | 0.070 |
+| Corr-ODP (rho=0.1) | Case Incurred | 200 | 0.526 | 16.0% | 27.5% | 0.3226 | 2.75% | 0.072 |
+| ODP (non-param) | Paid | 200 | 0.382 | 29.5% | 53.0% | 0.2608 | 3.94% | 0.190 |
+| Mack | Paid | 200 | 0.372 | 30.0% | 50.0% | 0.2656 | 3.85% | 0.159 |
+| Corr-ODP (rho=0.1) | Paid | 200 | 0.371 | 20.5% | 38.5% | 0.3320 | 3.83% | 0.133 |
+| ODP param (rho=0) | Paid | 200 | 0.369 | 20.0% | 36.0% | 0.3430 | 3.83% | 0.127 |
+| ODP+BF | Paid | 200 | 0.407 | 21.5% | 34.5% | 0.3550 | 4.58% | 0.110 |
+| ODP+CC | Paid | 200 | 0.328 | 21.0% | 36.5% | 0.3730 | 4.05% | 0.126 |
+
+### Paid vs Case-Incurred: KS stat
+
+Delta = case_incurred KS - paid KS (positive = case_incurred harder to calibrate).
+
+| Method | KS (paid) | KS (case) | Delta |
+|--------|-----------|-----------|-------|
+| Mack | 0.2656 | 0.1750 | -0.0906 |
+| ODP (non-param) | 0.2608 | 0.0658 | -0.1950 |
+| ODP param (rho=0) | 0.3430 | 0.3222 | -0.0208 |
+| Corr-ODP (rho=0.1) | 0.3320 | 0.3226 | -0.0094 |
+| ODP+BF | 0.3550 | 0.0852 | -0.2698 |
+| ODP+CC | 0.3730 | 0.0678 | -0.3052 |
+
+### Paid vs Case-Incurred: Median CV(IBNR)
+
+| Method | CV(paid) | CV(case) | Delta |
+|--------|----------|----------|-------|
+| Mack | 0.1595 | 0.1352 | -0.0243 |
+| ODP (non-param) | 0.1897 | 0.4415 | +0.2519 |
+| ODP param (rho=0) | 0.1274 | 0.0698 | -0.0576 |
+| Corr-ODP (rho=0.1) | 0.1334 | 0.0717 | -0.0617 |
+| ODP+BF | 0.1102 | 0.3761 | +0.2660 |
+| ODP+CC | 0.1263 | 0.4126 | +0.2862 |
+
+### Figures (v2)
+
+- `figures/standalone_implied_pctl_grid_v2.png` — 4×12 histogram grid (6 methods × 2 types)
+- `figures/standalone_pp_paid_v2.png` — PP chart for paid
+- `figures/standalone_pp_case_incurred_v2.png` — PP chart for case_incurred
+- `cache/standalone_calibration_v2.csv` — per-triangle calibration detail
