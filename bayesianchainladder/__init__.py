@@ -52,8 +52,12 @@ from .base import BaseStochasticReserve, MethodSummary
 
 # Frequentist estimators
 from .bootstrap import (
+    BootstrapODPBornhuetterFerguson,
+    BootstrapODPCapeCod,
     BootstrapODPChainLadder,
     CorrelatedBootstrapChainLadder,
+    CorrelatedBootstrapODPBornhuetterFerguson,
+    CorrelatedBootstrapODPCapeCod,
     CorrelatedBootstrapODPSample,
     MackChainLadder,
 )
@@ -121,8 +125,12 @@ __all__ = [
     # Frequentist estimators
     "MackChainLadder",
     "BootstrapODPChainLadder",
+    "BootstrapODPBornhuetterFerguson",
+    "BootstrapODPCapeCod",
     "CorrelatedBootstrapChainLadder",
     "CorrelatedBootstrapODPSample",
+    "CorrelatedBootstrapODPBornhuetterFerguson",
+    "CorrelatedBootstrapODPCapeCod",
     # Model functions
     "build_bambi_model",
     "build_csr_model",

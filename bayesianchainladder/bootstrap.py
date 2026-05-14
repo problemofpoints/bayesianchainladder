@@ -1,6 +1,6 @@
 """Stochastic reserve wrappers around chainladder bootstrap/Mack methods.
 
-This module provides three wrapper estimators that share the
+This module provides wrapper estimators that share the
 :class:`bayesianchainladder.base.BaseStochasticReserve` interface:
 
 - :class:`MackChainLadder`: wraps ``chainladder.MackChainladder`` and exposes
@@ -9,10 +9,18 @@ This module provides three wrapper estimators that share the
 - :class:`BootstrapODPChainLadder`: wraps ``chainladder.BootstrapODPSample``
   + ``chainladder.Chainladder`` and exposes the bootstrap reserve samples
   directly.
+- :class:`BootstrapODPBornhuetterFerguson`: ODP bootstrap residuals with
+  ``chainladder.BornhuetterFerguson`` applied per resample.
+- :class:`BootstrapODPCapeCod`: ODP bootstrap residuals with
+  ``chainladder.CapeCod`` applied per resample.
 - :class:`CorrelatedBootstrapChainLadder`: wraps
   :class:`CorrelatedBootstrapODPSample` (Clark/Ding/Zhou 2022) — the same
   bootstrap with calendar-year correlation between cells via a Gaussian
   copula.
+- :class:`CorrelatedBootstrapODPBornhuetterFerguson`: correlated bootstrap
+  residuals with ``chainladder.BornhuetterFerguson`` applied per resample.
+- :class:`CorrelatedBootstrapODPCapeCod`: correlated bootstrap residuals
+  with ``chainladder.CapeCod`` applied per resample.
 
 The low-level :class:`CorrelatedBootstrapODPSample` lives here too so the
 file is self-contained.
@@ -255,6 +263,234 @@ class BootstrapODPChainLadder(BaseStochasticReserve):
             },
         )
 
+        self._build_reserve_summaries()
+        self._is_fitted = True
+        return self
+
+
+def _build_exposure_triangle(triangle, exposure_triangle, n_sims: int | None = None):
+    """Return an exposure triangle compatible with ``n_sims`` resampled rows.
+
+    ``exposure_triangle`` must be a ``chainladder.Triangle`` with shape
+    ``(1, 1, n_origin, 1)`` (one value per origin period). When the method
+    is applied to all ``n_sims`` resamples at once, chainladder broadcasts a
+    single-row exposure automatically — this helper just validates the input
+    and returns it unchanged.
+    """
+    if not hasattr(exposure_triangle, "values"):
+        raise TypeError(
+            "exposure_triangle must be a chainladder Triangle with a .values attribute"
+        )
+    return exposure_triangle
+
+
+def _extract_ibnr_from_bf_or_cc(model_fitted, triangle) -> xr.DataArray:
+    """Extract per-origin-per-simulation IBNR into an :class:`xr.DataArray`.
+
+    Works for any fitted chainladder method that exposes ``.ibnr_`` in shape
+    ``(n_sims, 1, n_origin, 1)``.
+    """
+    ibnr_vals = np.asarray(model_fitted.ibnr_.values)
+    # ibnr_.values has shape (n_sims, 1, n_origin, 1)
+    per_sim_per_origin = np.nansum(ibnr_vals, axis=-1)  # (n_sims, 1, n_origin)
+    per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
+    per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
+
+    origins = [_extract_period_value(o) for o in triangle.origin]
+    return xr.DataArray(
+        per_origin_per_sim,
+        dims=["origin", "sample"],
+        coords={
+            "origin": origins,
+            "sample": np.arange(per_origin_per_sim.shape[1]),
+        },
+    )
+
+
+class BootstrapODPBornhuetterFerguson(BaseStochasticReserve):
+    """ODP bootstrap Bornhuetter-Ferguson wrapped with the shared interface.
+
+    Resamples triangle residuals via ``chainladder.BootstrapODPSample``, then
+    fits ``chainladder.BornhuetterFerguson(apriori=...)`` to each resample.
+    This separates *process risk* (from the ODP bootstrap) from the *parameter
+    risk* correction introduced by the B-F a-priori, giving a distribution of
+    B-F ultimates / IBNRs.
+
+    Parameters
+    ----------
+    apriori : float or chainladder.Triangle
+        Expected loss ratio (or per-origin Triangle of loss ratios). Passed
+        directly to ``chainladder.BornhuetterFerguson``.
+    apriori_sigma : float, default 0.0
+        Uncertainty on the a-priori (see chainladder BF docs).
+    n_sims : int, default 1000
+        Number of bootstrap simulations.
+    n_periods : int, default -1
+        Forwarded to ``chainladder.BootstrapODPSample``. ``-1`` uses all.
+    hat_adj : bool, default True
+        Hat-matrix adjustment per Shapland.
+    random_seed : int, optional
+        Seed for the bootstrap resampler.
+
+    Notes
+    -----
+    An ``exposure_triangle`` (premium) is **required** by B-F and must be
+    supplied to :meth:`fit`. It is expected to be a
+    ``chainladder.Triangle`` with one value per origin period (shape
+    ``(1, 1, n_origin, 1)`` or the ``.latest_diagonal`` of a premium
+    triangle).
+    """
+
+    def __init__(
+        self,
+        apriori: float | object = 0.65,
+        apriori_sigma: float = 0.0,
+        n_sims: int = 1000,
+        n_periods: int = -1,
+        hat_adj: bool = True,
+        random_seed: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.apriori = apriori
+        self.apriori_sigma = apriori_sigma
+        self.n_sims = n_sims
+        self.n_periods = n_periods
+        self.hat_adj = hat_adj
+        self.random_seed = random_seed
+
+    def fit(self, triangle, exposure_triangle=None):
+        """Fit the ODP bootstrap B-F model.
+
+        Parameters
+        ----------
+        triangle : chainladder.Triangle
+            Paid-loss triangle.
+        exposure_triangle : chainladder.Triangle
+            Premium (exposure) triangle, shape ``(1, 1, n_origin, 1)``.
+            Required for Bornhuetter-Ferguson. Pass the ``.latest_diagonal``
+            of a premium triangle or construct one directly.
+        """
+        if exposure_triangle is None:
+            raise ValueError(
+                "exposure_triangle is required for BootstrapODPBornhuetterFerguson. "
+                "Pass the .latest_diagonal of a premium triangle."
+            )
+        validate_triangle(triangle)
+        self.triangle_ = triangle.copy()
+        exposure_triangle = _build_exposure_triangle(
+            triangle, exposure_triangle, self.n_sims
+        )
+
+        prepared = triangle.copy()
+        prepared.key_labels = ["triangle_id"]
+        prepared.kdims = np.asarray([["resample"]], dtype=object)
+
+        sampler = cl.BootstrapODPSample(
+            n_sims=self.n_sims,
+            n_periods=self.n_periods,
+            hat_adj=self.hat_adj,
+            random_state=self.random_seed,
+        ).fit(prepared)
+        resampled = sampler.transform(prepared)
+
+        bf = cl.BornhuetterFerguson(
+            apriori=self.apriori,
+            apriori_sigma=self.apriori_sigma,
+        ).fit(resampled, sample_weight=exposure_triangle)
+
+        self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(bf, triangle)
+        self._build_reserve_summaries()
+        self._is_fitted = True
+        return self
+
+
+class BootstrapODPCapeCod(BaseStochasticReserve):
+    """ODP bootstrap Cape Cod wrapped with the shared interface.
+
+    Resamples triangle residuals via ``chainladder.BootstrapODPSample``, then
+    fits ``chainladder.CapeCod(trend=..., decay=...)`` to each resample. Cape
+    Cod estimates the a-priori expected loss ratio empirically from the data,
+    making it more data-driven than a fixed B-F apriori.
+
+    Parameters
+    ----------
+    trend : float, default 0.0
+        Annual trend assumption for the Cape Cod method.
+    decay : float, default 1.0
+        Decay factor for the Cape Cod method.
+    n_sims : int, default 1000
+        Number of bootstrap simulations.
+    n_periods : int, default -1
+        Forwarded to ``chainladder.BootstrapODPSample``. ``-1`` uses all.
+    hat_adj : bool, default True
+        Hat-matrix adjustment per Shapland.
+    random_seed : int, optional
+        Seed for the bootstrap resampler.
+
+    Notes
+    -----
+    An ``exposure_triangle`` (premium) is **required** and must be supplied to
+    :meth:`fit`. It is expected to be a ``chainladder.Triangle`` with one value
+    per origin period.
+    """
+
+    def __init__(
+        self,
+        trend: float = 0.0,
+        decay: float = 1.0,
+        n_sims: int = 1000,
+        n_periods: int = -1,
+        hat_adj: bool = True,
+        random_seed: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.trend = trend
+        self.decay = decay
+        self.n_sims = n_sims
+        self.n_periods = n_periods
+        self.hat_adj = hat_adj
+        self.random_seed = random_seed
+
+    def fit(self, triangle, exposure_triangle=None):
+        """Fit the ODP bootstrap Cape Cod model.
+
+        Parameters
+        ----------
+        triangle : chainladder.Triangle
+            Paid-loss triangle.
+        exposure_triangle : chainladder.Triangle
+            Premium (exposure) triangle, shape ``(1, 1, n_origin, 1)``.
+            Required for Cape Cod. Pass the ``.latest_diagonal`` of a premium
+            triangle or construct one directly.
+        """
+        if exposure_triangle is None:
+            raise ValueError(
+                "exposure_triangle is required for BootstrapODPCapeCod. "
+                "Pass the .latest_diagonal of a premium triangle."
+            )
+        validate_triangle(triangle)
+        self.triangle_ = triangle.copy()
+        exposure_triangle = _build_exposure_triangle(
+            triangle, exposure_triangle, self.n_sims
+        )
+
+        prepared = triangle.copy()
+        prepared.key_labels = ["triangle_id"]
+        prepared.kdims = np.asarray([["resample"]], dtype=object)
+
+        sampler = cl.BootstrapODPSample(
+            n_sims=self.n_sims,
+            n_periods=self.n_periods,
+            hat_adj=self.hat_adj,
+            random_state=self.random_seed,
+        ).fit(prepared)
+        resampled = sampler.transform(prepared)
+
+        cc = cl.CapeCod(trend=self.trend, decay=self.decay).fit(
+            resampled, sample_weight=exposure_triangle
+        )
+
+        self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(cc, triangle)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -815,6 +1051,204 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
             },
         )
 
+        self._build_reserve_summaries()
+        self._is_fitted = True
+        return self
+
+
+class CorrelatedBootstrapODPBornhuetterFerguson(BaseStochasticReserve):
+    """Correlated ODP bootstrap Bornhuetter-Ferguson behind the shared interface.
+
+    Wraps :class:`CorrelatedBootstrapODPSample` (Clark/Ding/Zhou 2022) to
+    generate calendar-year-correlated resamples, then fits
+    ``chainladder.BornhuetterFerguson(apriori=...)`` to each resample.
+
+    Parameters
+    ----------
+    apriori : float or chainladder.Triangle
+        Expected loss ratio. Passed to ``chainladder.BornhuetterFerguson``.
+    apriori_sigma : float, default 0.0
+        Uncertainty on the a-priori.
+    n_sims : int, default 1000
+    rho : float, default 0.0
+        Same-diagonal correlation. ``0`` reproduces the independent bootstrap.
+    parametric : bool, default True
+    parametric_dist : {"normal", "lognormal"}, default "normal"
+    hat_adj : bool, default True
+    n_periods : int, default -1
+    random_seed : int, optional
+
+    Notes
+    -----
+    An ``exposure_triangle`` (premium) is **required** by B-F and must be
+    supplied to :meth:`fit`.
+    """
+
+    def __init__(
+        self,
+        apriori: float | object = 0.65,
+        apriori_sigma: float = 0.0,
+        n_sims: int = 1000,
+        rho: float = 0.0,
+        parametric: bool = True,
+        parametric_dist: str = "normal",
+        hat_adj: bool = True,
+        n_periods: int = -1,
+        random_seed: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.apriori = apriori
+        self.apriori_sigma = apriori_sigma
+        self.n_sims = n_sims
+        self.rho = rho
+        self.parametric = parametric
+        self.parametric_dist = parametric_dist
+        self.hat_adj = hat_adj
+        self.n_periods = n_periods
+        self.random_seed = random_seed
+
+    def fit(self, triangle, exposure_triangle=None):
+        """Fit the correlated ODP bootstrap B-F model.
+
+        Parameters
+        ----------
+        triangle : chainladder.Triangle
+            Paid-loss triangle.
+        exposure_triangle : chainladder.Triangle
+            Premium triangle per origin, shape ``(1, 1, n_origin, 1)``.
+            Required for Bornhuetter-Ferguson.
+        """
+        if exposure_triangle is None:
+            raise ValueError(
+                "exposure_triangle is required for "
+                "CorrelatedBootstrapODPBornhuetterFerguson. "
+                "Pass the .latest_diagonal of a premium triangle."
+            )
+        validate_triangle(triangle)
+        self.triangle_ = triangle.copy()
+        exposure_triangle = _build_exposure_triangle(
+            triangle, exposure_triangle, self.n_sims
+        )
+
+        prepared = triangle.copy()
+        prepared.key_labels = ["triangle_id"]
+        prepared.kdims = np.asarray([["resample"]], dtype=object)
+
+        sampler = CorrelatedBootstrapODPSample(
+            n_sims=self.n_sims,
+            rho=self.rho,
+            parametric=self.parametric,
+            parametric_dist=self.parametric_dist,
+            hat_adj=self.hat_adj,
+            n_periods=self.n_periods,
+            random_state=self.random_seed,
+        ).fit(prepared)
+        resampled = sampler.transform(prepared)
+
+        bf = cl.BornhuetterFerguson(
+            apriori=self.apriori,
+            apriori_sigma=self.apriori_sigma,
+        ).fit(resampled, sample_weight=exposure_triangle)
+
+        self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(bf, triangle)
+        self._build_reserve_summaries()
+        self._is_fitted = True
+        return self
+
+
+class CorrelatedBootstrapODPCapeCod(BaseStochasticReserve):
+    """Correlated ODP bootstrap Cape Cod behind the shared interface.
+
+    Wraps :class:`CorrelatedBootstrapODPSample` (Clark/Ding/Zhou 2022) to
+    generate calendar-year-correlated resamples, then fits
+    ``chainladder.CapeCod(trend=..., decay=...)`` to each resample.
+
+    Parameters
+    ----------
+    trend : float, default 0.0
+        Annual trend assumption for the Cape Cod method.
+    decay : float, default 1.0
+        Decay factor for the Cape Cod method.
+    n_sims : int, default 1000
+    rho : float, default 0.0
+        Same-diagonal correlation. ``0`` reproduces the independent bootstrap.
+    parametric : bool, default True
+    parametric_dist : {"normal", "lognormal"}, default "normal"
+    hat_adj : bool, default True
+    n_periods : int, default -1
+    random_seed : int, optional
+
+    Notes
+    -----
+    An ``exposure_triangle`` (premium) is **required** by Cape Cod and must be
+    supplied to :meth:`fit`.
+    """
+
+    def __init__(
+        self,
+        trend: float = 0.0,
+        decay: float = 1.0,
+        n_sims: int = 1000,
+        rho: float = 0.0,
+        parametric: bool = True,
+        parametric_dist: str = "normal",
+        hat_adj: bool = True,
+        n_periods: int = -1,
+        random_seed: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.trend = trend
+        self.decay = decay
+        self.n_sims = n_sims
+        self.rho = rho
+        self.parametric = parametric
+        self.parametric_dist = parametric_dist
+        self.hat_adj = hat_adj
+        self.n_periods = n_periods
+        self.random_seed = random_seed
+
+    def fit(self, triangle, exposure_triangle=None):
+        """Fit the correlated ODP bootstrap Cape Cod model.
+
+        Parameters
+        ----------
+        triangle : chainladder.Triangle
+            Paid-loss triangle.
+        exposure_triangle : chainladder.Triangle
+            Premium triangle per origin, shape ``(1, 1, n_origin, 1)``.
+            Required for Cape Cod.
+        """
+        if exposure_triangle is None:
+            raise ValueError(
+                "exposure_triangle is required for CorrelatedBootstrapODPCapeCod. "
+                "Pass the .latest_diagonal of a premium triangle."
+            )
+        validate_triangle(triangle)
+        self.triangle_ = triangle.copy()
+        exposure_triangle = _build_exposure_triangle(
+            triangle, exposure_triangle, self.n_sims
+        )
+
+        prepared = triangle.copy()
+        prepared.key_labels = ["triangle_id"]
+        prepared.kdims = np.asarray([["resample"]], dtype=object)
+
+        sampler = CorrelatedBootstrapODPSample(
+            n_sims=self.n_sims,
+            rho=self.rho,
+            parametric=self.parametric,
+            parametric_dist=self.parametric_dist,
+            hat_adj=self.hat_adj,
+            n_periods=self.n_periods,
+            random_state=self.random_seed,
+        ).fit(prepared)
+        resampled = sampler.transform(prepared)
+
+        cc = cl.CapeCod(trend=self.trend, decay=self.decay).fit(
+            resampled, sample_weight=exposure_triangle
+        )
+
+        self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(cc, triangle)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
