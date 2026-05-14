@@ -20,13 +20,28 @@ odp_cc    : ODP Bootstrap + Cape Cod (requires premium)
 
 Input CSV format
 ----------------
-Required columns: origin, dev, paid
+Required columns: origin, dev, and one or more loss columns
 Optional columns: lob, group_id, premium
+
+The loss column to model is selected via --loss-col (default: paid).
+Common alternatives: case_incurred, incurred, reported.
+
+Pass --loss-col both (a synonym for paid,case_incurred) or a
+comma-separated list like --loss-col paid,case_incurred,reported
+to run all methods on multiple loss columns in a single pass.
 
 Output schema
 -------------
-lob, group_id, method, accident_year, paid_to_date,
+lob, group_id, loss_type, method, accident_year, loss_to_date,
 mean_ultimate, mean_ibnr, cv_ibnr, ibnr_p5, ibnr_p50, ibnr_p75, ibnr_p95
+
+Defaults
+--------
+--n-sims default is 5000 (up from 1000) to reduce Monte Carlo noise at
+  the tail percentiles without materially increasing run time.
+--rho default is 0.1, reflecting empirical calendar-year correlations of
+  0.05–0.15 observed in Schedule P / Meyers (2015) CAS Monograph 1 data.
+  The old default of 0.5 overstated correlation and inflated reserve ranges.
 """
 
 from __future__ import annotations
@@ -297,7 +312,7 @@ def df_to_triangle(df, value_col="paid", origin_col="origin", dev_col="dev"):
         Must have columns ``origin`` (int year), ``dev`` (int months), and
         ``value_col`` (numeric cumulative losses).
     value_col : str
-        Column containing the cumulative paid losses.
+        Column containing the cumulative losses.
     origin_col, dev_col : str
         Names for origin and development columns.
 
@@ -327,13 +342,13 @@ def df_to_triangle(df, value_col="paid", origin_col="origin", dev_col="dev"):
     return tri
 
 
-def _premium_as_exposure(paid_tri, prem_series):
+def _premium_as_exposure(loss_tri, prem_series):
     """Build a per-origin exposure triangle from a premium Series.
 
     Parameters
     ----------
-    paid_tri : chainladder.Triangle
-        The paid-loss triangle (used as a structural template).
+    loss_tri : chainladder.Triangle
+        The loss triangle (used as a structural template).
     prem_series : pd.Series
         Index = origin year (int), values = premium. Built from the
         ``premium`` column of the input DataFrame.
@@ -342,11 +357,11 @@ def _premium_as_exposure(paid_tri, prem_series):
     -------
     chainladder.Triangle with shape ``(1, 1, n_origin, 1)``
     """
-    paid_origins = [int(str(o).split("-")[0]) for o in paid_tri.origin]
+    paid_origins = [int(str(o).split("-")[0]) for o in loss_tri.origin]
     prem_values = np.array(
         [prem_series.get(y, np.nan) for y in paid_origins], dtype=float
     )
-    exposure = paid_tri.latest_diagonal.copy()
+    exposure = loss_tri.latest_diagonal.copy()
     exposure.values = prem_values[np.newaxis, np.newaxis, :, np.newaxis]
     return exposure
 
@@ -355,9 +370,9 @@ def _premium_as_exposure(paid_tri, prem_series):
 # Per-triangle method runners
 # ---------------------------------------------------------------------------
 
-def _run_mack(paid_tri, n_samples=5000, random_seed=None):
+def _run_mack(loss_tri, n_samples=5000, random_seed=None):
     """Run Mack Chain Ladder. Returns per-origin IBNR samples (n_origin, n_sims)."""
-    dev = cl.Development(n_periods=-1).fit_transform(paid_tri)
+    dev = cl.Development(n_periods=-1).fit_transform(loss_tri)
     mack = cl.MackChainladder().fit(dev)
 
     ibnr_tri = mack.ibnr_.sum("development")
@@ -375,9 +390,9 @@ def _run_mack(paid_tri, n_samples=5000, random_seed=None):
     return samples, ibnr_per_origin
 
 
-def _run_odp_bootstrap(paid_tri, n_sims=1000, random_seed=None):
+def _run_odp_bootstrap(loss_tri, n_sims=1000, random_seed=None):
     """Run standard ODP bootstrap. Returns per-origin IBNR samples."""
-    prepared = paid_tri.copy()
+    prepared = loss_tri.copy()
     prepared.key_labels = ["triangle_id"]
     prepared.kdims = np.asarray([["resample"]], dtype=object)
 
@@ -393,16 +408,16 @@ def _run_odp_bootstrap(paid_tri, n_sims=1000, random_seed=None):
     return per_sim_per_origin.T  # (n_origin, n_sims)
 
 
-def _run_correlated_odp(paid_tri, n_sims=1000, rho=0.5, random_seed=None):
+def _run_correlated_odp(loss_tri, n_sims=1000, rho=0.1, random_seed=None):
     """Run correlated ODP bootstrap (Clark/Ding/Zhou 2022) via inline implementation."""
     return _correlated_odp_bootstrap(
-        paid_tri, n_sims=n_sims, rho=rho, hat_adj=True, random_state=random_seed
+        loss_tri, n_sims=n_sims, rho=rho, hat_adj=True, random_state=random_seed
     )
 
 
-def _run_odp_bf(paid_tri, exposure_tri, apriori=0.65, n_sims=1000, random_seed=None):
+def _run_odp_bf(loss_tri, exposure_tri, apriori=0.65, n_sims=1000, random_seed=None):
     """Run ODP bootstrap + Bornhuetter-Ferguson."""
-    prepared = paid_tri.copy()
+    prepared = loss_tri.copy()
     prepared.key_labels = ["triangle_id"]
     prepared.kdims = np.asarray([["resample"]], dtype=object)
 
@@ -419,9 +434,9 @@ def _run_odp_bf(paid_tri, exposure_tri, apriori=0.65, n_sims=1000, random_seed=N
     return per_sim_per_origin.T  # (n_origin, n_sims)
 
 
-def _run_odp_cc(paid_tri, exposure_tri, trend=0.0, decay=1.0, n_sims=1000, random_seed=None):
+def _run_odp_cc(loss_tri, exposure_tri, trend=0.0, decay=1.0, n_sims=1000, random_seed=None):
     """Run ODP bootstrap + Cape Cod."""
-    prepared = paid_tri.copy()
+    prepared = loss_tri.copy()
     prepared.key_labels = ["triangle_id"]
     prepared.kdims = np.asarray([["resample"]], dtype=object)
 
@@ -442,33 +457,34 @@ def _run_odp_cc(paid_tri, exposure_tri, trend=0.0, decay=1.0, n_sims=1000, rando
 # Output assembly
 # ---------------------------------------------------------------------------
 
-def _paid_to_date_per_origin(paid_tri):
+def _loss_to_date_per_origin(loss_tri):
     """Latest diagonal values per origin as a Series."""
-    diag = paid_tri.latest_diagonal
+    diag = loss_tri.latest_diagonal
     vals = np.asarray(diag.values).flatten()
-    origins = [str(o) for o in paid_tri.origin]
+    origins = [str(o) for o in loss_tri.origin]
     return pd.Series(vals, index=origins)
 
 
 def _samples_to_rows(
     per_origin_per_sim,
-    paid_to_date,
+    loss_to_date,
     origins,
     lob,
     group_id,
+    loss_type,
     method,
 ):
     """Convert (n_origin, n_sims) IBNR array to output rows."""
     rows = []
-    total_paid = 0.0
+    total_loss = 0.0
     total_mean_ibnr = 0.0
     all_total_ibnr = None
 
     for i, origin in enumerate(origins):
         samples = per_origin_per_sim[i, :]
         samples = samples[np.isfinite(samples)]
-        paid = float(paid_to_date.iloc[i]) if i < len(paid_to_date) else 0.0
-        total_paid += paid
+        loss = float(loss_to_date.iloc[i]) if i < len(loss_to_date) else 0.0
+        total_loss += loss
 
         if samples.size == 0:
             mean_ibnr = std_ibnr = 0.0
@@ -490,10 +506,11 @@ def _samples_to_rows(
         rows.append({
             "lob": lob,
             "group_id": group_id,
+            "loss_type": loss_type,
             "method": method,
             "accident_year": str(origin),
-            "paid_to_date": paid,
-            "mean_ultimate": paid + mean_ibnr,
+            "loss_to_date": loss,
+            "mean_ultimate": loss + mean_ibnr,
             "mean_ibnr": mean_ibnr,
             "cv_ibnr": cv_ibnr,
             "ibnr_p5": float(p5),
@@ -516,10 +533,11 @@ def _samples_to_rows(
     rows.append({
         "lob": lob,
         "group_id": group_id,
+        "loss_type": loss_type,
         "method": method,
         "accident_year": "Total",
-        "paid_to_date": total_paid,
-        "mean_ultimate": total_paid + t_mean,
+        "loss_to_date": total_loss,
+        "mean_ultimate": total_loss + t_mean,
         "mean_ibnr": t_mean,
         "cv_ibnr": t_cv,
         "ibnr_p5": float(t_p5),
@@ -532,21 +550,22 @@ def _samples_to_rows(
 
 
 def run_methods_on_triangle(
-    paid_tri,
+    loss_tri,
     prem_series,
     methods,
-    n_sims=1000,
-    rho=0.5,
+    n_sims=5000,
+    rho=0.1,
     apriori=0.65,
     random_seed=None,
     lob="unknown",
     group_id="unknown",
+    loss_type="paid",
 ):
-    """Run all requested methods on a single (paid, premium) triangle pair.
+    """Run all requested methods on a single (loss, premium) triangle pair.
 
     Parameters
     ----------
-    paid_tri : chainladder.Triangle
+    loss_tri : chainladder.Triangle
     prem_series : pd.Series or None
         Premium per origin year (int index). Required for odp_bf and odp_cc.
     methods : list[str]
@@ -556,15 +575,18 @@ def run_methods_on_triangle(
     apriori : float
     random_seed : int or None
     lob, group_id : str
+    loss_type : str
+        Label for the loss column being modelled (e.g. "paid", "case_incurred").
+        Passed through to output rows unchanged.
 
     Returns
     -------
     list[dict] — rows for the output DataFrame
     """
-    origins = [str(o) for o in paid_tri.origin]
-    paid_per_origin = _paid_to_date_per_origin(paid_tri)
+    origins = [str(o) for o in loss_tri.origin]
+    loss_per_origin = _loss_to_date_per_origin(loss_tri)
     exposure_tri = (
-        _premium_as_exposure(paid_tri, prem_series)
+        _premium_as_exposure(loss_tri, prem_series)
         if prem_series is not None
         else None
     )
@@ -574,56 +596,69 @@ def run_methods_on_triangle(
     for method in methods:
         try:
             if method == "mack":
-                per_origin_sim, _ = _run_mack(paid_tri, n_samples=n_sims, random_seed=random_seed)
+                per_origin_sim, _ = _run_mack(loss_tri, n_samples=n_sims, random_seed=random_seed)
             elif method == "odp":
-                per_origin_sim = _run_odp_bootstrap(paid_tri, n_sims=n_sims, random_seed=random_seed)
+                per_origin_sim = _run_odp_bootstrap(loss_tri, n_sims=n_sims, random_seed=random_seed)
             elif method == "odp_corr":
-                per_origin_sim = _run_correlated_odp(paid_tri, n_sims=n_sims, rho=rho, random_seed=random_seed)
+                per_origin_sim = _run_correlated_odp(loss_tri, n_sims=n_sims, rho=rho, random_seed=random_seed)
             elif method == "odp_bf":
                 if exposure_tri is None:
                     log.warning(
-                        "lob=%s group_id=%s: skipping odp_bf (no premium data)", lob, group_id
+                        "lob=%s group_id=%s loss_type=%s: skipping odp_bf (no premium data)",
+                        lob, group_id, loss_type,
                     )
                     continue
                 per_origin_sim = _run_odp_bf(
-                    paid_tri, exposure_tri, apriori=apriori, n_sims=n_sims, random_seed=random_seed
+                    loss_tri, exposure_tri, apriori=apriori, n_sims=n_sims, random_seed=random_seed
                 )
             elif method == "odp_cc":
                 if exposure_tri is None:
                     log.warning(
-                        "lob=%s group_id=%s: skipping odp_cc (no premium data)", lob, group_id
+                        "lob=%s group_id=%s loss_type=%s: skipping odp_cc (no premium data)",
+                        lob, group_id, loss_type,
                     )
                     continue
                 per_origin_sim = _run_odp_cc(
-                    paid_tri, exposure_tri, n_sims=n_sims, random_seed=random_seed
+                    loss_tri, exposure_tri, n_sims=n_sims, random_seed=random_seed
                 )
             else:
                 log.warning("Unknown method: %s — skipped", method)
                 continue
 
             rows = _samples_to_rows(
-                per_origin_sim, paid_per_origin, origins, lob, group_id, method
+                per_origin_sim, loss_per_origin, origins, lob, group_id, loss_type, method
             )
             all_rows.extend(rows)
 
         except Exception as exc:
             log.error(
-                "lob=%s group_id=%s method=%s failed: %s", lob, group_id, method, exc,
+                "lob=%s group_id=%s loss_type=%s method=%s failed: %s",
+                lob, group_id, loss_type, method, exc,
                 exc_info=True,
             )
 
     return all_rows
 
 
-def iterate_triangles(df, methods, n_sims=1000, rho=0.5, apriori=0.65, random_seed=None):
-    """Iterate over all (lob, group_id) combinations and run all methods.
+def iterate_triangles(
+    df,
+    methods,
+    loss_cols,
+    n_sims=5000,
+    rho=0.1,
+    apriori=0.65,
+    random_seed=None,
+):
+    """Iterate over all (lob, group_id, loss_col) combinations and run all methods.
 
     Parameters
     ----------
     df : pd.DataFrame
-        Long-format data with columns: origin, dev, paid, and optionally
-        lob, group_id, premium.
+        Long-format data with columns: origin, dev, plus the columns listed in
+        ``loss_cols``, and optionally lob, group_id, premium.
     methods : list[str]
+    loss_cols : list[str]
+        Loss columns to model (e.g. ["paid"] or ["paid", "case_incurred"]).
     n_sims, rho, apriori, random_seed : forwarded to run_methods_on_triangle
 
     Returns
@@ -652,37 +687,54 @@ def iterate_triangles(df, methods, n_sims=1000, rho=0.5, apriori=0.65, random_se
 
     all_rows = []
     for (lob, group_id), sub_df in iterator:
-        try:
-            paid_tri = df_to_triangle(sub_df, value_col="paid")
-
-            # Build per-origin premium Series if data available.
-            prem_series = None
-            if "premium" in sub_df.columns and sub_df["premium"].notna().any():
-                prem_series = (
-                    sub_df.groupby("origin")["premium"]
-                    .first()
-                    .astype(float)
+        for loss_col in loss_cols:
+            if loss_col not in sub_df.columns:
+                log.warning(
+                    "lob=%s group_id=%s: loss column '%s' not found — skipped",
+                    lob, group_id, loss_col,
                 )
+                continue
+            if sub_df[loss_col].isna().all():
+                log.warning(
+                    "lob=%s group_id=%s: loss column '%s' is all-NaN — skipped",
+                    lob, group_id, loss_col,
+                )
+                continue
+            try:
+                loss_tri = df_to_triangle(sub_df, value_col=loss_col)
 
-            rows = run_methods_on_triangle(
-                paid_tri,
-                prem_series,
-                methods=methods,
-                n_sims=n_sims,
-                rho=rho,
-                apriori=apriori,
-                random_seed=random_seed,
-                lob=lob,
-                group_id=group_id,
-            )
-            all_rows.extend(rows)
+                # Build per-origin premium Series if data available.
+                prem_series = None
+                if "premium" in sub_df.columns and sub_df["premium"].notna().any():
+                    prem_series = (
+                        sub_df.groupby("origin")["premium"]
+                        .first()
+                        .astype(float)
+                    )
 
-        except Exception as exc:
-            log.error("lob=%s group_id=%s: failed to process triangle: %s", lob, group_id, exc, exc_info=True)
+                rows = run_methods_on_triangle(
+                    loss_tri,
+                    prem_series,
+                    methods=methods,
+                    n_sims=n_sims,
+                    rho=rho,
+                    apriori=apriori,
+                    random_seed=random_seed,
+                    lob=lob,
+                    group_id=group_id,
+                    loss_type=loss_col,
+                )
+                all_rows.extend(rows)
+
+            except Exception as exc:
+                log.error(
+                    "lob=%s group_id=%s loss_col=%s: failed to process triangle: %s",
+                    lob, group_id, loss_col, exc, exc_info=True,
+                )
 
     if not all_rows:
         return pd.DataFrame(columns=[
-            "lob", "group_id", "method", "accident_year", "paid_to_date",
+            "lob", "group_id", "loss_type", "method", "accident_year", "loss_to_date",
             "mean_ultimate", "mean_ibnr", "cv_ibnr",
             "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
         ])
@@ -696,26 +748,32 @@ def iterate_triangles(df, methods, n_sims=1000, rho=0.5, apriori=0.65, random_se
 
 def _run_single_group(args):
     """Worker function for multiprocessing pool."""
-    (lob, group_id), sub_df, methods, n_sims, rho, apriori, random_seed = args
-    try:
-        paid_tri = df_to_triangle(sub_df, value_col="paid")
+    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, random_seed = args
+    all_rows = []
+    for loss_col in loss_cols:
+        if loss_col not in sub_df.columns or sub_df[loss_col].isna().all():
+            continue
+        try:
+            loss_tri = df_to_triangle(sub_df, value_col=loss_col)
 
-        prem_series = None
-        if "premium" in sub_df.columns and sub_df["premium"].notna().any():
-            prem_series = sub_df.groupby("origin")["premium"].first().astype(float)
+            prem_series = None
+            if "premium" in sub_df.columns and sub_df["premium"].notna().any():
+                prem_series = sub_df.groupby("origin")["premium"].first().astype(float)
 
-        return run_methods_on_triangle(
-            paid_tri, prem_series, methods=methods,
-            n_sims=n_sims, rho=rho, apriori=apriori,
-            random_seed=random_seed, lob=lob, group_id=group_id,
-        )
-    except Exception as exc:
-        log.error("lob=%s group_id=%s: worker failed: %s", lob, group_id, exc)
-        return []
+            rows = run_methods_on_triangle(
+                loss_tri, prem_series, methods=methods,
+                n_sims=n_sims, rho=rho, apriori=apriori,
+                random_seed=random_seed, lob=lob, group_id=group_id,
+                loss_type=loss_col,
+            )
+            all_rows.extend(rows)
+        except Exception as exc:
+            log.error("lob=%s group_id=%s loss_col=%s: worker failed: %s", lob, group_id, loss_col, exc)
+    return all_rows
 
 
 def iterate_triangles_parallel(
-    df, methods, n_sims=1000, rho=0.5, apriori=0.65, random_seed=None, n_jobs=1
+    df, methods, loss_cols, n_sims=5000, rho=0.1, apriori=0.65, random_seed=None, n_jobs=1
 ):
     """Parallel version of iterate_triangles using multiprocessing.Pool."""
     import multiprocessing
@@ -732,7 +790,7 @@ def iterate_triangles_parallel(
 
     groups = list(df.groupby(["lob", "group_id"]))
     tasks = [
-        ((lob, gid), sub, methods, n_sims, rho, apriori, random_seed)
+        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, random_seed)
         for (lob, gid), sub in groups
     ]
 
@@ -742,7 +800,7 @@ def iterate_triangles_parallel(
     all_rows = [row for group_rows in results for row in group_rows]
     if not all_rows:
         return pd.DataFrame(columns=[
-            "lob", "group_id", "method", "accident_year", "paid_to_date",
+            "lob", "group_id", "loss_type", "method", "accident_year", "loss_to_date",
             "mean_ultimate", "mean_ibnr", "cv_ibnr",
             "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
         ])
@@ -752,6 +810,17 @@ def iterate_triangles_parallel(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _parse_loss_cols(value: str) -> list[str]:
+    """Expand --loss-col value to a list of column names.
+
+    "both" is a convenience alias for "paid,case_incurred".
+    Comma-separated values are split and stripped.
+    """
+    if value.lower() == "both":
+        return ["paid", "case_incurred"]
+    return [c.strip() for c in value.split(",") if c.strip()]
+
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
@@ -775,9 +844,20 @@ def parse_args(argv=None):
             "odp_bf and odp_cc require a 'premium' column."
         ),
     )
-    p.add_argument("--n-sims", type=int, default=1000, help="Bootstrap simulation count")
     p.add_argument(
-        "--rho", type=float, default=0.5,
+        "--loss-col",
+        default="paid",
+        help=(
+            "Loss column(s) to model. Use a single column name (e.g. 'paid', "
+            "'case_incurred'), a comma-separated list (e.g. 'paid,case_incurred'), "
+            "or the keyword 'both' (alias for 'paid,case_incurred'). "
+            "When multiple columns are specified the script runs all methods on "
+            "each column and adds a loss_type column to the output."
+        ),
+    )
+    p.add_argument("--n-sims", type=int, default=5000, help="Bootstrap simulation count")
+    p.add_argument(
+        "--rho", type=float, default=0.1,
         help="Calendar-year correlation for odp_corr (0=independent)"
     )
     p.add_argument(
@@ -798,8 +878,13 @@ def parse_args(argv=None):
     p.add_argument(
         "--dev-col", default="dev", help="Name of the development column"
     )
+    # Keep --paid-col for backward compatibility; --loss-col supersedes it.
     p.add_argument(
-        "--paid-col", default="paid", help="Name of the cumulative paid column"
+        "--paid-col", default=None,
+        help=(
+            "Deprecated alias for --loss-col. If provided, overrides --loss-col "
+            "when --loss-col is still the default 'paid'."
+        ),
     )
     return p.parse_args(argv)
 
@@ -816,33 +901,57 @@ def main(argv=None):
         rename[args.origin_col] = "origin"
     if args.dev_col != "dev":
         rename[args.dev_col] = "dev"
-    if args.paid_col != "paid":
-        rename[args.paid_col] = "paid"
     if rename:
         df = df.rename(columns=rename)
 
-    for col in ["origin", "dev", "paid"]:
+    for col in ["origin", "dev"]:
         if col not in df.columns:
             log.error("Required column '%s' not found. Available: %s", col, list(df.columns))
             sys.exit(1)
 
     df["origin"] = df["origin"].astype(int)
     df["dev"] = df["dev"].astype(int)
-    df["paid"] = pd.to_numeric(df["paid"], errors="coerce")
+
+    # Resolve loss columns
+    # --paid-col is a legacy alias; honour it only when --loss-col is at its default.
+    loss_col_str = args.loss_col
+    if args.paid_col is not None and args.loss_col == "paid":
+        log.warning(
+            "--paid-col is deprecated; use --loss-col instead. "
+            "Treating --paid-col %s as --loss-col %s.",
+            args.paid_col, args.paid_col,
+        )
+        loss_col_str = args.paid_col
+
+    loss_cols = _parse_loss_cols(loss_col_str)
+    log.info("Loss column(s): %s", loss_cols)
+
+    # Coerce each requested loss column to numeric; warn if absent
+    for lc in loss_cols:
+        if lc not in df.columns:
+            log.error(
+                "Loss column '%s' not found in input. Available columns: %s",
+                lc, list(df.columns),
+            )
+            sys.exit(1)
+        df[lc] = pd.to_numeric(df[lc], errors="coerce")
 
     log.info(
         "Loaded %d rows — LOBs: %s",
         len(df),
         list(df["lob"].unique()) if "lob" in df.columns else ["all"],
     )
-    log.info("Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f",
-             args.methods, args.n_sims, args.rho, args.apriori)
+    log.info(
+        "Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f",
+        args.methods, args.n_sims, args.rho, args.apriori,
+    )
 
     if args.n_jobs > 1:
         log.info("Running in parallel with %d workers", args.n_jobs)
         results = iterate_triangles_parallel(
             df,
             methods=args.methods,
+            loss_cols=loss_cols,
             n_sims=args.n_sims,
             rho=args.rho,
             apriori=args.apriori,
@@ -853,6 +962,7 @@ def main(argv=None):
         results = iterate_triangles(
             df,
             methods=args.methods,
+            loss_cols=loss_cols,
             n_sims=args.n_sims,
             rho=args.rho,
             apriori=args.apriori,
@@ -868,10 +978,11 @@ def main(argv=None):
         # Print a quick summary to stdout
         total_rows = results[results["accident_year"] == "Total"].copy()
         if not total_rows.empty:
-            print("\n=== Total IBNR by method ===")
+            print("\n=== Total IBNR by loss_type / method ===")
             for _, row in total_rows.iterrows():
                 print(
                     f"  LOB={row['lob']} | group={row['group_id']} | "
+                    f"loss_type={row['loss_type']:15s} | "
                     f"method={row['method']:8s} | "
                     f"mean_ibnr={row['mean_ibnr']:>12,.0f} | "
                     f"cv={row['cv_ibnr']:.3f} | "
