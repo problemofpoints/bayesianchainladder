@@ -32,8 +32,16 @@ to run all methods on multiple loss columns in a single pass.
 
 Output schema
 -------------
-lob, group_id, loss_type, method, accident_year, loss_to_date,
+lob, group_id, loss_type, method, accident_year, loss_to_date, paid_to_date,
 mean_ultimate, mean_ibnr, cv_ibnr, ibnr_p5, ibnr_p50, ibnr_p75, ibnr_p95
+
+IBNR convention
+---------------
+IBNR is always computed as ``ultimate − paid_to_date`` regardless of which
+loss column was modelled.  The ``paid`` column must be present in the input
+even when modelling ``case_incurred``.  ``loss_to_date`` shows the latest-
+diagonal value of the *modelled* column (informational); ``paid_to_date``
+always shows the paid latest-diagonal and is the offset used for IBNR.
 
 Defaults
 --------
@@ -468,15 +476,30 @@ def _loss_to_date_per_origin(loss_tri):
 def _samples_to_rows(
     per_origin_per_sim,
     loss_to_date,
+    paid_per_origin,
     origins,
     lob,
     group_id,
     loss_type,
     method,
 ):
-    """Convert (n_origin, n_sims) IBNR array to output rows."""
+    """Convert (n_origin, n_sims) IBNR array to output rows.
+
+    Parameters
+    ----------
+    per_origin_per_sim : ndarray, shape (n_origin, n_sims)
+        IBNR samples from the reserving method (ultimate minus modelled
+        latest diagonal, as produced by the method runners).
+    loss_to_date : pd.Series
+        Latest-diagonal values of the *modelled* loss column (informational).
+    paid_per_origin : pd.Series
+        Latest-diagonal values of the *paid* column.  Always used as the
+        offset for IBNR: ``mean_ibnr = mean_ultimate - paid_to_date``.
+    origins, lob, group_id, loss_type, method : forwarded to output rows
+    """
     rows = []
-    total_loss = 0.0
+    total_loss_to_date = 0.0
+    total_paid_to_date = 0.0
     total_mean_ibnr = 0.0
     all_total_ibnr = None
 
@@ -484,24 +507,36 @@ def _samples_to_rows(
         samples = per_origin_per_sim[i, :]
         samples = samples[np.isfinite(samples)]
         loss = float(loss_to_date.iloc[i]) if i < len(loss_to_date) else 0.0
-        total_loss += loss
+        paid = float(paid_per_origin.iloc[i]) if i < len(paid_per_origin) else 0.0
+        total_loss_to_date += loss
+        total_paid_to_date += paid
 
-        if samples.size == 0:
+        # The method runners return IBNR = ultimate - modelled_latest_diagonal.
+        # Re-anchor to paid: ibnr_vs_paid = (modelled_latest + ibnr_vs_modelled) - paid
+        # i.e. ultimate - paid.  When loss_type == "paid", loss == paid so this
+        # is a no-op; when loss_type == "case_incurred", loss > paid so samples
+        # increase by (loss - paid).
+        adjustment = loss - paid
+        samples_vs_paid = samples + adjustment
+
+        if samples_vs_paid.size == 0:
             mean_ibnr = std_ibnr = 0.0
             p5 = p50 = p75 = p95 = 0.0
+            mean_ultimate = paid
         else:
-            mean_ibnr = float(np.mean(samples))
-            std_ibnr = float(np.std(samples, ddof=1)) if samples.size > 1 else 0.0
-            p5, p50, p75, p95 = np.percentile(samples, [5, 50, 75, 95])
+            mean_ibnr = float(np.mean(samples_vs_paid))
+            std_ibnr = float(np.std(samples_vs_paid, ddof=1)) if samples_vs_paid.size > 1 else 0.0
+            p5, p50, p75, p95 = np.percentile(samples_vs_paid, [5, 50, 75, 95])
+            mean_ultimate = paid + mean_ibnr
 
         cv_ibnr = abs(std_ibnr / mean_ibnr) if mean_ibnr != 0 else float("nan")
         total_mean_ibnr += mean_ibnr
 
         if all_total_ibnr is None:
-            all_total_ibnr = samples.copy()
+            all_total_ibnr = samples_vs_paid.copy()
         else:
-            min_len = min(len(all_total_ibnr), len(samples))
-            all_total_ibnr = all_total_ibnr[:min_len] + samples[:min_len]
+            min_len = min(len(all_total_ibnr), len(samples_vs_paid))
+            all_total_ibnr = all_total_ibnr[:min_len] + samples_vs_paid[:min_len]
 
         rows.append({
             "lob": lob,
@@ -510,7 +545,8 @@ def _samples_to_rows(
             "method": method,
             "accident_year": str(origin),
             "loss_to_date": loss,
-            "mean_ultimate": loss + mean_ibnr,
+            "paid_to_date": paid,
+            "mean_ultimate": mean_ultimate,
             "mean_ibnr": mean_ibnr,
             "cv_ibnr": cv_ibnr,
             "ibnr_p5": float(p5),
@@ -536,8 +572,9 @@ def _samples_to_rows(
         "loss_type": loss_type,
         "method": method,
         "accident_year": "Total",
-        "loss_to_date": total_loss,
-        "mean_ultimate": total_loss + t_mean,
+        "loss_to_date": total_loss_to_date,
+        "paid_to_date": total_paid_to_date,
+        "mean_ultimate": total_paid_to_date + t_mean,
         "mean_ibnr": t_mean,
         "cv_ibnr": t_cv,
         "ibnr_p5": float(t_p5),
@@ -553,6 +590,7 @@ def run_methods_on_triangle(
     loss_tri,
     prem_series,
     methods,
+    paid_per_origin,
     n_sims=5000,
     rho=0.1,
     apriori=0.65,
@@ -570,6 +608,10 @@ def run_methods_on_triangle(
         Premium per origin year (int index). Required for odp_bf and odp_cc.
     methods : list[str]
         Any subset of {"mack", "odp", "odp_corr", "odp_bf", "odp_cc"}.
+    paid_per_origin : pd.Series
+        Latest-diagonal paid values per origin.  Always used as the offset for
+        IBNR computation (``mean_ibnr = mean_ultimate - paid_to_date``),
+        regardless of which loss column was modelled.
     n_sims : int
     rho : float
     apriori : float
@@ -626,7 +668,8 @@ def run_methods_on_triangle(
                 continue
 
             rows = _samples_to_rows(
-                per_origin_sim, loss_per_origin, origins, lob, group_id, loss_type, method
+                per_origin_sim, loss_per_origin, paid_per_origin,
+                origins, lob, group_id, loss_type, method,
             )
             all_rows.extend(rows)
 
@@ -656,6 +699,8 @@ def iterate_triangles(
     df : pd.DataFrame
         Long-format data with columns: origin, dev, plus the columns listed in
         ``loss_cols``, and optionally lob, group_id, premium.
+        The ``paid`` column must be present — it is used as the offset for IBNR
+        computation regardless of which loss column is modelled.
     methods : list[str]
     loss_cols : list[str]
         Loss columns to model (e.g. ["paid"] or ["paid", "case_incurred"]).
@@ -665,6 +710,12 @@ def iterate_triangles(
     -------
     pd.DataFrame with output schema
     """
+    if "paid" not in df.columns:
+        raise ValueError(
+            "IBNR requires a `paid` column. Either include `paid` in the input "
+            "or pass `--loss-col paid` (and only paid)."
+        )
+
     # Normalize optional columns
     if "lob" not in df.columns:
         df = df.copy()
@@ -687,6 +738,18 @@ def iterate_triangles(
 
     all_rows = []
     for (lob, group_id), sub_df in iterator:
+        # Build the paid latest-diagonal Series ONCE per (lob, group_id) so that
+        # every loss_col shares the same paid_to_date offset for IBNR.
+        try:
+            paid_tri = df_to_triangle(sub_df, value_col="paid")
+            paid_per_origin = _loss_to_date_per_origin(paid_tri)
+        except Exception as exc:
+            log.error(
+                "lob=%s group_id=%s: failed to build paid triangle for IBNR offset: %s",
+                lob, group_id, exc, exc_info=True,
+            )
+            continue
+
         for loss_col in loss_cols:
             if loss_col not in sub_df.columns:
                 log.warning(
@@ -716,6 +779,7 @@ def iterate_triangles(
                     loss_tri,
                     prem_series,
                     methods=methods,
+                    paid_per_origin=paid_per_origin,
                     n_sims=n_sims,
                     rho=rho,
                     apriori=apriori,
@@ -734,7 +798,8 @@ def iterate_triangles(
 
     if not all_rows:
         return pd.DataFrame(columns=[
-            "lob", "group_id", "loss_type", "method", "accident_year", "loss_to_date",
+            "lob", "group_id", "loss_type", "method", "accident_year",
+            "loss_to_date", "paid_to_date",
             "mean_ultimate", "mean_ibnr", "cv_ibnr",
             "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
         ])
@@ -750,6 +815,24 @@ def _run_single_group(args):
     """Worker function for multiprocessing pool."""
     (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, random_seed = args
     all_rows = []
+
+    # Build paid latest-diagonal once for this group.
+    if "paid" not in sub_df.columns:
+        log.error(
+            "lob=%s group_id=%s: `paid` column missing — cannot compute IBNR offset",
+            lob, group_id,
+        )
+        return all_rows
+    try:
+        paid_tri = df_to_triangle(sub_df, value_col="paid")
+        paid_per_origin = _loss_to_date_per_origin(paid_tri)
+    except Exception as exc:
+        log.error(
+            "lob=%s group_id=%s: failed to build paid triangle for IBNR offset: %s",
+            lob, group_id, exc,
+        )
+        return all_rows
+
     for loss_col in loss_cols:
         if loss_col not in sub_df.columns or sub_df[loss_col].isna().all():
             continue
@@ -762,6 +845,7 @@ def _run_single_group(args):
 
             rows = run_methods_on_triangle(
                 loss_tri, prem_series, methods=methods,
+                paid_per_origin=paid_per_origin,
                 n_sims=n_sims, rho=rho, apriori=apriori,
                 random_seed=random_seed, lob=lob, group_id=group_id,
                 loss_type=loss_col,
@@ -777,6 +861,12 @@ def iterate_triangles_parallel(
 ):
     """Parallel version of iterate_triangles using multiprocessing.Pool."""
     import multiprocessing
+
+    if "paid" not in df.columns:
+        raise ValueError(
+            "IBNR requires a `paid` column. Either include `paid` in the input "
+            "or pass `--loss-col paid` (and only paid)."
+        )
 
     if "lob" not in df.columns:
         df = df.copy()
@@ -800,7 +890,8 @@ def iterate_triangles_parallel(
     all_rows = [row for group_rows in results for row in group_rows]
     if not all_rows:
         return pd.DataFrame(columns=[
-            "lob", "group_id", "loss_type", "method", "accident_year", "loss_to_date",
+            "lob", "group_id", "loss_type", "method", "accident_year",
+            "loss_to_date", "paid_to_date",
             "mean_ultimate", "mean_ibnr", "cv_ibnr",
             "ibnr_p5", "ibnr_p50", "ibnr_p75", "ibnr_p95",
         ])
@@ -936,6 +1027,17 @@ def main(argv=None):
             sys.exit(1)
         df[lc] = pd.to_numeric(df[lc], errors="coerce")
 
+    # The paid column must always be present for IBNR computation.
+    if "paid" not in df.columns:
+        log.error(
+            "IBNR requires a `paid` column. Either include `paid` in the input "
+            "or pass `--loss-col paid` (and only paid). "
+            "Available columns: %s",
+            list(df.columns),
+        )
+        sys.exit(1)
+    df["paid"] = pd.to_numeric(df["paid"], errors="coerce")
+
     log.info(
         "Loaded %d rows — LOBs: %s",
         len(df),
@@ -984,6 +1086,7 @@ def main(argv=None):
                     f"  LOB={row['lob']} | group={row['group_id']} | "
                     f"loss_type={row['loss_type']:15s} | "
                     f"method={row['method']:8s} | "
+                    f"paid_to_date={row['paid_to_date']:>12,.0f} | "
                     f"mean_ibnr={row['mean_ibnr']:>12,.0f} | "
                     f"cv={row['cv_ibnr']:.3f} | "
                     f"p95={row['ibnr_p95']:>12,.0f}"

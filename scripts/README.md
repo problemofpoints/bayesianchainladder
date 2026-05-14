@@ -22,13 +22,13 @@ CSV file with one row per (origin, dev) observation:
 |--------|------|----------|-------------|
 | `origin` | int | yes | Accident year (e.g. 2001) |
 | `dev` | int | yes | Development age in months (12, 24, 36, …) |
-| `paid` | numeric | yes* | Cumulative paid losses at this development age |
+| `paid` | numeric | **yes** | Cumulative paid losses at this development age — always required, even when modelling `case_incurred` |
 | `case_incurred` | numeric | no* | Cumulative case-incurred losses (required for `--loss-col case_incurred` or `--loss-col both`) |
 | `lob` | string | no | Line of business (default: `all`) |
 | `group_id` | string | no | Company / entity identifier (default: `all`) |
 | `premium` | numeric | no | Earned premium for the origin year — required for `odp_bf` and `odp_cc` |
 
-\* At least one loss column must be present. The column used is selected via `--loss-col`.
+\* `paid` is always required. `--loss-col` selects which column(s) to *model*; IBNR is always computed as `ultimate − paid_to_date` regardless of the modelled column.
 
 The script runs one triangle per unique `(lob, group_id)` combination.
 
@@ -43,14 +43,28 @@ One row per `(lob, group_id, loss_type, method, accident_year)` plus a `"Total"`
 | `loss_type` | Loss column that was modelled (e.g. `paid`, `case_incurred`) |
 | `method` | `mack / odp / odp_corr / odp_bf / odp_cc` |
 | `accident_year` | Origin year or `"Total"` |
-| `loss_to_date` | Cumulative loss at the latest diagonal |
-| `mean_ultimate` | Mean ultimate (loss_to_date + mean IBNR) |
-| `mean_ibnr` | Mean IBNR from the distribution |
+| `loss_to_date` | Latest-diagonal value of the *modelled* loss column (`paid` or `case_incurred`) — informational only |
+| `paid_to_date` | Latest-diagonal value of the `paid` column — the offset used for IBNR |
+| `mean_ultimate` | Mean ultimate = `paid_to_date + mean_ibnr` |
+| `mean_ibnr` | Mean IBNR = `mean_ultimate − paid_to_date` (always paid-based) |
 | `cv_ibnr` | Coefficient of variation of the IBNR distribution |
 | `ibnr_p5` | 5th percentile of IBNR |
 | `ibnr_p50` | Median IBNR |
 | `ibnr_p75` | 75th percentile |
 | `ibnr_p95` | 95th percentile |
+
+### IBNR convention
+
+**IBNR is always computed as `ultimate − paid_to_date` for ALL loss types.**
+
+- The `paid` column is required in the input even when modelling `case_incurred`
+  (it is used as the offset for IBNR).
+- `loss_to_date` shows the modelled column's latest-diagonal value (`paid` or
+  `case_incurred`); `paid_to_date` always shows paid.
+- When `loss_type = paid`, `loss_to_date == paid_to_date`.
+- When `loss_type = case_incurred`, `loss_to_date` shows case-incurred
+  (typically higher than paid), while `paid_to_date` shows paid; IBNR uses
+  `paid_to_date` so it represents the true incurred-but-not-paid amount.
 
 ## Usage
 
@@ -144,6 +158,12 @@ paid       odp_cc    20,000,000   0.09
   inlined rather than imported from `bayesianchainladder`.
 - **Fault-tolerant**: errors in individual triangles are logged and skipped;
   the script continues with remaining triangles.
+- **IBNR always paid-based**: `paid` must be present in the input. IBNR is
+  computed as `ultimate − paid_to_date` for every loss type. When modelling
+  `case_incurred`, the model produces a case-incurred ultimate; IBNR is then
+  `case_incurred_ultimate − paid_to_date`, which correctly measures the
+  incurred-but-not-paid reserve. `loss_to_date` records the modelled column's
+  latest diagonal for reference; `paid_to_date` is the IBNR offset.
 - **Premium optional**: if the `premium` column is absent or all-null, `odp_bf`
   and `odp_cc` are automatically skipped with a warning.
 - **Development convention**: `dev` values are elapsed months since accident
