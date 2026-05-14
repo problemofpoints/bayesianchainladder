@@ -166,11 +166,54 @@ The new parametric approach:
 This is robust to negative incrementals and benefits from the same lognormal
 calibration improvement as `odp_corr`.
 
-### Final calibration table
+### Final calibration table (lognormal PV, rho=0.3, n_sims=5000)
 
-*(Results will be populated once `22_final_calibration.py` completes.)*
+KS statistic vs uniform (lower = better); C80% = % of actuals in central 80% interval.
 
-See `cache/meyers_final_calibration.csv` for the full table after the sweep.
+| Method | Loss type | N | Mean pctl | C50% | C80% | KS stat | Med CV | Med |%err| |
+|--------|-----------|:-:|:---------:|:----:|:----:|:-------:|:------:|:---------:|
+| odp | case_incurred | 200 | 0.523 | 50.0% | 74.5% | **0.066** | 0.442 | 3.0% |
+| odp_corr | paid | 200 | 0.442 | 43.5% | 69.5% | **0.151** | 0.318 | 3.8% |
+| mack | case_incurred | 200 | 0.527 | 31.0% | 53.5% | 0.175 | 0.135 | 2.8% |
+| odp_param | paid | 200 | 0.429 | 38.5% | 66.0% | 0.176 | 0.267 | 3.8% |
+| odp_param | case_incurred | 200 | 0.567 | 29.0% | 50.5% | 0.200 | 0.250 | 2.8% |
+| odp_corr | case_incurred | 200 | 0.572 | 29.0% | 54.5% | 0.208 | 0.273 | 2.8% |
+| odp | paid | 200 | 0.382 | 29.5% | 53.0% | 0.261 | 0.190 | 3.9% |
+| mack | paid | 200 | 0.372 | 30.0% | 50.0% | 0.266 | 0.159 | 3.9% |
+| odp_corr_cc | paid | 200 | 0.310 | 26.0% | 49.0% | 0.341 | 0.201 | 4.4% |
+| odp_corr_bf | paid | 200 | 0.348 | 16.5% | 27.5% | 0.438 | 0.096 | 4.7% |
+| odp_corr_cc | case_incurred | 200 | 0.245 | 23.5% | 41.0% | 0.453 | 0.259 | 5.2% |
+| odp_bf | paid | 200 | 0.344 | 14.5% | 25.0% | 0.467 | 0.080 | 4.7% |
+| odp_cc | paid | 200 | 0.273 | 15.0% | 27.0% | 0.476 | 0.119 | 4.4% |
+| odp_corr_bf | case_incurred | 200 | 0.243 | 16.0% | 36.5% | 0.490 | 0.144 | 4.7% |
+| odp_bf | case_incurred | 200 | 0.234 | 14.5% | 32.0% | 0.522 | 0.127 | 4.6% |
+| odp_cc | case_incurred | 200 | 0.221 | 16.0% | 28.0% | 0.545 | 0.157 | 4.8% |
+
+**Winners**: `odp_corr` (paid, KS=0.151) and `odp` (case_incurred, KS=0.066).
+
+### Key findings
+
+1. **Best overall**: `odp_corr` with lognormal process variance achieves the best
+   calibration on paid data (KS=0.151, C80%=69.5%). This is the recommended method
+   for paid loss triangles.
+
+2. **BF/CC with fixed apriori=0.65 is systematically over-reserved**: Mean percentiles
+   of 0.22–0.35 (vs ideal 0.50) indicate actuals consistently fall in the upper tail of
+   the BF/CC distributions. The Meyers triangles tend to develop less than expected,
+   making a fixed ELR prior of 0.65 too low. If using BF/CC, set `--apriori` to a value
+   calibrated for the specific book; don't use the default 0.65 uncritically.
+
+3. **Lognormal vs ODP process variance**: `odp_corr` with lognormal (KS=0.151)
+   improves substantially over ODP process variance (KS~0.30 from v2 results).
+
+4. **odp_param vs odp_corr**: Adding rho=0.3 calendar-year correlation further
+   improves calibration on paid data (odp_param KS=0.176 → odp_corr KS=0.151).
+
+5. **Case-incurred**: The non-parametric `odp` bootstrap achieves near-perfect
+   calibration on case_incurred (KS=0.066), similar to v1/v2 results. Parametric
+   methods are slightly over-dispersed on case_incurred.
+
+See `cache/meyers_final_calibration.csv` for the full table.
 
 ### Figures (v4)
 

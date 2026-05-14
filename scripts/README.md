@@ -34,18 +34,21 @@ and `scipy` — no `bayesianchainladder` package needed.
 
 KS statistic against uniform — lower is better calibrated (ideal = 0, uniform CDF):
 
-| Method | Paid KS | Case-Incurred KS |
-|--------|:-------:|:----------------:|
-| `mack` | ~0.22 | ~0.30 |
-| `odp` | ~0.28 | ~0.30 |
-| `odp_param` | ~0.18 | ~0.25 |
-| `odp_corr` | ~0.15 | ~0.21 |
-| `odp_bf` | *TBD* | *TBD* |
-| `odp_cc` | *TBD* | *TBD* |
-| `odp_corr_bf` | *TBD* | *TBD* |
-| `odp_corr_cc` | *TBD* | *TBD* |
+| Method | Paid KS | Case-Incurred KS | Notes |
+|--------|:-------:|:----------------:|-------|
+| `mack` | 0.266 | 0.175 | Under-dispersed |
+| `odp` | 0.261 | **0.066** | Best for case_incurred |
+| `odp_param` | 0.176 | 0.200 | |
+| `odp_corr` | **0.151** | 0.208 | Best for paid |
+| `odp_bf` | 0.467 | 0.522 | Over-reserved with apriori=0.65 |
+| `odp_cc` | 0.476 | 0.545 | Over-reserved with default ELR |
+| `odp_corr_bf` | 0.438 | 0.490 | Over-reserved with apriori=0.65 |
+| `odp_corr_cc` | 0.341 | 0.453 | Closest of BF/CC group |
 
-*BF/CC calibration results to be added after the final Meyers back-test completes.*
+**Note on BF/CC methods**: The high KS values reflect the Meyers (2015) triangles
+being systematically well-developed relative to the fixed `apriori=0.65`. When using
+BF/CC, calibrate `--apriori` to your book's historical ELR; the 0.65 default is a
+placeholder and will over-reserve in portfolios with lower loss ratios.
 
 ## Defaults
 
