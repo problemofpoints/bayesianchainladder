@@ -116,3 +116,63 @@ Delta = case_incurred KS - paid KS (positive = case_incurred harder to calibrate
 - `figures/standalone_pp_paid_v2.png` — PP chart for paid
 - `figures/standalone_pp_case_incurred_v2.png` — PP chart for case_incurred
 - `cache/standalone_calibration_v2.csv` — per-triangle calibration detail
+
+---
+
+## v3 Analysis: Process Variance Calibration (lognormal default)
+
+Previous experiments (script `21_process_variance_calibration.py`) showed that
+**lognormal process variance** cuts the KS statistic dramatically:
+
+| Process variance | KS (paid) | KS (case_incurred) |
+|------------------|:---------:|:-----------------:|
+| ODP (Var=phi*mu) | ~0.30 | ~0.30 |
+| Gamma | ~0.39 | ~0.39 |
+| NegBin | ~0.39 | ~0.39 |
+| **Lognormal** | **~0.15** | **~0.21** |
+
+This motivated changing the script default from `--process-variance odp` to
+`--process-variance lognormal`, and `--rho` from 0.1 to 0.3 (matching
+Clark/Ding/Zhou 2022 empirical midpoint).
+
+---
+
+## v4 Analysis: Final 8-Method Comparison
+
+**Date**: see git log (commit on `prior-elicitation-2026` branch).
+
+### Setup
+
+- **Data**: 200 Meyers triangles (50 each for comauto, ppauto, wkcomp, othliab)
+- **Methods**: mack, odp, odp_param, odp_corr, odp_bf, odp_cc, odp_corr_bf, odp_corr_cc
+- **Defaults**: `--process-variance lognormal --rho 0.3 --n-sims 5000 --apriori 0.65`
+- **Script**: `scripts/run_stochastic_reserving.py`
+- **Analysis**: `references/meyers-backtest/22_final_calibration.py`
+- **Outputs**: `cache/meyers_final.csv`, `cache/meyers_final_samples.parquet`
+
+### Key changes in BF/CC vs v1/v2
+
+The old `odp_bf` and `odp_cc` used `cl.BootstrapODPSample` (non-parametric residual
+bootstrap) — the same approach as plain `odp` — then applied BF/CC on each resample.
+These had poor calibration on paid data (KS ~0.35–0.37) because residual resampling
+artifacts inflated IBNR uncertainty.
+
+The new parametric approach:
+1. Generates n_sims resampled triangles using lognormal process variance
+   (sigma² estimated from CV² of chain-ladder residuals)
+2. Stacks all simulations into a single batched chainladder Triangle
+3. Applies `cl.BornhuetterFerguson` or `cl.CapeCod` once in batch
+
+This is robust to negative incrementals and benefits from the same lognormal
+calibration improvement as `odp_corr`.
+
+### Final calibration table
+
+*(Results will be populated once `22_final_calibration.py` completes.)*
+
+See `cache/meyers_final_calibration.csv` for the full table after the sweep.
+
+### Figures (v4)
+
+- `figures/final_calibration_grid.png` — 8×2 histogram grid (8 methods × 2 loss types)
+- `figures/final_pp_chart.png` — PP chart (all 8 methods × 2 loss types overlaid)
