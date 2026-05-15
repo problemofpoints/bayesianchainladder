@@ -764,6 +764,49 @@ def df_to_triangle(df, value_col="paid", origin_col="origin", dev_col="dev"):
     return tri
 
 
+def _lookup_premium_for_period(period_obj, prem_series):
+    """Return the premium value for a single chainladder Period origin.
+
+    The ``prem_series`` index may be keyed by:
+    - int year (e.g. 2020) — annual origins built from integer origin column
+    - date string "YYYY-MM-DD" matching the *start* of the period — used by
+      semi-annual/quarterly callers who supply period-start origin dates
+    - date string "YYYY-MM-DD" matching the *end* of the period — used by
+      quarterly callers who supply end-of-quarter origin dates
+
+    All three formats are tried in order; the first match wins.  This makes
+    ``_premium_as_exposure`` grain-agnostic without any changes to callers.
+    """
+    # 1. Try int year (backward-compatible for annual with int-keyed series).
+    try:
+        key = int(str(period_obj).split("-")[0])
+        val = prem_series.get(key, None)
+        if val is not None:
+            return float(val)
+    except (ValueError, AttributeError):
+        pass
+
+    # 2. Try period start_time as "YYYY-MM-DD" string (semi-annual: "2020-01-01").
+    try:
+        key = period_obj.start_time.strftime("%Y-%m-%d")
+        val = prem_series.get(key, None)
+        if val is not None:
+            return float(val)
+    except AttributeError:
+        pass
+
+    # 3. Try period end_time as "YYYY-MM-DD" string (quarterly: "2020-03-31").
+    try:
+        key = period_obj.end_time.strftime("%Y-%m-%d")
+        val = prem_series.get(key, None)
+        if val is not None:
+            return float(val)
+    except AttributeError:
+        pass
+
+    return float("nan")
+
+
 def _premium_as_exposure(loss_tri, prem_series):
     """Build a per-origin exposure triangle from a premium Series.
 
@@ -772,16 +815,18 @@ def _premium_as_exposure(loss_tri, prem_series):
     loss_tri : chainladder.Triangle
         The loss triangle (used as a structural template).
     prem_series : pd.Series
-        Index = origin year (int), values = premium. Built from the
-        ``premium`` column of the input DataFrame.
+        Premium per origin.  The index may be keyed by int year (annual),
+        "YYYY-MM-DD" period-start date (semi-annual), or "YYYY-MM-DD"
+        period-end date (quarterly).  All formats are handled automatically
+        by ``_lookup_premium_for_period``.
 
     Returns
     -------
     chainladder.Triangle with shape ``(1, 1, n_origin, 1)``
     """
-    paid_origins = [int(str(o).split("-")[0]) for o in loss_tri.origin]
     prem_values = np.array(
-        [prem_series.get(y, np.nan) for y in paid_origins], dtype=float
+        [_lookup_premium_for_period(o, prem_series) for o in loss_tri.origin],
+        dtype=float,
     )
     exposure = loss_tri.latest_diagonal.copy()
     exposure.values = prem_values[np.newaxis, np.newaxis, :, np.newaxis]
