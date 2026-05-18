@@ -9,6 +9,7 @@ import bambi as bmb
 import pymc as pm
 
 from bayesianchainladder.models import (
+    _get_family,
     build_bambi_model,
     build_csr_model,
     extract_parameter_summary,
@@ -164,6 +165,81 @@ class TestFamilyMapping:
                 family=family,
             )
             assert isinstance(model, bmb.Model)
+
+    def test_gamma_default_link_returns_string(self, sample_data):
+        """Gamma without explicit link (or with 'inverse') returns a string spec."""
+        spec_no_link = _get_family("gamma")
+        assert spec_no_link == "gamma"
+
+        spec_inverse = _get_family("gamma", "inverse")
+        assert spec_inverse == "gamma"
+
+    def test_gamma_log_link_returns_family_object(self, sample_data):
+        """Gamma with link='log' returns a bmb.Family with log mu-link."""
+        spec = _get_family("gamma", "log")
+        assert isinstance(spec, bmb.Family)
+        # The mu link must be the log link.
+        assert spec.link["mu"].name == "log"
+
+    def test_gamma_log_link_model_creation(self, sample_data):
+        """build_bambi_model with family='gamma', link='log' creates a valid model."""
+        model = build_bambi_model(
+            sample_data,
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+        )
+        assert isinstance(model, bmb.Model)
+        assert model.family.link["mu"].name == "log"
+
+    @pytest.mark.slow
+    def test_gamma_log_link_inference_is_log_scale(self, sample_data):
+        """Fit gamma+log model and confirm intercept is on the log scale.
+
+        Under a log link, the intercept approximates log(mean(y)).  Under the
+        gamma inverse link it would instead approximate 1/mean(y) ≈ 0.01.
+        """
+        import warnings
+
+        model = build_bambi_model(
+            sample_data,
+            formula="incremental ~ 1",
+            family="gamma",
+            link="log",
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            idata = model.fit(draws=200, tune=100, chains=1, random_seed=42, progressbar=False)
+
+        intercept_mean = float(idata.posterior["Intercept"].values.mean())
+        log_mean_y = float(np.log(np.mean(sample_data["incremental"])))
+        # Under log link, intercept ~ log(mean(y)) ≈ 4.5; under inverse link it would be ~0.01.
+        assert abs(intercept_mean - log_mean_y) < 2.0, (
+            f"Intercept {intercept_mean:.3f} not near log(mean(y))={log_mean_y:.3f}; "
+            "log link may not be applied."
+        )
+
+    def test_wald_log_link_returns_family_object(self, sample_data):
+        """_get_family('wald', 'log') returns a Bambi Family with mu's link == log."""
+        fam = _get_family("wald", "log")
+        assert hasattr(fam, "link")
+        assert fam.link["mu"].name == "log"
+
+    def test_wald_default_link_returns_string(self, sample_data):
+        """_get_family('wald') returns the string for default (inverse_squared) link."""
+        assert _get_family("wald") == "wald"
+
+    def test_t_default_link_returns_string(self):
+        """t family with default (identity) link returns plain string."""
+        assert _get_family("t") == "t"
+        assert _get_family("student_t") == "t"
+        assert _get_family("studentt") == "t"
+
+    def test_t_log_link_returns_family_object(self):
+        """t family with link='log' returns a bmb.Family with log mu-link."""
+        fam = _get_family("t", "log")
+        assert hasattr(fam, "link")
+        assert fam.link["mu"].name == "log"
 
 
 @pytest.fixture

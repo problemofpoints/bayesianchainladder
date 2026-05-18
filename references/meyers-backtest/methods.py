@@ -1,0 +1,637 @@
+"""Method wrappers for the Meyers backtest.
+
+Each wrapper mirrors the signature of reservetestr.testr_mack_chainladder:
+
+    fn(train_triangles, test_triangles, loss_type, actual_ultimates, **kwargs)
+        -> dict | None
+
+The returned dict always has the schema:
+    {
+        actual_ultimate, actual_unpaid,
+        mean_ultimate_est, mean_unpaid_est,
+        stddev_est, cv_unpaid_est,
+        implied_pctl,
+        status,          # "ok", "skipped:negative_incrementals", "error:<Type>:<msg>", etc.
+    }
+"""
+from __future__ import annotations
+
+import warnings
+from typing import Dict, Optional
+
+import chainladder as cl
+import numpy as np
+
+from reservetestr.utils import latest_cumulative_sum, safe_divide
+
+LossTypeMapping = Dict[str, Optional[cl.Triangle]]
+
+_NAN_RESULT = {
+    "actual_ultimate": float("nan"),
+    "actual_unpaid": float("nan"),
+    "mean_ultimate_est": float("nan"),
+    "mean_unpaid_est": float("nan"),
+    "stddev_est": float("nan"),
+    "cv_unpaid_est": float("nan"),
+    "implied_pctl": float("nan"),
+}
+
+
+def _negative_incrementals_skip(actual_ultimates: Optional[dict], loss_type: str, train_triangles: LossTypeMapping) -> dict:
+    """Return a skip result for negative-incrementals failure."""
+    actual_ultimate = _resolve_actual(actual_ultimates, loss_type)
+    if actual_ultimate is None:
+        actual_ultimate = float("nan")
+    tri = train_triangles.get(loss_type)
+    latest_observed = latest_cumulative_sum(tri) if tri is not None else float("nan")
+    actual_unpaid = actual_ultimate - latest_observed if (
+        np.isfinite(actual_ultimate) and np.isfinite(latest_observed)
+    ) else float("nan")
+    return {
+        "actual_ultimate": actual_ultimate,
+        "actual_unpaid": actual_unpaid,
+        "mean_ultimate_est": float("nan"),
+        "mean_unpaid_est": float("nan"),
+        "stddev_est": float("nan"),
+        "cv_unpaid_est": float("nan"),
+        "implied_pctl": float("nan"),
+        "status": "skipped:negative_incrementals",
+    }
+
+
+def _has_negative_incrementals(triangle: cl.Triangle) -> bool:
+    """Return True if the triangle has any negative incremental values."""
+    try:
+        if triangle.is_cumulative:
+            inc = triangle.cum_to_incr()
+        else:
+            inc = triangle
+        vals = np.asarray(inc.values, dtype=float)
+        finite = vals[np.isfinite(vals)]
+        return bool((finite < 0).any())
+    except Exception:
+        return False
+
+
+def _resolve_actual(actual_ultimates: Optional[dict], loss_type: str) -> Optional[float]:
+    if not actual_ultimates:
+        return None
+    val = actual_ultimates.get(loss_type)
+    if val is None or np.isnan(val):
+        return None
+    return float(val)
+
+
+def _get_triangle(
+    triangles: LossTypeMapping, loss_type: str
+) -> Optional[cl.Triangle]:
+    if loss_type not in triangles:
+        raise ValueError(f"Unknown loss_type {loss_type!r}")
+    return triangles[loss_type]
+
+
+def _empirical_pctl(samples: np.ndarray, actual: float) -> float:
+    """Empirical CDF P(X <= actual) from a sample array."""
+    samples = np.asarray(samples, dtype=float)
+    finite = samples[np.isfinite(samples)]
+    if finite.size == 0:
+        return float("nan")
+    return float(np.mean(finite <= actual))
+
+
+# ---------------------------------------------------------------------------
+# CorrelatedBootstrapODP wrapper
+# ---------------------------------------------------------------------------
+
+
+def testr_correlated_bootstrap_odp(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    n_sims: int = 1000,
+    hat_adj: bool = True,
+    random_state: int = 22,
+    **kwargs,
+) -> Optional[dict]:
+    """Back-test wrapper for CorrelatedBootstrapODPSample.
+
+    Parameters
+    ----------
+    line : str
+        Meyers line name (used to look up rho from the prior cache).
+    """
+    try:
+        from bayesianchainladder import CorrelatedBootstrapODPSample
+        from _common import load_rho_for_line
+
+        triangle = _get_triangle(train_triangles, loss_type)
+        if triangle is None:
+            return None
+
+        rho = load_rho_for_line(line) if line else 0.0
+
+        bootstrap = CorrelatedBootstrapODPSample(
+            n_sims=n_sims,
+            rho=rho,
+            hat_adj=hat_adj,
+            random_state=random_state,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            bootstrap.fit(triangle)
+            resampled = bootstrap.transform(triangle)
+
+        # Fit chain ladder to each simulated triangle and extract total ultimates
+        model = cl.Chainladder().fit(resampled)
+        ult_vals = np.asarray(model.ultimate_.values, dtype=float)
+        # shape: (n_sims, 1, n_origin, n_dev) — sum over origins
+        samples = np.nansum(ult_vals, axis=(1, 2, 3))  # (n_sims,)
+
+        if samples.size == 0:
+            return None
+
+        mean_ultimate = float(np.nanmean(samples))
+        stddev_est = float(np.nanstd(samples, ddof=1)) if samples.size > 1 else float("nan")
+        latest_observed = latest_cumulative_sum(triangle)
+        actual_ultimate = _resolve_actual(actual_ultimates, loss_type)
+        if actual_ultimate is None:
+            test_tri = _get_triangle(test_triangles, loss_type)
+            if test_tri is None:
+                return None
+            actual_ultimate = latest_cumulative_sum(test_tri)
+
+        actual_unpaid = actual_ultimate - latest_observed
+        mean_unpaid_est = mean_ultimate - latest_observed
+        cv_unpaid_est = safe_divide(stddev_est, mean_unpaid_est)
+        implied_pctl = _empirical_pctl(samples, actual_ultimate)
+
+        return {
+            "actual_ultimate": actual_ultimate,
+            "actual_unpaid": actual_unpaid,
+            "mean_ultimate_est": mean_ultimate,
+            "mean_unpaid_est": mean_unpaid_est,
+            "stddev_est": stddev_est,
+            "cv_unpaid_est": cv_unpaid_est,
+            "implied_pctl": implied_pctl,
+            "status": "ok",
+        }
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+# ---------------------------------------------------------------------------
+# BayesianCSR wrapper
+# ---------------------------------------------------------------------------
+
+
+def testr_bayesian_csr(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    draws: int = 1000,
+    tune: int = 1000,
+    chains: int = 2,
+    target_accept: float = 0.95,
+    random_seed: int = 22,
+    **kwargs,
+) -> Optional[dict]:
+    """Back-test wrapper for BayesianCSR.
+
+    Parameters
+    ----------
+    line : str
+        Meyers line name (used to look up priors and exposure).
+    group_id : int
+        Meyers group_id (used to load the net earned premium exposure triangle).
+    """
+    try:
+        from bayesianchainladder import BayesianCSR
+        from _common import load_csr_priors_for_line, load_exposure_triangle
+
+        triangle = _get_triangle(train_triangles, loss_type)
+        if triangle is None:
+            return None
+
+        # Build premium triangle from Meyers exposure data
+        prem_tri = load_exposure_triangle(line, group_id)
+
+        # Load line-specific priors
+        priors = load_csr_priors_for_line(line) if line else None
+
+        model = BayesianCSR(
+            priors=priors,
+            draws=draws,
+            tune=tune,
+            chains=chains,
+            target_accept=target_accept,
+            random_seed=random_seed,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(triangle, premium_triangle=prem_tri)
+
+        # reserves_posterior_ has dims (origin, sample), values = IBNR per origin
+        reserves = model.reserves_posterior_  # xr.DataArray (origin, sample)
+        total_ibnr_samples = np.asarray(reserves.sum(dim="origin").values, dtype=float)
+
+        # latest observed across all origins
+        latest_observed = latest_cumulative_sum(triangle)
+        actual_ultimate = _resolve_actual(actual_ultimates, loss_type)
+        if actual_ultimate is None:
+            test_tri = _get_triangle(test_triangles, loss_type)
+            if test_tri is None:
+                return None
+            actual_ultimate = latest_cumulative_sum(test_tri)
+
+        total_ult_samples = total_ibnr_samples + latest_observed
+        mean_ultimate = float(np.nanmean(total_ult_samples))
+        stddev_est = float(np.nanstd(total_ult_samples, ddof=1))
+        actual_unpaid = actual_ultimate - latest_observed
+        mean_unpaid_est = mean_ultimate - latest_observed
+        cv_unpaid_est = safe_divide(stddev_est, mean_unpaid_est)
+        implied_pctl = _empirical_pctl(total_ult_samples, actual_ultimate)
+
+        return {
+            "actual_ultimate": actual_ultimate,
+            "actual_unpaid": actual_unpaid,
+            "mean_ultimate_est": mean_ultimate,
+            "mean_unpaid_est": mean_unpaid_est,
+            "stddev_est": stddev_est,
+            "cv_unpaid_est": cv_unpaid_est,
+            "implied_pctl": implied_pctl,
+            "status": "ok",
+        }
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+# ---------------------------------------------------------------------------
+# Generic BayesianChainLadderGLM wrapper
+# ---------------------------------------------------------------------------
+
+
+def _testr_bayesian_glm(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str,
+    actual_ultimates: Optional[dict],
+    line: str,
+    group_id: int,
+    spec: str,
+    formula: str,
+    family: str,
+    link: Optional[str],
+    response_per_exposure: bool = False,
+    exposure: Optional[str] = None,
+    use_elicited_priors: bool = False,
+    init_priors_from_chainladder: bool = False,
+    chainladder_prior_sd: float = 0.5,
+    draws: int = 1000,
+    tune: int = 1000,
+    chains: int = 2,
+    target_accept: float = 0.95,
+    random_seed: int = 22,
+    **kwargs,
+) -> Optional[dict]:
+    """Generic BayesianChainLadderGLM back-test wrapper (internal).
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors via
+        ``load_glm_priors_for_line(line, spec)`` and pass them to the model.
+        When False (default), pass ``priors=None`` so the package constructs
+        adaptive data-driven priors from each triangle.
+
+    Notes
+    -----
+    ``mean_ultimate_est`` and ``mean_unpaid_est`` are named for backward
+    compatibility but are computed as the **posterior median** of finite
+    samples, not the mean.  The median is used because occasional
+    pathological draws (e.g. 10^300-magnitude values from numerical
+    instability in a small number of triangles) cause np.nanmean to be
+    dominated by outliers (Jensen-style upward bias).  The column name is
+    preserved so downstream analysis code does not need to change.
+    """
+    try:
+        from bayesianchainladder import BayesianChainLadderGLM
+        from _common import load_exposure_triangle
+
+        triangle = _get_triangle(train_triangles, loss_type)
+        if triangle is None:
+            return None
+
+        # Note: gamma family with negative incrementals is handled automatically
+        # by the auto-shift (force_positive_response=True) added in Fix 4.
+        # The legacy skip logic has been removed.
+
+        # Load premium/exposure triangle
+        prem_tri = load_exposure_triangle(line, group_id)
+
+        # Load priors only when explicitly requested; otherwise use adaptive defaults.
+        priors = None
+        if use_elicited_priors and line:
+            try:
+                from _common import load_glm_priors_for_line
+                priors = load_glm_priors_for_line(line, spec)
+            except Exception:
+                priors = None  # fall back to adaptive defaults
+
+        model = BayesianChainLadderGLM(
+            formula=formula,
+            family=family,
+            link=link,
+            exposure=exposure,
+            response_per_exposure=response_per_exposure,
+            priors=priors,
+            draws=draws,
+            tune=tune,
+            chains=chains,
+            target_accept=target_accept,
+            random_seed=random_seed,
+            init_priors_from_chainladder=init_priors_from_chainladder,
+            chainladder_prior_sd=chainladder_prior_sd,
+            force_positive_response=True,
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model.fit(triangle, exposure_triangle=prem_tri)
+
+        # reserves_posterior_: (origin, sample), values = IBNR
+        reserves = model.reserves_posterior_
+        total_ibnr_samples = np.asarray(reserves.sum(dim="origin").values, dtype=float)
+
+        latest_observed = latest_cumulative_sum(triangle)
+        actual_ultimate = _resolve_actual(actual_ultimates, loss_type)
+        if actual_ultimate is None:
+            test_tri = _get_triangle(test_triangles, loss_type)
+            if test_tri is None:
+                return None
+            actual_ultimate = latest_cumulative_sum(test_tri)
+
+        total_ult_samples = total_ibnr_samples + latest_observed
+        finite_ult = total_ult_samples[np.isfinite(total_ult_samples)]
+        mean_ultimate = float(np.median(finite_ult)) if finite_ult.size > 0 else float("nan")
+        finite_ibnr = total_ibnr_samples[np.isfinite(total_ibnr_samples)]
+        mean_unpaid_est = float(np.median(finite_ibnr)) if finite_ibnr.size > 0 else float("nan")
+        stddev_est = float(np.std(finite_ult, ddof=1)) if finite_ult.size > 1 else float("nan")
+        actual_unpaid = actual_ultimate - latest_observed
+        cv_unpaid_est = safe_divide(stddev_est, mean_unpaid_est)
+        implied_pctl = _empirical_pctl(total_ult_samples, actual_ultimate)
+
+        return {
+            "actual_ultimate": actual_ultimate,
+            "actual_unpaid": actual_unpaid,
+            "mean_ultimate_est": mean_ultimate,
+            "mean_unpaid_est": mean_unpaid_est,
+            "stddev_est": stddev_est,
+            "cv_unpaid_est": cv_unpaid_est,
+            "implied_pctl": implied_pctl,
+            "status": "ok",
+        }
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+# ---------------------------------------------------------------------------
+# Public GLM wrappers
+# ---------------------------------------------------------------------------
+
+# M1_cat: gamma + log, pure categorical chain-ladder-equivalent spec
+_FORMULA_M1_CAT = "incremental ~ 1 + C(origin) + C(dev)"
+
+# M2: gamma + log, fixed categorical origin + B-spline on dev_idx
+_FORMULA_M2 = "incremental ~ 1 + C(origin) + bs(dev_idx, df=4)"
+
+# M5_cal: gamma + log, random-intercept origin + B-spline dev + random calendar
+_FORMULA_M5_CAL = "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)"
+
+# MT5_cal: same formula, but t + identity on loss-ratio scale
+_FORMULA_MT5_CAL = "incremental ~ 1 + (1 | origin) + bs(dev_idx, df=4) + (1 | calendar)"
+
+
+def testr_glm_m1_cat(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    use_elicited_priors: bool = False,
+    **kwargs,
+) -> Optional[dict]:
+    """M1 spec: pure categorical chain-ladder-equivalent GLM (incremental ~ 1 + C(origin) + C(dev)).
+
+    This is the simplest categorical GLM that should asymptotically match ODP/Mack.
+    Uses gamma + log link with net-earned-premium exposure offset, identical to M2
+    except dev is treated as a fully-categorical factor rather than a B-spline.
+    CL-informed priors are always enabled (init_priors_from_chainladder=True).
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use CL-informed priors (init_priors_from_chainladder=True).
+    """
+    try:
+        return _testr_bayesian_glm(
+            train_triangles=train_triangles,
+            test_triangles=test_triangles,
+            loss_type=loss_type,
+            actual_ultimates=actual_ultimates,
+            line=line,
+            group_id=group_id,
+            spec="m1",
+            formula=_FORMULA_M1_CAT,
+            family="gamma",
+            link="log",
+            response_per_exposure=False,
+            exposure="net_earned_premium",
+            use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            **kwargs,
+        )
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+def testr_glm_m2(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    use_elicited_priors: bool = False,
+    **kwargs,
+) -> Optional[dict]:
+    """BCL_GLM_M2: gamma + log, C(origin) + bs(dev_idx, df=4), exposure offset.
+
+    CL-informed priors are always enabled (init_priors_from_chainladder=True).
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use CL-informed priors (init_priors_from_chainladder=True).
+    """
+    try:
+        return _testr_bayesian_glm(
+            train_triangles=train_triangles,
+            test_triangles=test_triangles,
+            loss_type=loss_type,
+            actual_ultimates=actual_ultimates,
+            line=line,
+            group_id=group_id,
+            spec="M2",
+            formula=_FORMULA_M2,
+            family="gamma",
+            link="log",
+            response_per_exposure=False,
+            exposure="net_earned_premium",
+            use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            **kwargs,
+        )
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+def testr_glm_m5_cal(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    use_elicited_priors: bool = False,
+    **kwargs,
+) -> Optional[dict]:
+    """BCL_GLM_M5_cal: gamma + log, (1|origin) + bs(dev_idx,4) + (1|calendar), exposure offset.
+
+    CL-informed priors are always enabled: (1|origin) sigma hyperprior is scaled
+    to the empirical SD of log-ultimates across origins; spline priors are
+    projected from the CL incremental pattern.
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use CL-informed priors (init_priors_from_chainladder=True).
+    """
+    try:
+        return _testr_bayesian_glm(
+            train_triangles=train_triangles,
+            test_triangles=test_triangles,
+            loss_type=loss_type,
+            actual_ultimates=actual_ultimates,
+            line=line,
+            group_id=group_id,
+            spec="M5_cal",
+            formula=_FORMULA_M5_CAL,
+            family="gamma",
+            link="log",
+            response_per_exposure=False,
+            exposure="net_earned_premium",
+            use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            **kwargs,
+        )
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+def testr_glm_mt5_cal(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    use_elicited_priors: bool = False,
+    **kwargs,
+) -> Optional[dict]:
+    """BCL_GLM_MT5_cal: t + identity, loss-ratio, (1|origin) + bs(dev_idx,4) + (1|calendar).
+
+    CL-informed priors are always enabled: (1|origin) sigma hyperprior is scaled
+    to the empirical SD of log-ultimates across origins; spline priors are
+    projected from the CL incremental loss-ratio pattern (identity scale).
+
+    Parameters
+    ----------
+    use_elicited_priors : bool, default False
+        When True, load line-specific elicited priors; when False (default),
+        use CL-informed priors (init_priors_from_chainladder=True).
+    """
+    try:
+        return _testr_bayesian_glm(
+            train_triangles=train_triangles,
+            test_triangles=test_triangles,
+            loss_type=loss_type,
+            actual_ultimates=actual_ultimates,
+            line=line,
+            group_id=group_id,
+            spec="MT5_cal",
+            formula=_FORMULA_MT5_CAL,
+            family="t",
+            link="identity",
+            response_per_exposure=True,
+            exposure="net_earned_premium",
+            use_elicited_priors=use_elicited_priors,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            **kwargs,
+        )
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}
+
+
+def testr_glm_mt5_cal_gaussian(
+    train_triangles: LossTypeMapping,
+    test_triangles: LossTypeMapping,
+    loss_type: str = "paid",
+    actual_ultimates: Optional[dict] = None,
+    line: str = "",
+    group_id: int = 0,
+    **kwargs,
+) -> Optional[dict]:
+    """MT5_cal with Gaussian family (thinner tails than t-family).
+
+    Same structure as MT5_cal but uses family="gaussian" instead of "t".
+    Hypothesis: if actual incremental loss-ratio variability is not heavy-tailed,
+    Gaussian (thinner tails) may improve calibration over the t-family, which
+    tends to push actuals toward lower percentiles due to excess tail mass.
+
+    CL-informed priors are always enabled (init_priors_from_chainladder=True).
+    """
+    try:
+        return _testr_bayesian_glm(
+            train_triangles=train_triangles,
+            test_triangles=test_triangles,
+            loss_type=loss_type,
+            actual_ultimates=actual_ultimates,
+            line=line,
+            group_id=group_id,
+            spec="MT5_cal",
+            formula=_FORMULA_MT5_CAL,
+            family="gaussian",
+            link="identity",
+            response_per_exposure=True,
+            exposure="net_earned_premium",
+            use_elicited_priors=False,
+            init_priors_from_chainladder=True,
+            chainladder_prior_sd=0.5,
+            **kwargs,
+        )
+    except Exception as e:
+        return {**_NAN_RESULT, "status": f"error:{type(e).__name__}:{str(e)[:100]}"}

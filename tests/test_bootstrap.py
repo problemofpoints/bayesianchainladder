@@ -12,6 +12,16 @@ def raa_triangle():
     return cl.load_sample("raa")
 
 
+@pytest.fixture
+def genins_premium_triangle():
+    """Synthetic premium triangle for the genins sample (10 origins)."""
+    tri = cl.load_sample("genins")
+    prem = tri.latest_diagonal.copy()
+    # Scale a round number relative to the loss triangle size
+    prem.values[:] = 5_000_000.0
+    return prem
+
+
 class TestMackChainLadder:
     def test_inherits_from_base(self):
         from bayesianchainladder.bootstrap import MackChainLadder
@@ -345,3 +355,280 @@ class TestCorrelatedBootstrapChainLadder:
             assert abs(mean / cl_total - 1) < 0.10, (
                 f"rho={rho}: mean={mean:,.0f} drifted >{10}% from CL={cl_total:,.0f}"
             )
+
+
+class TestBootstrapODPBornhuetterFerguson:
+    """Smoke tests for ODP bootstrap Bornhuetter-Ferguson."""
+
+    def test_inherits_from_base(self):
+        from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
+
+        model = BootstrapODPBornhuetterFerguson()
+        assert isinstance(model, BaseStochasticReserve)
+
+    def test_fit_returns_self(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
+
+        model = BootstrapODPBornhuetterFerguson(n_sims=100, apriori=0.65, random_seed=42)
+        result = model.fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        assert result is model
+        assert model._is_fitted is True
+
+    def test_fit_populates_reserves_posterior(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
+
+        model = BootstrapODPBornhuetterFerguson(
+            n_sims=100, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        assert model.reserves_posterior_ is not None
+        assert "origin" in model.reserves_posterior_.dims
+        assert model.reserves_posterior_.sizes["sample"] == 100
+
+    def test_summary_has_total_row(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
+
+        model = BootstrapODPBornhuetterFerguson(
+            n_sims=100, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        summary = model.summary()
+        assert "Total" in summary.index
+
+    def test_ibnr_columns(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
+
+        model = BootstrapODPBornhuetterFerguson(
+            n_sims=100, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        assert list(model.ibnr_.columns) == [
+            "mean", "std", "median", "5%", "25%", "75%", "95%"
+        ]
+
+    def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
+
+        model = BootstrapODPBornhuetterFerguson(
+            n_sims=200, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        result = model.total_summary()
+        assert np.isfinite(result.total_reserve_mean)
+        assert np.isfinite(result.total_reserve_stddev)
+        assert result.total_reserve_stddev > 0
+
+    def test_missing_exposure_raises(self, genins_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
+
+        model = BootstrapODPBornhuetterFerguson(n_sims=50)
+        with pytest.raises(ValueError, match="exposure_triangle is required"):
+            model.fit(genins_triangle)
+
+    def test_bf_ibnr_less_than_cl_ibnr(self, genins_triangle, genins_premium_triangle):
+        """B-F typically produces lower IBNR than chain ladder when premium-based
+        expected losses are below the chain-ladder indication — a basic sanity check."""
+        from bayesianchainladder.bootstrap import (
+            BootstrapODPBornhuetterFerguson,
+            BootstrapODPChainLadder,
+        )
+
+        bf = BootstrapODPBornhuetterFerguson(
+            n_sims=200, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        cl_model = BootstrapODPChainLadder(n_sims=200, random_seed=42).fit(genins_triangle)
+
+        bf_mean = bf.total_summary().total_reserve_mean
+        cl_mean = cl_model.total_summary().total_reserve_mean
+        # B-F with low apriori should produce a lower mean reserve
+        assert bf_mean < cl_mean
+
+
+class TestBootstrapODPCapeCod:
+    """Smoke tests for ODP bootstrap Cape Cod."""
+
+    def test_inherits_from_base(self):
+        from bayesianchainladder.bootstrap import BootstrapODPCapeCod
+
+        model = BootstrapODPCapeCod()
+        assert isinstance(model, BaseStochasticReserve)
+
+    def test_fit_returns_self(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPCapeCod
+
+        model = BootstrapODPCapeCod(n_sims=100, random_seed=42)
+        result = model.fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        assert result is model
+        assert model._is_fitted is True
+
+    def test_fit_populates_reserves_posterior(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPCapeCod
+
+        model = BootstrapODPCapeCod(
+            n_sims=100, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        assert model.reserves_posterior_ is not None
+        assert "origin" in model.reserves_posterior_.dims
+        assert model.reserves_posterior_.sizes["sample"] == 100
+
+    def test_summary_has_total_row(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPCapeCod
+
+        model = BootstrapODPCapeCod(
+            n_sims=100, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        summary = model.summary()
+        assert "Total" in summary.index
+
+    def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPCapeCod
+
+        model = BootstrapODPCapeCod(
+            n_sims=200, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        result = model.total_summary()
+        assert np.isfinite(result.total_reserve_mean)
+        assert np.isfinite(result.total_reserve_stddev)
+        assert result.total_reserve_stddev > 0
+
+    def test_missing_exposure_raises(self, genins_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPCapeCod
+
+        model = BootstrapODPCapeCod(n_sims=50)
+        with pytest.raises(ValueError, match="exposure_triangle is required"):
+            model.fit(genins_triangle)
+
+    def test_random_seed_makes_run_deterministic(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPCapeCod
+
+        model_a = BootstrapODPCapeCod(n_sims=100, random_seed=7).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
+        model_b = BootstrapODPCapeCod(n_sims=100, random_seed=7).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
+        assert model_a.total_summary().total_reserve_mean == pytest.approx(
+            model_b.total_summary().total_reserve_mean
+        )
+
+
+class TestCorrelatedBootstrapODPBornhuetterFerguson:
+    """Smoke tests for correlated ODP bootstrap Bornhuetter-Ferguson."""
+
+    def test_inherits_from_base(self):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+
+        model = CorrelatedBootstrapODPBornhuetterFerguson()
+        assert isinstance(model, BaseStochasticReserve)
+
+    def test_fit_returns_self(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+
+        model = CorrelatedBootstrapODPBornhuetterFerguson(
+            n_sims=100, rho=0.3, apriori=0.65, random_seed=42
+        )
+        result = model.fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        assert result is model
+        assert model._is_fitted is True
+
+    def test_summary_has_total_row(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+
+        model = CorrelatedBootstrapODPBornhuetterFerguson(
+            n_sims=100, rho=0.3, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        summary = model.summary()
+        assert "Total" in summary.index
+
+    def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+
+        model = CorrelatedBootstrapODPBornhuetterFerguson(
+            n_sims=200, rho=0.3, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        result = model.total_summary()
+        assert np.isfinite(result.total_reserve_mean)
+        assert np.isfinite(result.total_reserve_stddev)
+        assert result.total_reserve_stddev > 0
+
+    def test_missing_exposure_raises(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+
+        model = CorrelatedBootstrapODPBornhuetterFerguson(n_sims=50, apriori=0.65)
+        with pytest.raises(ValueError, match="exposure_triangle is required"):
+            model.fit(genins_triangle)
+
+    def test_rho_positive_widens_distribution(self, genins_triangle, genins_premium_triangle):
+        """Higher rho should produce a wider total reserve distribution (B-F)."""
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+
+        low = CorrelatedBootstrapODPBornhuetterFerguson(
+            n_sims=500, rho=0.0, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        high = CorrelatedBootstrapODPBornhuetterFerguson(
+            n_sims=500, rho=0.5, apriori=0.65, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+
+        assert (
+            high.total_summary().total_reserve_stddev
+            > low.total_summary().total_reserve_stddev
+        )
+
+
+class TestCorrelatedBootstrapODPCapeCod:
+    """Smoke tests for correlated ODP bootstrap Cape Cod."""
+
+    def test_inherits_from_base(self):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
+
+        model = CorrelatedBootstrapODPCapeCod()
+        assert isinstance(model, BaseStochasticReserve)
+
+    def test_fit_returns_self(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
+
+        model = CorrelatedBootstrapODPCapeCod(
+            n_sims=100, rho=0.3, random_seed=42
+        )
+        result = model.fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        assert result is model
+        assert model._is_fitted is True
+
+    def test_summary_has_total_row(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
+
+        model = CorrelatedBootstrapODPCapeCod(
+            n_sims=100, rho=0.3, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        summary = model.summary()
+        assert "Total" in summary.index
+
+    def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
+
+        model = CorrelatedBootstrapODPCapeCod(
+            n_sims=200, rho=0.3, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        result = model.total_summary()
+        assert np.isfinite(result.total_reserve_mean)
+        assert np.isfinite(result.total_reserve_stddev)
+        assert result.total_reserve_stddev > 0
+
+    def test_missing_exposure_raises(self, genins_triangle):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
+
+        model = CorrelatedBootstrapODPCapeCod(n_sims=50)
+        with pytest.raises(ValueError, match="exposure_triangle is required"):
+            model.fit(genins_triangle)
+
+    def test_rho_positive_widens_distribution(self, genins_triangle, genins_premium_triangle):
+        """Higher rho should produce a wider total reserve distribution (CC)."""
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
+
+        low = CorrelatedBootstrapODPCapeCod(
+            n_sims=500, rho=0.0, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        high = CorrelatedBootstrapODPCapeCod(
+            n_sims=500, rho=0.5, random_seed=42
+        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+
+        assert (
+            high.total_summary().total_reserve_stddev
+            > low.total_summary().total_reserve_stddev
+        )

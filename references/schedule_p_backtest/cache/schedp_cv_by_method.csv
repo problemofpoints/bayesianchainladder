@@ -1,0 +1,9 @@
+method,mean_cv_case_incurred,mean_cv_paid,median_cv_case_incurred,median_cv_paid,n_companies_case_incurred,n_companies_paid
+mack,0.6163,0.3337,0.1182,0.1575,275,275
+odp,16.1212,18.0762,0.1845,0.1925,275,275
+odp_param,0.3932,0.3458,0.2377,0.2542,275,275
+odp_corr,0.5681,0.3936,0.2723,0.3043,275,275
+odp_bf,0.2037,0.2685,0.1799,0.2447,275,275
+odp_cc,0.2248,0.2508,0.1645,0.1936,275,275
+odp_corr_bf,0.2196,0.2773,0.1911,0.2514,275,275
+odp_corr_cc,0.3257,0.3283,0.2379,0.2527,275,275

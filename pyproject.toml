@@ -37,6 +37,8 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
+    "pyarrow>=24.0.0",
+    "tabulate>=0.10.0",
 ]
 
 [build-system]
