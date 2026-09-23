@@ -273,6 +273,27 @@ class TestFullCumulativePosterior:
         assert (fut.sel(origin=2001).values == 0).all()
         np.testing.assert_allclose(fut.sel(origin=2003, dev=36).values, [10.0, 15.0, 20.0, 25.0])
 
+    def test_full_cumulative_posterior_dim_order_normalized(self, toy):
+        tri, full = toy
+        # full is (origin, dev, sample); hand ReserveSamples a differently
+        # ordered but equally valid DataArray and confirm it gets normalized.
+        reordered = xr.DataArray(
+            np.transpose(full, (2, 0, 1)),
+            dims=["sample", "origin", "dev"],
+            coords={"origin": [2001, 2002, 2003], "dev": [12, 24, 36], "sample": np.arange(4)},
+        )
+        rs = ReserveSamples(
+            tri,
+            xr.DataArray(np.zeros((3, 4)), dims=["origin", "sample"],
+                         coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)}),
+            full_cumulative_posterior=reordered,
+        )
+        assert rs.full_cumulative_posterior_.dims == ("origin", "dev", "sample")
+        np.testing.assert_allclose(
+            rs.incremental_posterior().sel(origin=2003, dev=24).values,
+            [50.0, 55.0, 60.0, 65.0],
+        )
+
     def test_summary_statistics(self, toy):
         tri, full = toy
         reserves = xr.DataArray(

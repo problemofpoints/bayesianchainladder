@@ -340,7 +340,11 @@ class ReserveSamples(BaseStochasticReserve):
         super().__init__()
         self.triangle_ = triangle.copy()
         self.reserves_posterior_ = reserves_posterior.transpose("origin", "sample")
-        self.full_cumulative_posterior_ = full_cumulative_posterior
+        self.full_cumulative_posterior_ = (
+            None
+            if full_cumulative_posterior is None
+            else full_cumulative_posterior.transpose("origin", "dev", "sample")
+        )
         self._build_reserve_summaries()
         self._is_fitted = True
 
