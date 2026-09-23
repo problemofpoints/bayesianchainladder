@@ -761,6 +761,54 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             # Compute ultimate and IBNR summaries (helper now lives in the base)
             self._build_reserve_summaries()
 
+            self._store_full_posterior(future_predictions, obs_dim, future_start)
+
+    def _store_full_posterior(
+        self, future_predictions: xr.DataArray, obs_dim: str, future_start: int
+    ) -> None:
+        """Assemble complete simulated cumulative triangles (origin, dev,
+        sample) from observed incrementals plus per-cell future predictions,
+        applying the same loss-ratio back-transform and response shift as
+        ``_compute_reserves`` so both views agree cell by cell."""
+        from ._triangle_ops import cumulative_array, cumulative_to_incremental
+
+        cum, origins, devs = cumulative_array(self.triangle_)
+        incr_obs = cumulative_to_incremental(cum)
+        observed = ~np.isnan(incr_obs)
+
+        fut = (
+            future_predictions.isel({obs_dim: slice(future_start, None)})
+            .stack(sample=["chain", "draw"])
+            .transpose(obs_dim, "sample")
+            .values
+        )
+        n_samples = fut.shape[1]
+        incr = np.repeat(np.where(observed, incr_obs, 0.0)[..., None], n_samples, axis=-1)
+        valid = observed.copy()
+
+        ep_col = self._original_exposure_col if self.response_per_exposure else None
+        if ep_col is not None and ep_col not in self.future_data_.columns:
+            ep_col = None
+
+        fut_origin = self.future_data_["origin"].values
+        fut_dev = self.future_data_["dev"].values
+        for k in range(len(self.future_data_)):
+            o, d = int(fut_origin[k]), int(fut_dev[k])
+            if o not in origins or d not in devs:
+                continue
+            i, j = origins.index(o), devs.index(d)
+            cell = np.asarray(fut[k], dtype=float)
+            if ep_col is not None:
+                cell = cell * float(self.future_data_.iloc[k][ep_col])
+            if self._response_shift != 0.0:
+                cell = cell - self._response_shift
+            incr[i, j, :] = cell
+            valid[i, j] = True
+
+        full = np.cumsum(incr, axis=1)
+        full[~valid] = np.nan
+        self._set_full_cumulative_posterior(full, origins, devs)
+
     def predict(
         self,
         triangle: cl.Triangle | None = None,

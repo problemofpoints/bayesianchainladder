@@ -1773,3 +1773,43 @@ class TestGammaAutoShift:
                 f"Model IBNR {model_ibnr:.0f} vs CL IBNR {cl_ibnr:.0f}: "
                 f"ratio={ratio:.2f} outside [0.1, 10.0]"
             )
+
+
+@pytest.mark.slow
+def test_glm_full_posterior_consistent_with_reserves():
+    import chainladder as cl
+    import numpy as np
+
+    from bayesianchainladder import BayesianChainLadderGLM
+
+    tri = cl.load_sample("genins")
+    model = BayesianChainLadderGLM(
+        formula="incremental ~ 1 + C(origin) + C(dev)",
+        family="gaussian",
+        draws=100,
+        tune=50,
+        chains=1,
+        random_seed=42,
+    ).fit(tri)
+    full = model.full_cumulative_posterior_
+    assert full.dims == ("origin", "dev", "sample")
+    assert full.shape[:2] == (10, 10)
+    assert full.shape[2] == model.reserves_posterior_.sizes["sample"]
+    cum = np.asarray(tri.values)[0, 0]
+    obs = ~np.isnan(cum)
+    np.testing.assert_allclose(
+        full.values[obs], np.repeat(cum[obs][:, None], full.shape[2], axis=1), rtol=1e-9
+    )
+    derived = model._reserves_from_full_posterior()
+    # BayesianChainLadderGLM.reserves_posterior_ intentionally omits origins
+    # with no future cells (e.g. origin 2001 in genins is fully developed —
+    # see the "ibnr_ does not include origin 2001" assertion earlier in this
+    # file), while full_cumulative_posterior_ covers every origin in the
+    # triangle. Restrict the comparison to the origins reserves_posterior_
+    # actually reports.
+    common_origins = model.reserves_posterior_.coords["origin"].values
+    np.testing.assert_allclose(
+        derived.sel(origin=common_origins).transpose("origin", "sample").values,
+        model.reserves_posterior_.transpose("origin", "sample").values,
+        rtol=1e-6, atol=1e-6,
+    )
