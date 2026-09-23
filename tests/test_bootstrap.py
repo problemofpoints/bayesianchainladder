@@ -663,6 +663,29 @@ class TestFullCumulativePosteriorWrappers:
         )
         assert not np.isnan(full.values).any()
 
+    def test_chainladder_wrapper_future_cells_carry_independent_process_noise(
+        self, genins
+    ):
+        """Regression guard: future cells must carry their own simulated
+        process noise per cell, not a deterministic emergence-pattern
+        back-fill scaled to hit a noisy endpoint. A deterministic back-fill
+        would make the ratio of any two future incremental cells for the
+        same origin constant across simulations; genuine bootstrap process
+        noise makes it vary."""
+        from bayesianchainladder.bootstrap import BootstrapODPChainLadder
+
+        model = BootstrapODPChainLadder(n_sims=200, random_seed=1).fit(genins)
+        incr = model.incremental_posterior()
+
+        origin = 2010  # most recent origin: only dev=12 observed, 24...120 future
+        ratio = incr.sel(origin=origin, dev=24) / incr.sel(origin=origin, dev=36)
+        assert float(ratio.std()) > 1e-6
+
+        future_devs = [d for d in incr.coords["dev"].values if d > 12]
+        for dev in future_devs:
+            cell_std = float(incr.sel(origin=origin, dev=dev).std("sample"))
+            assert cell_std > 0, f"dev={dev} has zero variance across samples"
+
     def test_bf_cc_wrappers_expose_full_posterior(self, genins, genins_premium_triangle):
         from bayesianchainladder.bootstrap import (
             BootstrapODPBornhuetterFerguson,

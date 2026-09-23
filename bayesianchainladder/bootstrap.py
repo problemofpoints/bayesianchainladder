@@ -313,33 +313,78 @@ def _full_posterior_from_chainladder(model_fitted, triangle):
     """Complete simulated cumulative triangles from a chainladder method fitted
     on ``n_sims`` resamples.
 
-    ``model_fitted.full_triangle_`` back-fills each simulation's future cells
-    using that simulation's own resampled latest diagonal and LDFs, ending at
-    a simulation-specific ultimate. Critically, ``chainladder`` bakes the
-    bootstrap process variance into ``ultimate_`` *before* ``full_triangle_``
-    is (re-)evaluated as a property, so ``full_triangle_`` already reflects
-    the noisy ultimate — adding ``process_variance_`` on top of it would
-    double-count that noise (verified numerically: doing so breaks the exact
-    ``ibnr_`` identity below by ~1%, far outside ``rtol=1e-6``).
+    ``model_fitted.full_triangle_`` is a live (uncached) ``@property``
+    (``chainladder/core/common.py``). Internally, during ``fit()``,
+    ``_include_process_variance`` (``chainladder/methods/base.py``) computes
+    ``full_pre = self.full_triangle_`` using the *pre-noise* deterministic
+    ultimate, injects gamma process noise into the future increments to get
+    the true per-cell noisy path ``obj``, **overwrites**
+    ``self.ultimate_.values = obj.values[..., -1:]`` with that noisy
+    terminal column, and stores ``process_variance_ = obj - full_pre``. Any
+    access to ``full_triangle_`` *after* ``fit()`` returns (including ours)
+    therefore recomputes a smooth back-fill using the already-noisy
+    ``ultimate_`` as its target — a deterministic emergence pattern scaled to
+    hit the right (noisy) endpoint, not the actual per-cell noisy path
+    ``obj``. Using ``full_triangle_`` directly is wrong two ways: it gives
+    every future cell of a simulation the same shape (no independent process
+    noise per cell — verified numerically: the ratio of two future
+    incremental cells is constant across simulations, which breaks anything
+    downstream that needs the real simulated path, e.g. a one-year Claims
+    Development Result or discounted cash flows), and naively adding
+    ``process_variance_`` on top double-counts the noise already baked into
+    ``ultimate_`` (verified numerically: breaks the ``ibnr_`` identity below
+    by ~1%, far outside ``rtol=1e-6``).
 
-    ``full_triangle_``'s cells are anchored to each simulation's own
-    (resampled) latest diagonal, not the real data. To satisfy the contract
-    that observed cells equal the real triangle exactly while still
-    preserving each simulation's own future-development *shape*, future
-    cells are reconstructed as the real latest diagonal plus the
-    simulation's own projected increment beyond its resampled latest
-    diagonal: ``real_latest + (full_triangle_ - resampled_latest)``. Since
-    ``ibnr_ = ultimate_ - resampled_latest`` (chainladder's own definition,
-    see ``MethodBase.ibnr_``), the real latest diagonal cancels out in
+    The true per-cell noisy path ``obj`` is recoverable from what *is*
+    persisted after ``fit()`` (``ultimate_`` and ``process_variance_``, both
+    fixed single-draw attributes, not re-evaluated properties)::
+
+        ultimate_pre = ultimate_ - process_variance_[..., -1:]   # undo the mutation
+        full_pre     = _get_full_triangle(X_, ultimate_pre)      # same emergence
+                                                                  # pattern, pre-noise
+        obj          = full_pre + process_variance_              # the real noisy path
+
+    ``_get_full_triangle`` is imported from ``chainladder.core.common``; it
+    is a private helper but has been stable across the 0.9.x line this
+    project pins to. ``obj[..., -1] == ultimate_`` still holds (the noise
+    reapplied exactly cancels the noise undone), so the ``ibnr_`` identity
+    below is preserved to floating-point precision.
+
+    ``obj``'s cells are anchored to each simulation's own resampled latest
+    diagonal, not the real data (chainladder resamples every cell, observed
+    or not). To satisfy the contract that observed cells equal the real
+    triangle exactly while preserving each simulation's own noisy future
+    path, future cells are rebased onto the real latest diagonal: each
+    simulation's own projected increment beyond *its* resampled latest
+    diagonal is added to the *real* latest diagonal:
+    ``real_latest + (obj - resampled_latest)``. Since chainladder defines
+    ``ibnr_ = ultimate_ - resampled_latest`` (``MethodBase.ibnr_``), the real
+    latest diagonal cancels out exactly in
     :meth:`BaseStochasticReserve._reserves_from_full_posterior`, exactly
     reproducing ``ibnr_``.
 
+    If ``process_variance_`` is unavailable (``None`` — no process-variance
+    sampler configured on the fitted triangle), falls back to
+    ``full_triangle_`` alone (parameter risk only; smooth future path, no
+    per-cell process noise).
+
     Returns ``(cumulative (n_o, n_d, S), origins, devs)``.
     """
+    from chainladder.core.common import _get_full_triangle  # private, stable in 0.9.x
+
     from ._triangle_ops import cumulative_array, latest_diagonal
 
     n_dev = triangle.values.shape[-1]
-    full = np.asarray(model_fitted.full_triangle_.values, dtype=float)[:, 0, :, :n_dev]
+
+    process_var = getattr(model_fitted, "process_variance_", None)
+    if process_var is not None:
+        ultimate_pre = model_fitted.ultimate_ - process_var.iloc[..., -1:]
+        full_pre = _get_full_triangle(model_fitted.X_, ultimate_pre)
+        obj = full_pre + process_var
+        full = np.asarray(obj.values, dtype=float)[:, 0, :, :n_dev]
+    else:
+        full = np.asarray(model_fitted.full_triangle_.values, dtype=float)[:, 0, :, :n_dev]
+
     resampled_latest = np.asarray(
         model_fitted.latest_diagonal.values, dtype=float
     )[:, 0, :, 0]
