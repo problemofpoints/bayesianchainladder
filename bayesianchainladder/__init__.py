@@ -47,6 +47,14 @@ except PackageNotFoundError:
     __version__ = "0.1.0"
 
 # Main estimators
+# Analytic prediction errors
+from .analytic import (
+    AnalyticResult,
+    mack_analytic_rmsep,
+    odp_analytic_rmsep,
+    poisson_irls,
+)
+
 # Base contract
 from .base import (
     DEFAULT_QUANTILES,
@@ -154,6 +162,11 @@ __all__ = [
     # Main estimators
     "BayesianChainLadderGLM",
     "BayesianCSR",
+    # Analytic prediction errors
+    "AnalyticResult",
+    "odp_analytic_rmsep",
+    "mack_analytic_rmsep",
+    "poisson_irls",
     # Base contract
     "BaseStochasticReserve",
     "MethodSummary",
