@@ -143,6 +143,9 @@ from .riskmeasures import (
     value_at_risk,
 )
 
+# Sensitivity analysis
+from .sensitivity import link_ratio_sensitivity, top_influential
+
 # Utility functions
 from .utils import (
     add_categorical_columns,
@@ -236,6 +239,9 @@ __all__ = [
     "create_design_info",
     "validate_triangle",
     "long_to_triangle",
+    # Sensitivity analysis
+    "link_ratio_sensitivity",
+    "top_influential",
     # Risk measures
     "value_at_risk",
     "tail_value_at_risk",
