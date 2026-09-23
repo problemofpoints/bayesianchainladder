@@ -5,10 +5,16 @@ from dataclasses import FrozenInstanceError
 
 import chainladder as cl
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
-from bayesianchainladder.base import BaseStochasticReserve, MethodSummary
+from bayesianchainladder.base import (
+    DEFAULT_QUANTILES,
+    BaseStochasticReserve,
+    MethodSummary,
+    ReserveSamples,
+)
 
 
 class TestMethodSummary:
@@ -204,3 +210,102 @@ class TestPackageExports:
 
         assert hasattr(bcl, "BayesianChainLadderGLM")
         assert hasattr(bcl, "BayesianCSR")
+
+
+class TestFullCumulativePosterior:
+    @pytest.fixture
+    def toy(self):
+        df = pd.DataFrame(
+            {
+                "origin": [2001, 2001, 2001, 2002, 2002, 2003],
+                "dev": [12, 24, 36, 12, 24, 12],
+                "value": [100.0, 150.0, 160.0, 110.0, 170.0, 120.0],
+            }
+        )
+        eval_year = df["origin"] + df["dev"] // 12 - 1
+        df["dev_date"] = pd.to_datetime(eval_year.astype(str) + "-12-31")
+        tri = cl.Triangle(
+            df, origin="origin", development="dev_date", columns=["value"],
+            cumulative=True, origin_format="%Y",
+        )
+        # (origin, dev, sample) cumulative; NaN-free, observed cells constant
+        full = np.full((3, 3, 4), np.nan)
+        full[0, :, :] = np.array([[100.0], [150.0], [160.0]])
+        full[1, 0, :] = 110.0
+        full[1, 1, :] = 170.0
+        full[1, 2, :] = [180.0, 182.0, 184.0, 186.0]
+        full[2, 0, :] = 120.0
+        full[2, 1, :] = [170.0, 175.0, 180.0, 185.0]
+        full[2, 2, :] = [180.0, 190.0, 200.0, 210.0]
+        return tri, full
+
+    def test_reserve_samples_container(self, toy):
+        tri, full = toy
+        reserves = xr.DataArray(
+            full[:, -1, :] - np.array([[160.0], [170.0], [120.0]]),
+            dims=["origin", "sample"],
+            coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)},
+        )
+        rs = ReserveSamples(tri, reserves)
+        assert isinstance(rs, BaseStochasticReserve)
+        assert rs.ibnr_.loc[2003, "mean"] == pytest.approx(75.0)
+        assert rs.full_cumulative_posterior_ is None
+        with pytest.raises(ValueError, match="per-cell"):
+            rs._require_full_posterior()
+        with pytest.raises(NotImplementedError):
+            rs.fit(tri)
+
+    def test_full_posterior_helpers(self, toy):
+        tri, full = toy
+        rs = ReserveSamples(
+            tri,
+            xr.DataArray(np.zeros((3, 4)), dims=["origin", "sample"],
+                         coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)}),
+        )
+        rs._set_full_cumulative_posterior(full, [2001, 2002, 2003], [12, 24, 36])
+        assert rs.full_cumulative_posterior_.dims == ("origin", "dev", "sample")
+        derived = rs._reserves_from_full_posterior()
+        np.testing.assert_allclose(derived.sel(origin=2002).values, [10.0, 12.0, 14.0, 16.0])
+        np.testing.assert_allclose(derived.sel(origin=2003).values, [60.0, 70.0, 80.0, 90.0])
+        incr = rs.incremental_posterior()
+        np.testing.assert_allclose(incr.sel(origin=2003, dev=24).values, [50.0, 55.0, 60.0, 65.0])
+        fut = rs.future_incremental_posterior()
+        assert (fut.sel(origin=2001).values == 0).all()
+        np.testing.assert_allclose(fut.sel(origin=2003, dev=36).values, [10.0, 15.0, 20.0, 25.0])
+
+    def test_summary_statistics(self, toy):
+        tri, full = toy
+        reserves = xr.DataArray(
+            np.array([[0.0, 0.0, 0.0, 0.0], [10.0, 12.0, 14.0, 16.0], [60.0, 70.0, 80.0, 90.0]]),
+            dims=["origin", "sample"],
+            coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)},
+        )
+        rs = ReserveSamples(tri, reserves)
+        stats = rs.summary_statistics()
+        assert list(stats.index) == [2001, 2002, 2003, "Total"]
+        assert stats.loc["Total", "mean"] == pytest.approx(88.0)
+        assert stats.loc[2003, "min"] == 60.0 and stats.loc[2003, "max"] == 90.0
+        assert "99.5%" in stats.columns and "0.5%" in stats.columns
+        assert stats.loc[2002, "cov"] == pytest.approx(np.std([10, 12, 14, 16], ddof=1) / 13.0)
+        ults = rs.summary_statistics(output="ultimates")
+        assert ults.loc[2003, "mean"] == pytest.approx(120.0 + 75.0)
+        with pytest.raises(ValueError):
+            rs.summary_statistics(output="nonsense")
+        assert len(DEFAULT_QUANTILES) == 11
+
+    def test_method_summary_new_fields_default(self):
+        s = MethodSummary(1.0, 2.0, 3.0, 4.0, 5.0)
+        assert math.isnan(s.total_reserve_99_5th_percentile)
+        assert math.isnan(s.total_reserve_min) and math.isnan(s.total_reserve_max)
+
+    def test_total_summary_populates_new_fields(self, toy):
+        tri, _ = toy
+        reserves = xr.DataArray(
+            np.array([[0.0] * 4, [10.0, 12.0, 14.0, 16.0], [60.0, 70.0, 80.0, 90.0]]),
+            dims=["origin", "sample"],
+            coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)},
+        )
+        s = ReserveSamples(tri, reserves).total_summary()
+        assert s.total_reserve_min == pytest.approx(70.0)
+        assert s.total_reserve_max == pytest.approx(106.0)
+        assert s.total_reserve_99_5th_percentile == pytest.approx(np.quantile([70, 82, 94, 106], 0.995))

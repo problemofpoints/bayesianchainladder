@@ -48,7 +48,12 @@ except PackageNotFoundError:
 
 # Main estimators
 # Base contract
-from .base import BaseStochasticReserve, MethodSummary
+from .base import (
+    DEFAULT_QUANTILES,
+    BaseStochasticReserve,
+    MethodSummary,
+    ReserveSamples,
+)
 
 # Frequentist estimators
 from .bootstrap import (
@@ -122,6 +127,8 @@ __all__ = [
     # Base contract
     "BaseStochasticReserve",
     "MethodSummary",
+    "ReserveSamples",
+    "DEFAULT_QUANTILES",
     # Frequentist estimators
     "MackChainLadder",
     "BootstrapODPChainLadder",
