@@ -2044,6 +2044,8 @@ class BayesianCSR(BaseStochasticReserve):
         Note: For fully developed origins (no future cells), Ultimate = Paid,
         StdErr = 0, and IBNR = 0 with no uncertainty.
         """
+        from ._triangle_ops import cumulative_array
+
         # Get posterior samples of model parameters
         posterior = self.idata.posterior
 
@@ -2064,6 +2066,13 @@ class BayesianCSR(BaseStochasticReserve):
         # The ultimate development period is the maximum dev in the triangle
         ultimate_dev = max(dev_levels)
         ultimate_dev_idx = dev_levels.index(ultimate_dev)
+
+        # Per-cell cumulative posterior paths (England & Verrall "Complete
+        # Cumulatives"): start from the observed diagonal, broadcast across
+        # samples, and fill in future cells origin-by-origin below.
+        cum_obs, tri_origins, tri_devs = cumulative_array(self.triangle_)
+        n_samples_total = int(np.prod(alpha.shape[:2]))
+        full_paths = np.repeat(cum_obs[..., None], n_samples_total, axis=-1)
 
         # Get origins with future cells
         origins_with_future = set()
@@ -2099,30 +2108,34 @@ class BayesianCSR(BaseStochasticReserve):
 
             if origin in origins_with_future:
                 # Origin has future cells - compute posterior predictive
-                # Compute mu at ultimate development period
-                # mu = logprem + logelr + alpha[origin] + beta[ultimate_dev] * speedup[origin]
-                mu_ultimate = (
-                    logprem
-                    + logelr
-                    + alpha[:, :, origin_idx]
-                    + beta[:, :, ultimate_dev_idx] * speedup[:, :, origin_idx]
-                )
-
-                # Get sigma at ultimate development period
-                sig_ultimate = sig[:, :, ultimate_dev_idx]
-
-                # Generate predictions for ultimate cumulative loss
-                if self.include_process_variance:
-                    # Sample from Normal(mu, sigma) and exponentiate for lognormal
-                    # This includes both parameter uncertainty and process variance
-                    logloss_samples = mu_ultimate + sig_ultimate * np.random.standard_normal(
-                        mu_ultimate.shape
+                # comonotonic paths: one standard-normal shock per (chain,
+                # draw) is shared across every future development period for
+                # this origin, so the simulated triangle is internally
+                # consistent cell-to-cell (England & Verrall "Complete
+                # Cumulatives"), while the ultimate cell reproduces exactly
+                # the distribution the original single-cell formula gives.
+                last_dev_idx = dev_levels.index(last_observed_dev)
+                future_dev_idx = list(range(last_dev_idx + 1, ultimate_dev_idx + 1))
+                z = np.random.standard_normal(alpha.shape[:2])  # one shock per (chain, draw)
+                path_cells = {}
+                for k in future_dev_idx:
+                    mu_k = (
+                        logprem
+                        + logelr
+                        + alpha[:, :, origin_idx]
+                        + beta[:, :, k] * speedup[:, :, origin_idx]
                     )
-                    ultimate_cumulative = np.exp(logloss_samples)
-                else:
-                    # Use expected value without process variance
-                    # For lognormal: E[exp(X)] = exp(mu + sigma²/2)
-                    ultimate_cumulative = np.exp(mu_ultimate + 0.5 * sig_ultimate**2)
+                    sig_k = sig[:, :, k]
+                    if self.include_process_variance:
+                        path_cells[k] = np.exp(mu_k + sig_k * z)
+                    else:
+                        path_cells[k] = np.exp(mu_k + 0.5 * sig_k**2)
+                ultimate_cumulative = path_cells[ultimate_dev_idx]
+
+                tri_i = tri_origins.index(int(origin))
+                for k, cells in path_cells.items():
+                    tri_j = tri_devs.index(int(dev_levels[k]))
+                    full_paths[tri_i, tri_j, :] = cells.reshape(-1)
 
                 # IBNR = Ultimate - Paid to date
                 ibnr = ultimate_cumulative - last_observed_cumulative
@@ -2147,6 +2160,8 @@ class BayesianCSR(BaseStochasticReserve):
         # Create reserve summaries
         if all_predictions:
             self._compute_reserve_summaries(all_predictions)
+
+        self._set_full_cumulative_posterior(full_paths, tri_origins, tri_devs)
 
     def _compute_reserve_summaries(
         self, future_predictions: dict[Any, dict[str, np.ndarray]]

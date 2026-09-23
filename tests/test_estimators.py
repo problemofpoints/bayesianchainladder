@@ -966,6 +966,34 @@ class TestBayesianCSRValidation:
             model.get_speedup_parameter()
 
 
+@pytest.mark.slow
+def test_csr_full_posterior_paths_are_monotone_and_consistent():
+    import chainladder as cl
+    import numpy as np
+
+    from bayesianchainladder import BayesianCSR
+
+    tri = cl.load_sample("genins")
+    model = BayesianCSR(draws=100, tune=50, chains=1, random_seed=42).fit(
+        tri, premium_value=5_000_000.0
+    )
+    full = model.full_cumulative_posterior_
+    assert full.dims == ("origin", "dev", "sample")
+    cum = np.asarray(tri.values)[0, 0]
+    obs = ~np.isnan(cum)
+    np.testing.assert_allclose(
+        full.values[obs], np.repeat(cum[obs][:, None], full.shape[2], axis=1), rtol=1e-9
+    )
+    derived = model._reserves_from_full_posterior()
+    np.testing.assert_allclose(
+        derived.transpose("origin", "sample").values,
+        model.reserves_posterior_.transpose("origin", "sample").values,
+        rtol=1e-6, atol=1e-6,
+    )
+    # future cumulative paths never contain NaN
+    assert not np.isnan(full.values).any()
+
+
 # ============================================================================
 # Student-t family + response_per_exposure tests
 # ============================================================================
