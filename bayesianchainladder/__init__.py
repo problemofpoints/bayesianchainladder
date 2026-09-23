@@ -66,6 +66,9 @@ from .bootstrap import (
     CorrelatedBootstrapODPSample,
     MackChainLadder,
 )
+
+# Data
+from .datasets import load_england_sample
 from .estimators import BayesianChainLadderGLM, BayesianCSR
 
 # Model building functions
@@ -112,6 +115,7 @@ from .utils import (
     compute_log_exposure_offset,
     create_design_info,
     get_future_dataframe,
+    long_to_triangle,
     prepare_csr_data,
     prepare_model_data,
     triangle_to_dataframe,
@@ -138,6 +142,8 @@ __all__ = [
     "CorrelatedBootstrapODPSample",
     "CorrelatedBootstrapODPBornhuetterFerguson",
     "CorrelatedBootstrapODPCapeCod",
+    # Data
+    "load_england_sample",
     # Model functions
     "build_bambi_model",
     "build_csr_model",
@@ -181,4 +187,5 @@ __all__ = [
     "compute_log_exposure_offset",
     "create_design_info",
     "validate_triangle",
+    "long_to_triangle",
 ]

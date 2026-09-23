@@ -635,3 +635,33 @@ def validate_triangle(triangle: cl.Triangle) -> None:
             "Triangle contains negative values. "
             "Consider using a family that supports negative values."
         )
+
+
+def long_to_triangle(
+    df: pd.DataFrame,
+    value_col: str,
+    origin_col: str = "origin",
+    dev_col: str = "dev",
+) -> cl.Triangle:
+    """Build a cumulative chainladder Triangle from long-format rows with an
+    integer origin year and development age in months (12, 24, ...).
+
+    chainladder needs a date-like development column, so the age is turned
+    into a year-end valuation date ``origin + dev/12 - 1``.
+    """
+    import chainladder as cl_
+
+    work = df[[origin_col, dev_col, value_col]].copy()
+    work.columns = ["origin", "dev", value_col]
+    work["origin"] = work["origin"].astype(int)
+    work["dev"] = work["dev"].astype(int)
+    eval_year = work["origin"] + work["dev"] // 12 - 1
+    work["dev_date"] = pd.to_datetime(eval_year.astype(str) + "-12-31", format="%Y-%m-%d")
+    return cl_.Triangle(
+        data=work,
+        origin="origin",
+        development="dev_date",
+        columns=[value_col],
+        cumulative=True,
+        origin_format="%Y",
+    )
