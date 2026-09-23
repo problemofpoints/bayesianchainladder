@@ -718,3 +718,59 @@ class TestFullCumulativePosteriorWrappers:
         assert model.full_cumulative_posterior_ is None
         with pytest.raises(ValueError, match="per-cell"):
             model._require_full_posterior()
+
+
+class TestNonConstantScale:
+    @pytest.fixture
+    def genins(self):
+        return cl.load_sample("genins")
+
+    def test_constant_scale_vector_equals_pooled_phi(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        s = CorrelatedBootstrapODPSample(n_sims=50, random_state=1).fit(genins)
+        assert s.scale_by_dev_.shape == (10,)
+        np.testing.assert_allclose(s.scale_by_dev_, float(s.scale_))
+        assert s.standardized_residuals_.shape == (10, 10)
+
+    def test_nonconstant_scale_follows_england_rules(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        s = CorrelatedBootstrapODPSample(n_sims=50, random_state=1, scale="nonconstant").fit(
+            genins
+        )
+        phi = s.scale_by_dev_
+        assert phi.shape == (10,)
+        assert np.all(phi >= 0)
+        assert phi[-1] == pytest.approx(min(phi[-2], phi[-3]))
+        assert not np.allclose(phi, phi[0])  # genuinely varies by development period
+        with pytest.raises(ValueError):
+            CorrelatedBootstrapODPSample(scale="weird")
+
+    def test_process_scale_override_changes_sd_not_mean(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        base = CorrelatedBootstrapChainLadder(n_sims=2000, rho=0.0, random_seed=5).fit(genins)
+        phi = base.sampler_.scale_by_dev_
+        none = CorrelatedBootstrapChainLadder(
+            n_sims=2000, rho=0.0, random_seed=5, process_scale=np.zeros(10)
+        ).fit(genins)
+        big = CorrelatedBootstrapChainLadder(
+            n_sims=2000, rho=0.0, random_seed=5, process_scale=phi * 9.0
+        ).fit(genins)
+        sd = lambda m: m.total_summary().total_reserve_stddev  # noqa: E731
+        mean = lambda m: m.total_summary().total_reserve_mean  # noqa: E731
+        assert sd(none) < sd(base) < sd(big)
+        assert mean(none) == pytest.approx(mean(base), rel=0.03)
+        assert mean(big) == pytest.approx(mean(base), rel=0.05)
+
+    def test_drop_passes_through_wrapper(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        base = CorrelatedBootstrapChainLadder(n_sims=300, random_seed=2).fit(genins)
+        dropped = CorrelatedBootstrapChainLadder(
+            n_sims=300, random_seed=2, drop=[("2003", 72)]
+        ).fit(genins)
+        assert dropped.total_summary().total_reserve_mean != pytest.approx(
+            base.total_summary().total_reserve_mean, rel=1e-4
+        )
