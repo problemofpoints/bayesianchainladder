@@ -142,6 +142,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pymc" },
+    { name = "scipy" },
     { name = "xarray" },
 ]
 
@@ -167,6 +168,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pymc", specifier = ">=5.10.0" },
+    { name = "scipy", specifier = ">=1.10" },
     { name = "xarray", specifier = ">=2023.1.0" },
 ]
 

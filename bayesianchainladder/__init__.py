@@ -109,6 +109,20 @@ from .plots import (
     plot_trace,
 )
 
+# Risk measures
+from .riskmeasures import (
+    capital_profile,
+    cash_flow_periods,
+    cost_of_capital_risk_margin,
+    discount_factors,
+    discounted_reserves,
+    equivalent_risk_tolerance,
+    future_reserve_profile,
+    proportional_hazards_transform,
+    tail_value_at_risk,
+    value_at_risk,
+)
+
 # Utility functions
 from .utils import (
     add_categorical_columns,
@@ -188,4 +202,15 @@ __all__ = [
     "create_design_info",
     "validate_triangle",
     "long_to_triangle",
+    # Risk measures
+    "value_at_risk",
+    "tail_value_at_risk",
+    "proportional_hazards_transform",
+    "cash_flow_periods",
+    "discount_factors",
+    "discounted_reserves",
+    "future_reserve_profile",
+    "capital_profile",
+    "cost_of_capital_risk_margin",
+    "equivalent_risk_tolerance",
 ]
