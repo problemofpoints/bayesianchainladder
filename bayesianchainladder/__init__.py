@@ -67,6 +67,9 @@ from .bootstrap import (
     MackChainLadder,
 )
 
+# Claims Development Result
+from .cdr import CDRResult, claims_development_result
+
 # Data
 from .datasets import load_england_sample
 from .estimators import BayesianChainLadderGLM, BayesianCSR
@@ -156,6 +159,9 @@ __all__ = [
     "CorrelatedBootstrapODPSample",
     "CorrelatedBootstrapODPBornhuetterFerguson",
     "CorrelatedBootstrapODPCapeCod",
+    # Claims Development Result
+    "CDRResult",
+    "claims_development_result",
     # Data
     "load_england_sample",
     # Model functions
