@@ -632,3 +632,66 @@ class TestCorrelatedBootstrapODPCapeCod:
             high.total_summary().total_reserve_stddev
             > low.total_summary().total_reserve_stddev
         )
+
+
+class TestFullCumulativePosteriorWrappers:
+    @pytest.fixture
+    def genins(self):
+        return cl.load_sample("genins")
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda: __import__("bayesianchainladder.bootstrap", fromlist=["x"]).BootstrapODPChainLadder(n_sims=200, random_seed=1),
+            lambda: __import__("bayesianchainladder.bootstrap", fromlist=["x"]).CorrelatedBootstrapChainLadder(n_sims=200, rho=0.3, random_seed=1),
+        ],
+    )
+    def test_chainladder_wrappers_expose_consistent_full_posterior(self, genins, factory):
+        model = factory().fit(genins)
+        full = model.full_cumulative_posterior_
+        assert full.dims == ("origin", "dev", "sample")
+        assert full.shape == (10, 10, 200)
+        cum = np.asarray(genins.values)[0, 0]
+        obs = ~np.isnan(cum)
+        # observed cells are constant across samples and equal the data
+        np.testing.assert_allclose(
+            full.values[obs], np.repeat(cum[obs][:, None], 200, axis=1), rtol=1e-9
+        )
+        derived = model._reserves_from_full_posterior()
+        np.testing.assert_allclose(
+            derived.values, model.reserves_posterior_.values, rtol=1e-6, atol=1e-6
+        )
+        assert not np.isnan(full.values).any()
+
+    def test_bf_cc_wrappers_expose_full_posterior(self, genins, genins_premium_triangle):
+        from bayesianchainladder.bootstrap import (
+            BootstrapODPBornhuetterFerguson,
+            BootstrapODPCapeCod,
+        )
+
+        for cls in (BootstrapODPBornhuetterFerguson, BootstrapODPCapeCod):
+            model = cls(n_sims=100, random_seed=3).fit(
+                genins, exposure_triangle=genins_premium_triangle
+            )
+            full = model.full_cumulative_posterior_
+            assert full.shape == (10, 10, 100)
+            cum = np.asarray(genins.values)[0, 0]
+            obs = ~np.isnan(cum)
+            np.testing.assert_allclose(
+                full.values[obs], np.repeat(cum[obs][:, None], 100, axis=1), rtol=1e-9
+            )
+            # ultimates from the full posterior agree with the wrapper's own IBNR
+            derived = model._reserves_from_full_posterior()
+            np.testing.assert_allclose(
+                derived.mean("sample").values,
+                model.reserves_posterior_.mean("sample").values,
+                rtol=0.02,
+            )
+
+    def test_mack_wrapper_has_no_full_posterior(self, raa_triangle):
+        from bayesianchainladder.bootstrap import MackChainLadder
+
+        model = MackChainLadder().fit(raa_triangle)
+        assert model.full_cumulative_posterior_ is None
+        with pytest.raises(ValueError, match="per-cell"):
+            model._require_full_posterior()

@@ -263,6 +263,8 @@ class BootstrapODPChainLadder(BaseStochasticReserve):
             },
         )
 
+        full, origins_full, devs_full = _full_posterior_from_chainladder(model, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -305,6 +307,56 @@ def _extract_ibnr_from_bf_or_cc(model_fitted, triangle) -> xr.DataArray:
             "sample": np.arange(per_origin_per_sim.shape[1]),
         },
     )
+
+
+def _full_posterior_from_chainladder(model_fitted, triangle):
+    """Complete simulated cumulative triangles from a chainladder method fitted
+    on ``n_sims`` resamples.
+
+    ``model_fitted.full_triangle_`` back-fills each simulation's future cells
+    using that simulation's own resampled latest diagonal and LDFs, ending at
+    a simulation-specific ultimate. Critically, ``chainladder`` bakes the
+    bootstrap process variance into ``ultimate_`` *before* ``full_triangle_``
+    is (re-)evaluated as a property, so ``full_triangle_`` already reflects
+    the noisy ultimate — adding ``process_variance_`` on top of it would
+    double-count that noise (verified numerically: doing so breaks the exact
+    ``ibnr_`` identity below by ~1%, far outside ``rtol=1e-6``).
+
+    ``full_triangle_``'s cells are anchored to each simulation's own
+    (resampled) latest diagonal, not the real data. To satisfy the contract
+    that observed cells equal the real triangle exactly while still
+    preserving each simulation's own future-development *shape*, future
+    cells are reconstructed as the real latest diagonal plus the
+    simulation's own projected increment beyond its resampled latest
+    diagonal: ``real_latest + (full_triangle_ - resampled_latest)``. Since
+    ``ibnr_ = ultimate_ - resampled_latest`` (chainladder's own definition,
+    see ``MethodBase.ibnr_``), the real latest diagonal cancels out in
+    :meth:`BaseStochasticReserve._reserves_from_full_posterior`, exactly
+    reproducing ``ibnr_``.
+
+    Returns ``(cumulative (n_o, n_d, S), origins, devs)``.
+    """
+    from ._triangle_ops import cumulative_array, latest_diagonal
+
+    n_dev = triangle.values.shape[-1]
+    full = np.asarray(model_fitted.full_triangle_.values, dtype=float)[:, 0, :, :n_dev]
+    resampled_latest = np.asarray(
+        model_fitted.latest_diagonal.values, dtype=float
+    )[:, 0, :, 0]
+
+    cum, origins, devs = cumulative_array(triangle)
+    latest, last_idx = latest_diagonal(cum)
+
+    n_sims, n_origin, n_dev_cols = full.shape
+    dev_idx = np.arange(n_dev_cols)
+    observed = dev_idx[None, :] <= last_idx[:, None]  # (n_origin, n_dev)
+
+    offset = full - resampled_latest[:, :, None]  # (S, n_origin, n_dev)
+    projected = latest[None, :, None] + offset  # (S, n_origin, n_dev)
+    observed_cum = np.broadcast_to(cum[None, :, :], (n_sims, n_origin, n_dev_cols))
+
+    combined = np.where(observed[None, :, :], observed_cum, projected)
+    return np.moveaxis(combined, 0, -1), origins, devs
 
 
 class BootstrapODPBornhuetterFerguson(BaseStochasticReserve):
@@ -399,6 +451,8 @@ class BootstrapODPBornhuetterFerguson(BaseStochasticReserve):
         ).fit(resampled, sample_weight=exposure_triangle)
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(bf, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(bf, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -491,6 +545,8 @@ class BootstrapODPCapeCod(BaseStochasticReserve):
         )
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(cc, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(cc, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -1051,6 +1107,8 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
             },
         )
 
+        full, origins_full, devs_full = _full_posterior_from_chainladder(model, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -1151,6 +1209,8 @@ class CorrelatedBootstrapODPBornhuetterFerguson(BaseStochasticReserve):
         ).fit(resampled, sample_weight=exposure_triangle)
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(bf, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(bf, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -1249,6 +1309,8 @@ class CorrelatedBootstrapODPCapeCod(BaseStochasticReserve):
         )
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(cc, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(cc, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
