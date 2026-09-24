@@ -104,7 +104,7 @@ def future_reserve_profile(
 
 def capital_profile(basis) -> np.ndarray:
     b = np.asarray(basis, dtype=float)
-    return b / b[0]
+    return np.asarray(b / b[0])
 
 
 def cost_of_capital_risk_margin(

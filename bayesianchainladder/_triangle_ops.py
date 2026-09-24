@@ -65,7 +65,7 @@ def link_ratio_mask(cum: np.ndarray, drop: DropList, origins, devs) -> np.ndarra
     """Availability mask (both cells observed) times ``drop_mask``."""
     n_o, n_d = cum.shape
     avail = (~np.isnan(cum[:, :-1]) & ~np.isnan(cum[:, 1:])).astype(float)
-    return avail * drop_mask(n_o, n_d, drop, origins, devs)
+    return np.asarray(avail * drop_mask(n_o, n_d, drop, origins, devs))
 
 
 def volume_weighted_factors(cum: np.ndarray, mask: np.ndarray) -> np.ndarray:

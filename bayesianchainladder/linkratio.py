@@ -53,7 +53,7 @@ def draw_with_moments(
     if dist == "nonparametric":
         if resid is None:
             raise ValueError("resid is required for nonparametric draws")
-        return mean + np.asarray(resid, dtype=float) * sd
+        return np.asarray(mean + np.asarray(resid, dtype=float) * sd)
     out = np.array(mean, copy=True)
     pos = (mean > _TOL) & (sd > _TOL)
     if dist == "gamma":
