@@ -23,6 +23,22 @@ def _encode_period_end(ts: pd.Timestamp, annual: bool) -> int:
     return int(ts.year) * 100 + int(ts.month)
 
 
+def origin_labels(triangle: cl.Triangle) -> list[int]:
+    """
+    Integer labels for a triangle's origin periods, in triangle order.
+
+    This is the single origin encoding shared by the GLM data
+    (:func:`triangle_to_dataframe`), the CSR data, the bootstrap estimators
+    and the chain-ladder-informed priors: the year when
+    ``origin_grain == "Y"``, otherwise ``YYYYMM`` of the origin period's end
+    month (for example ``202003`` for 2020Q1).
+    """
+    annual = triangle.origin_grain == "Y"
+    return [
+        _encode_period_end(p.to_timestamp(how="end"), annual) for p in triangle.origin
+    ]
+
+
 def _triangle_cells(triangle: cl.Triangle) -> pd.DataFrame:
     """
     Long-format view of every origin x development cell of a single triangle.
@@ -67,13 +83,7 @@ def _triangle_cells(triangle: cl.Triangle) -> pd.DataFrame:
     valuation = np.asarray(tri.valuation).reshape((n_origin, n_dev), order="F")
     values = np.asarray(tri.values, dtype=float)[0, 0]
 
-    origin_codes = np.array(
-        [
-            int(p.year) if origin_annual else int(p.year) * 100 + int(p.month)
-            for p in tri.origin
-        ],
-        dtype=int,
-    )
+    origin_codes = np.array(origin_labels(tri), dtype=int)
     dev_ages = np.asarray(tri.development, dtype=int)
 
     df = pd.DataFrame(
@@ -157,11 +167,11 @@ def triangle_to_dataframe(
         observed_grid = observed.reshape(n_origin, n_dev)
         gap_mask = observed_grid[:, 1:] & ~observed_grid[:, :-1]
         if gap_mask.any():
-            origin_labels = cells["origin"].to_numpy().reshape(n_origin, n_dev)[:, 0]
+            row_origins = cells["origin"].to_numpy().reshape(n_origin, n_dev)[:, 0]
             dev_labels = cells["dev"].to_numpy().reshape(n_origin, n_dev)[0, :]
             gap_rows, gap_cols = np.where(gap_mask)
             offenders = "; ".join(
-                f"origin={origin_labels[i]} unobserved at dev={dev_labels[j]} "
+                f"origin={row_origins[i]} unobserved at dev={dev_labels[j]} "
                 f"but observed at dev={dev_labels[j + 1]}"
                 for i, j in zip(gap_rows, gap_cols, strict=True)
             )
@@ -228,23 +238,6 @@ def get_future_dataframe(
     )
     df[value_column] = np.nan
     return df
-
-
-def _extract_period_value(period) -> int:
-    """Extract integer value from a period (Timestamp, int, etc.).
-
-    Kept as an internal helper for :mod:`bayesianchainladder.bootstrap`, which
-    uses it independently of the ``_triangle_cells``-based converters above.
-    """
-    if hasattr(period, "year"):
-        return period.year
-    elif hasattr(period, "days"):
-        # Development period as timedelta - convert to months/years
-        days = period.days
-        # Assume annual periods
-        return max(1, round(days / 365))
-    else:
-        return int(period)
 
 
 def prepare_model_data(

@@ -1300,16 +1300,12 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # actually have training observations — Bambi drops levels with no
         # rows from the design matrix, so the prior array length must match.
         # -------------------------------------------------------------------
-        def _period_to_int(p) -> int:
-            """Convert a chainladder period (Timestamp/Period/int) to int year."""
-            if hasattr(p, "year"):
-                return int(p.year)
-            if hasattr(p, "days"):
-                return max(1, round(p.days / 365))
-            return int(p)
+        # Same origin encoding as data_["origin"] (year, or YYYYMM for
+        # sub-annual grains); development ages are already integer months.
+        from .utils import origin_labels
 
-        tri_origin_vals = [_period_to_int(o) for o in tri.origin]   # list[int]
-        tri_dev_vals    = [_period_to_int(d) for d in tri.development]  # list[int]
+        tri_origin_vals = origin_labels(tri)                        # list[int]
+        tri_dev_vals    = [int(d) for d in tri.development]        # list[int]
         origin_val_to_idx: dict[int, int] = {v: i for i, v in enumerate(tri_origin_vals)}
         dev_val_to_idx:    dict[int, int] = {v: i for i, v in enumerate(tri_dev_vals)}
 

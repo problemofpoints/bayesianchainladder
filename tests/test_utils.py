@@ -460,3 +460,31 @@ class TestCumulativeEdgeCases:
         )
         with pytest.raises(ValueError, match="contiguous"):
             triangle_to_dataframe(tri)
+
+
+class TestOriginLabels:
+    """origin_labels is the single origin encoder shared by every consumer."""
+
+    def test_annual_origins_are_years(self):
+        from bayesianchainladder.utils import origin_labels
+
+        assert origin_labels(cl.load_sample("raa")) == list(range(1981, 1991))
+
+    def test_quarterly_origins_match_dataframe_encoding(
+        self, quarterly_origin_triangle
+    ):
+        from bayesianchainladder.utils import origin_labels
+
+        labels = origin_labels(quarterly_origin_triangle)
+        assert labels == [
+            202003,
+            202006,
+            202009,
+            202012,
+            202103,
+            202106,
+            202109,
+            202112,
+        ]
+        df = triangle_to_dataframe(quarterly_origin_triangle)
+        assert sorted(df["origin"].unique()) == labels
