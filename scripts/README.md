@@ -8,7 +8,7 @@ and `scipy` — no `bayesianchainladder` package needed.
 
 | Key | Description | Requires premium |
 |-----|-------------|:---:|
-| `mack` | Mack Chain Ladder (Mack 1993) — normal approximation | |
+| `mack` | Mack Chain Ladder (Mack 1993) — normal approximation; tail sigma per Mack (1994) by default (`--mack-sigma-interpolation`) | |
 | `odp` | ODP Bootstrap + Chain Ladder (Shapland; non-parametric residual bootstrap via `cl.BootstrapODPSample`) | |
 | `odp_param` | Parametric ODP, rho=0 — Normal(mu, sqrt(phi\*mu)) sampling, no residual-resampling artefacts | |
 | `odp_corr` | Correlated ODP Bootstrap (Clark/Ding/Zhou 2022) — Gaussian copula, rho=0.3 by default | |
@@ -52,10 +52,12 @@ v2 = current code (apriori_sigma=0.15 — default).
 This causes near-zero BF/CC variance because IBNR = (1 − 1/CDF) × apriori × premium is
 essentially deterministic when apriori is fixed — only the tiny bootstrap noise on the
 latest diagonal varies across simulations.  The fix passes `apriori_sigma=0.15` so each
-simulation samples its own apriori from Normal(apriori, 0.15) (BF) or
-Normal(cc_apriori, 0.15) (CC), propagating apriori uncertainty into the reserve
-distribution.  Empirical cross-triangle loss-ratio std across Meyers lines is ~0.15,
-making this a reasonable default.  Set `--apriori-sigma 0` to recover the old behaviour.
+simulation samples its own apriori from a lognormal with mean apriori (BF) or the
+Cape Cod estimate (CC) and standard deviation 0.15 (chainladder >= 0.10.1; earlier
+versions drew from a Normal and could produce negative aprioris), propagating apriori
+uncertainty into the reserve distribution.  Empirical cross-triangle loss-ratio std
+across Meyers lines is ~0.15, making this a reasonable default.  Set `--apriori-sigma 0`
+to recover the old behaviour.
 
 ## Defaults
 
@@ -66,6 +68,7 @@ making this a reasonable default.  Set `--apriori-sigma 0` to recover the old be
 | `--n-sims` | `5000` | Reduces Monte Carlo noise at tail percentiles (p95) |
 | `--apriori` | `0.65` | Expected loss ratio for BF; override with your own estimate |
 | `--apriori-sigma` | `0.15` | Std dev of the a-priori LR for BF/CC; prevents variance collapse (see note above) |
+| `--mack-sigma-interpolation` | `mack` | Mack (1994) tail-sigma rule; `log-linear` restores the pre-0.10 chainladder default |
 
 ## Process variance options (`--process-variance`)
 
@@ -87,7 +90,7 @@ CSV file with one row per (origin, dev) observation:
 | Column | Type | Required | Description |
 |--------|------|----------|-------------|
 | `origin` | int | yes | Accident year (e.g. 2001) |
-| `dev` | int | yes | Development age in months (12, 24, 36, …) |
+| `dev` | int | yes | Development age in months (12, 24, 36, …); passed to chainladder directly as an age from the origin period start |
 | `paid` | numeric | **yes** | Cumulative paid losses — always required, even when modelling `case_incurred` |
 | `case_incurred` | numeric | no* | Cumulative case-incurred losses |
 | `lob` | string | no | Line of business (default: `all`) |
