@@ -14,6 +14,7 @@ from bayesianchainladder.base import (
     BaseStochasticReserve,
     MethodSummary,
     ReserveSamples,
+    incurred_to_paid,
 )
 
 
@@ -330,3 +331,57 @@ class TestFullCumulativePosterior:
         assert s.total_reserve_min == pytest.approx(70.0)
         assert s.total_reserve_max == pytest.approx(106.0)
         assert s.total_reserve_99_5th_percentile == pytest.approx(np.quantile([70, 82, 94, 106], 0.995))
+
+
+class TestScalingAndIncurredToPaid:
+    @pytest.fixture
+    def fitted(self):
+        from bayesianchainladder.bootstrap import BootstrapODPChainLadder
+
+        return BootstrapODPChainLadder(n_sims=500, random_seed=4).fit(cl.load_sample("genins"))
+
+    def test_additive_preserves_sd_and_hits_target(self, fitted):
+        origins = list(fitted.reserves_posterior_.coords["origin"].values)
+        paid = fitted._paid_to_date().reindex(origins)
+        target = paid + 1.1 * fitted.ibnr_["mean"]
+        scaled = fitted.scale_to_target(target, method="additive")
+        assert isinstance(scaled, ReserveSamples)
+        np.testing.assert_allclose(scaled.ibnr_["std"].values, fitted.ibnr_["std"].values, rtol=1e-9)
+        np.testing.assert_allclose(scaled.ultimate_["mean"].values, target.values, rtol=1e-9)
+
+    def test_multiplicative_preserves_cov(self, fitted):
+        origins = list(fitted.reserves_posterior_.coords["origin"].values)
+        paid = fitted._paid_to_date().reindex(origins)
+        target = paid + 1.1 * fitted.ibnr_["mean"]
+        scaled = fitted.scale_to_target(target, method="multiplicative")
+        base_cov = (fitted.ibnr_["std"] / fitted.ibnr_["mean"]).values[1:]
+        new_cov = (scaled.ibnr_["std"] / scaled.ibnr_["mean"]).values[1:]
+        np.testing.assert_allclose(new_cov, base_cov, rtol=1e-9)
+        np.testing.assert_allclose(scaled.ibnr_["mean"].values[1:], 1.1 * fitted.ibnr_["mean"].values[1:], rtol=1e-9)
+
+    def test_per_origin_method_dict_and_validation(self, fitted):
+        origins = list(fitted.reserves_posterior_.coords["origin"].values)
+        paid = fitted._paid_to_date().reindex(origins)
+        target = paid + fitted.ibnr_["mean"]
+        methods = {o: ("additive" if k < 5 else "multiplicative") for k, o in enumerate(origins)}
+        scaled = fitted.scale_to_target(target, method=methods)
+        np.testing.assert_allclose(scaled.ibnr_["mean"].values, fitted.ibnr_["mean"].values, rtol=1e-9)
+        with pytest.raises(ValueError, match="method"):
+            fitted.scale_to_target(target, method="geometric")
+        with pytest.raises(ValueError, match="origin"):
+            fitted.scale_to_target(target.iloc[:3])
+
+    def test_incurred_to_paid(self):
+        from bayesianchainladder.bootstrap import BootstrapODPChainLadder
+
+        clrd = cl.load_sample("clrd").groupby("LOB").sum().loc["wkcomp"]
+        incurred = clrd["IncurLoss"]
+        paid = clrd["CumPaidLoss"]
+        model = BootstrapODPChainLadder(n_sims=300, random_seed=8).fit(incurred)
+        converted = incurred_to_paid(model, paid)
+        assert isinstance(converted, ReserveSamples)
+        latest_inc = model._paid_to_date().values
+        latest_paid = converted._paid_to_date().values
+        expected_mean = model.ibnr_["mean"].values + latest_inc - latest_paid
+        np.testing.assert_allclose(converted.ibnr_["mean"].values, expected_mean, rtol=1e-9)
+        np.testing.assert_allclose(converted.ibnr_["std"].values, model.ibnr_["std"].values, rtol=1e-9)

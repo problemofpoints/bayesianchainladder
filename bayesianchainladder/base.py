@@ -301,6 +301,53 @@ class BaseStochasticReserve(ABC):
         idx = rng.choice(total.size, size=n_samples, replace=replace)
         return total[idx]
 
+    def scale_to_target(self, target_ultimates, method="multiplicative") -> ReserveSamples:
+        """Shift or scale each origin's reserve samples so their mean ultimate
+        hits ``target_ultimates`` (England's ``Scaled_Results``).
+
+        ``additive`` preserves the absolute standard deviation; ``multiplicative``
+        preserves the coefficient of variation. ``method`` may be a dict mapping
+        origin to method. The per-cell posterior is not carried over because
+        cash flows would need their own scaling rule.
+        """
+        self._check_is_fitted()
+        origins = list(self.reserves_posterior_.coords["origin"].values)
+        paid = self._paid_to_date().reindex(origins).fillna(0.0).values
+        if isinstance(target_ultimates, dict | pd.Series):
+            target = pd.Series(target_ultimates)
+            missing = [o for o in origins if o not in target.index]
+            if missing:
+                raise ValueError(f"target_ultimates is missing origin(s) {missing}")
+            target = target.reindex(origins).values.astype(float)
+        else:
+            target = np.asarray(target_ultimates, dtype=float)
+            if target.shape != (len(origins),):
+                raise ValueError("target_ultimates must have one value per origin")
+        if isinstance(method, str):
+            methods = dict.fromkeys(origins, method)
+        else:
+            methods = dict(method)
+        bad = set(methods.values()) - {"additive", "multiplicative"}
+        if bad or set(origins) - set(methods):
+            raise ValueError("method must be 'additive' or 'multiplicative' for every origin")
+
+        res = self.reserves_posterior_.transpose("origin", "sample").values.copy()
+        mean = res.mean(axis=1)
+        target_reserve = target - paid
+        for k, origin in enumerate(origins):
+            if methods[origin] == "additive":
+                res[k] += target_reserve[k] - mean[k]
+            elif mean[k] != 0:
+                res[k] *= target_reserve[k] / mean[k]
+            else:
+                res[k] = target_reserve[k]
+        scaled = xr.DataArray(
+            res,
+            dims=["origin", "sample"],
+            coords={"origin": origins, "sample": np.arange(res.shape[1])},
+        )
+        return ReserveSamples(self.triangle_, scaled)
+
     def total_summary(self) -> MethodSummary:
         self._check_is_fitted()
         if self.reserves_posterior_ is None:
@@ -352,3 +399,29 @@ class ReserveSamples(BaseStochasticReserve):
         raise NotImplementedError(
             "ReserveSamples is constructed from samples, not fitted"
         )
+
+
+def incurred_to_paid(model: BaseStochasticReserve, paid_triangle) -> ReserveSamples:
+    """Turn an incurred-basis IBNR distribution into a reserve distribution by
+    subtracting the latest paid instead of the latest incurred (England's
+    ``Incurred_to_Paid``). The absolute SD is unchanged; the CoV becomes
+    meaningful for comparison with a paid analysis."""
+    from .utils import triangle_to_dataframe
+
+    model._check_is_fitted()
+    origins = list(model.reserves_posterior_.coords["origin"].values)
+    latest_incurred = model._paid_to_date().reindex(origins).fillna(0.0).values
+    paid_df = triangle_to_dataframe(paid_triangle)
+    latest_paid = (
+        paid_df.groupby("origin", observed=True)["incremental"].sum().reindex(origins).fillna(0.0).values
+    )
+    res = model.reserves_posterior_.transpose("origin", "sample").values
+    reserves = res + (latest_incurred - latest_paid)[:, None]
+    return ReserveSamples(
+        paid_triangle,
+        xr.DataArray(
+            reserves,
+            dims=["origin", "sample"],
+            coords={"origin": origins, "sample": np.arange(reserves.shape[1])},
+        ),
+    )

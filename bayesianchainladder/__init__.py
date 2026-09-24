@@ -61,6 +61,7 @@ from .base import (
     BaseStochasticReserve,
     MethodSummary,
     ReserveSamples,
+    incurred_to_paid,
 )
 
 # Frequentist estimators
@@ -175,6 +176,7 @@ __all__ = [
     "MethodSummary",
     "ReserveSamples",
     "DEFAULT_QUANTILES",
+    "incurred_to_paid",
     # Frequentist estimators
     "MackChainLadder",
     "BootstrapODPChainLadder",
