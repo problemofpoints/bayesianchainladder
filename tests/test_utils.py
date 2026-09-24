@@ -413,3 +413,50 @@ class TestPeriodEncoding:
             future[["origin", "dev"]].reset_index(drop=True),
             glm_future[["origin", "dev"]].reset_index(drop=True),
         )
+
+
+class TestCumulativeEdgeCases:
+    def _tri(self, rows):
+        data = pd.DataFrame(rows, columns=["origin", "valuation", "paid"])
+        return cl.Triangle(
+            data,
+            origin="origin",
+            development="valuation",
+            columns="paid",
+            cumulative=True,
+        )
+
+    def test_zero_increment_is_kept_as_zero(self):
+        tri = self._tri(
+            [
+                ["2020", "2020-12-31", 100.0],
+                ["2020", "2021-12-31", 100.0],
+                ["2020", "2022-12-31", 130.0],
+                ["2021", "2021-12-31", 90.0],
+                ["2021", "2022-12-31", 120.0],
+                ["2022", "2022-12-31", 80.0],
+            ]
+        )
+        df = triangle_to_dataframe(tri, include_cumulative=True)
+        assert len(df) == 6
+        row = df[(df["origin"] == 2020) & (df["dev"] == 24)].iloc[0]
+        assert row["incremental"] == 0.0
+        assert row["cumulative"] == 100.0
+        assert df.groupby("origin")["incremental"].sum().tolist() == [
+            130.0,
+            120.0,
+            80.0,
+        ]
+
+    def test_interior_gap_raises(self):
+        tri = self._tri(
+            [
+                ["2020", "2020-12-31", 100.0],
+                ["2020", "2022-12-31", 130.0],
+                ["2021", "2021-12-31", 90.0],
+                ["2021", "2022-12-31", 120.0],
+                ["2022", "2022-12-31", 80.0],
+            ]
+        )
+        with pytest.raises(ValueError, match="contiguous"):
+            triangle_to_dataframe(tri)

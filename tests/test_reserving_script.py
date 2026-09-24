@@ -94,6 +94,28 @@ class TestBarnettZehnwirth:
         with pytest.raises(ValueError, match="positive incremental"):
             rs._run_bz(cl.load_sample("raa"), n_sims=10, random_seed=0)
 
+    def test_rejects_zero_increment_observed_as_nan(self, rs):
+        data = pd.DataFrame(
+            [
+                ["2020", "2020-12-31", 100.0],
+                ["2020", "2021-12-31", 100.0],
+                ["2020", "2022-12-31", 130.0],
+                ["2021", "2021-12-31", 90.0],
+                ["2021", "2022-12-31", 120.0],
+                ["2022", "2022-12-31", 80.0],
+            ],
+            columns=["origin", "valuation", "paid"],
+        )
+        tri = cl.Triangle(
+            data,
+            origin="origin",
+            development="valuation",
+            columns="paid",
+            cumulative=True,
+        )
+        with pytest.raises(ValueError, match="positive incremental"):
+            rs._run_bz(tri, n_sims=10, random_seed=0)
+
     def test_cli_accepts_bz(self, rs):
         args = rs.parse_args(["--input", "x.csv", "--methods", "bz"])
         assert args.methods == ["bz"]

@@ -52,9 +52,10 @@ code/library changes from Monte Carlo noise.
 | `odp_corr_cc` | 0.270 | 0.430 | Paid improvement from lognormal apriori draws |
 | `bz` | 0.342 (N=54/200) | 0.348 (N=3/200) | New method; requires strictly positive incrementals — fails on 343/400 (triangle, loss type) combos |
 
-KS values above carry roughly ±0.008 Monte Carlo uncertainty at 5,000 sims (measured noise
-floor from a seed-sensitivity check on `odp`/`odp_corr`); treat differences smaller than
-that as noise, not a real calibration change.
+KS values above carry roughly ±0.005 to ±0.01 Monte Carlo uncertainty at 5,000 sims (bounded
+by a seed-sensitivity check on `odp`/`odp_corr` — see `references/meyers-backtest/STANDALONE_BACKTEST_README.md`
+for the full derivation); treat differences within that range as noise, not a confirmed
+calibration change.
 
 **Note on `--apriori-sigma`**: Prior to the fix, `cl.BornhuetterFerguson` was called with
 `apriori_sigma=0` (the chainladder default), treating the a-priori as deterministic.
@@ -120,7 +121,7 @@ One row per `(lob, group_id, loss_type, method, accident_year)` plus a `"Total"`
 | `lob` | Line of business |
 | `group_id` | Entity identifier |
 | `loss_type` | Loss column that was modelled (e.g. `paid`, `case_incurred`) |
-| `method` | `mack / odp / odp_param / odp_corr / odp_bf / odp_cc / odp_corr_bf / odp_corr_cc` |
+| `method` | `mack / odp / odp_param / odp_corr / odp_bf / odp_cc / odp_corr_bf / odp_corr_cc / bz` |
 | `accident_year` | Origin year or `"Total"` |
 | `loss_to_date` | Latest-diagonal value of the *modelled* loss column — informational |
 | `paid_to_date` | Latest-diagonal value of `paid` — the offset used for IBNR |

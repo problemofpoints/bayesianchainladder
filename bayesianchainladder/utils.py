@@ -42,6 +42,10 @@ def _triangle_cells(triangle: cl.Triangle) -> pd.DataFrame:
     which triangle (cumulative or incremental) to pass in, and that choice
     is what defines the observation mask returned here.
 
+    Pass cumulative triangles where possible; an incremental input cannot
+    represent an observed zero increment (chainladder stores it as NaN), so
+    such cells are treated as unobserved.
+
     Raises
     ------
     ValueError
@@ -116,6 +120,20 @@ def triangle_to_dataframe(
         - incremental (or ``value_column``): the incremental value
         - cumulative (optional)
 
+    Pass cumulative triangles where possible; an incremental input cannot
+    represent an observed zero increment (chainladder stores it as NaN), so
+    such cells are treated as unobserved.
+
+    Raises
+    ------
+    ValueError
+        If a cumulative triangle has an interior gap — an unobserved cell
+        followed by an observed one at a later development period for the
+        same origin. ``cum_to_incr()`` treats an interior NaN as zero, so the
+        derived incrementals would not reconcile to the latest cumulative;
+        such triangles must be observed contiguously from the first
+        development period.
+
     Examples
     --------
     >>> import chainladder as cl
@@ -131,6 +149,31 @@ def triangle_to_dataframe(
     observed = cells["observed"].to_numpy()
 
     if tri.is_cumulative:
+        # Interior gaps (an unobserved cell followed by an observed one at a
+        # later development period, for the same origin) are not supported:
+        # cum_to_incr() treats an interior NaN as zero, so the incrementals
+        # derived below would not reconcile to the latest cumulative value.
+        n_origin, n_dev = len(tri.origin), len(tri.development)
+        observed_grid = observed.reshape(n_origin, n_dev)
+        gap_mask = observed_grid[:, 1:] & ~observed_grid[:, :-1]
+        if gap_mask.any():
+            origin_labels = cells["origin"].to_numpy().reshape(n_origin, n_dev)[:, 0]
+            dev_labels = cells["dev"].to_numpy().reshape(n_origin, n_dev)[0, :]
+            gap_rows, gap_cols = np.where(gap_mask)
+            offenders = "; ".join(
+                f"origin={origin_labels[i]} unobserved at dev={dev_labels[j]} "
+                f"but observed at dev={dev_labels[j + 1]}"
+                for i, j in zip(gap_rows, gap_cols, strict=True)
+            )
+            raise ValueError(
+                "Cumulative triangle has an interior gap and cannot be "
+                f"converted to incrementals: {offenders}. Cumulative "
+                "triangles must be observed contiguously from the first "
+                "development period, because chainladder's cum_to_incr() "
+                "treats an interior NaN as zero and the derived incrementals "
+                "would not reconcile to the latest cumulative value."
+            )
+
         # chainladder's cum_to_incr() stores a zero increment as NaN, and for
         # some triangle shapes it can emit a non-NaN value for a cell that is
         # NaN (unobserved) in the cumulative triangle above — so its output

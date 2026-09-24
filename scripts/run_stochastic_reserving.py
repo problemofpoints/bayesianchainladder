@@ -3,8 +3,8 @@ Stochastic Reserving Benchmark Script
 ======================================
 
 Self-contained script that runs Mack Chain Ladder, ODP Bootstrap,
-Correlated ODP Bootstrap, Bornhuetter-Ferguson Bootstrap, and Cape Cod
-Bootstrap on a long-format triangle dataset.
+Correlated ODP Bootstrap, Bornhuetter-Ferguson Bootstrap, Cape Cod
+Bootstrap, and Barnett-Zehnwirth on a long-format triangle dataset.
 
 Dependencies: chainladder, pandas, numpy, scipy. NO custom packages.
 
@@ -879,10 +879,24 @@ def _run_bz(loss_tri, n_sims=5000, random_seed=None, formula="C(origin)+C(develo
     ------
     ValueError
         If any observed incremental is non-positive (the log-linear model is
-        undefined there; chainladder itself fails on such triangles).
+        undefined there; chainladder itself fails on such triangles), or if
+        an observed cumulative cell has no finite incremental (chainladder
+        stores a zero increment as NaN, which the log-linear model also
+        cannot represent).
     """
+    # The observation mask comes from the cumulative triangle, not from
+    # cum_to_incr(): chainladder's cum_to_incr() stores a zero increment as
+    # NaN, so deriving "observed" from its output would silently treat a
+    # true zero increment as an unobserved (future) cell.
+    observed = np.isfinite(np.asarray(loss_tri.values, dtype=float)[0, 0])
     incr = np.asarray(loss_tri.cum_to_incr().values, dtype=float)[0, 0]
-    observed = np.isfinite(incr)
+    if np.isfinite(incr).sum() != observed.sum():
+        raise ValueError(
+            "bz requires strictly positive incremental losses (log-linear model); "
+            "found an observed cell with no finite incremental — chainladder "
+            "stores a zero increment as NaN, and a zero increment cannot be "
+            "log-transformed"
+        )
     if (incr[observed] <= 0).any():
         raise ValueError(
             "bz requires strictly positive incremental losses (log-linear model); "
@@ -1497,9 +1511,18 @@ def run_methods_on_triangle(
                     process_variance=process_variance, apriori_sigma=apriori_sigma,
                 )
             elif method == "bz":
-                per_origin_sim = _run_bz(
-                    loss_tri, n_sims=n_sims, random_seed=random_seed, formula=bz_formula
-                )
+                try:
+                    per_origin_sim = _run_bz(
+                        loss_tri, n_sims=n_sims, random_seed=random_seed, formula=bz_formula
+                    )
+                except ValueError as exc:
+                    if "positive incremental" in str(exc):
+                        log.warning(
+                            "lob=%s group_id=%s loss_type=%s: skipping bz (%s)",
+                            lob, group_id, loss_type, exc,
+                        )
+                        continue
+                    raise
             else:
                 log.warning("Unknown method: %s — skipped", method)
                 continue

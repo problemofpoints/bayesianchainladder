@@ -353,7 +353,7 @@ KS statistic by method, v4 (Meyers 1988-1997, 200 triangles/method) vs v5 (clrd2
 
 ### What changed
 
-**The v4 baseline run was not seeded** (its log header records no `--random-seed`), while this v5 run uses `--random-seed 42`. That means any v4-vs-v5 KS difference up to the Monte Carlo noise floor measured below (**0.0078**, i.e. roughly ±0.008) is indistinguishable from re-running the same code with a different random draw, and is **not** attributable to a code or library change. Only differences larger than that floor are attributed to one of the following actual changes between chainladder 0.9.1 (v4) and chainladder 0.10.1 (v5):
+**The v4 baseline run was not seeded** (its log header records no `--random-seed`), while this v5 run uses `--random-seed 42`. That means part of any v4-vs-v5 KS difference is indistinguishable from re-running the same code with a different random draw, and is **not** attributable to a code or library change. The seed-sensitivity check below (Step 2b) bounds that Monte Carlo band: roughly **0.004** from below (the largest seed-only spread, seed 42 vs seed 7, on a method whose code path did not change) and **0.0078** from above (the largest v4-vs-seed-42 gap on those same methods, which also folds in whatever real v4-vs-v5 difference exists beyond pure seed noise — two seeds aren't enough to separate the two cleanly). Differences clearly larger than this band are attributed to one of the following actual changes between chainladder 0.9.1 (v4) and chainladder 0.10.1 (v5):
 
 1. **Mack tail-sigma interpolation** now defaults to the Mack (1994) rule (`--mack-sigma-interpolation mack`) instead of the pre-0.10 `log-linear` extrapolation.
 2. **BF/CC apriori draws are now lognormal** (chainladder 0.10.1 draws each simulation's apriori from a lognormal with std `apriori_sigma`; earlier versions drew from a Normal and could produce negative aprioris).
@@ -365,20 +365,20 @@ Root-cause note: independent verification (chain-ladder `full_expectation_` bit-
 
 To quantify how much KS moves from simulation noise alone, `odp` and `odp_corr` (whose code paths are unchanged between chainladder 0.9.1 and 0.10.1) were re-run with a second seed (`--random-seed 7`, otherwise identical: `--n-sims 5000 --rho 0.3 --n-jobs 8`, `cache/meyers_v5_seed7_calibration.csv`).
 
-| Method | Loss type | KS v4 (unseeded) | KS v5 (seed 42) | KS v5 (seed 7) | Spread |
-|--------|-----------|:-----------------:|:-----------------:|:----------------:|:------:|
-| odp | paid | 0.2608 | 0.2616 | 0.2658 | 0.0050 |
-| odp | case_incurred | 0.0658 | 0.0678 | 0.0646 | 0.0032 |
-| odp_corr | paid | 0.1508 | 0.1506 | 0.1532 | 0.0026 |
-| odp_corr | case_incurred | 0.2076 | 0.1998 | 0.2024 | **0.0078** |
+| Method | Loss type | KS v4 (unseeded) | KS v5 (seed 42) | KS v5 (seed 7) | Seed-only spread (42 vs 7) | v4-vs-seed42 gap |
+|--------|-----------|:-----------------:|:-----------------:|:----------------:|:------:|:------:|
+| odp | paid | 0.2608 | 0.2616 | 0.2658 | 0.0042 | 0.0008 |
+| odp | case_incurred | 0.0658 | 0.0678 | 0.0646 | 0.0032 | 0.0020 |
+| odp_corr | paid | 0.1508 | 0.1506 | 0.1532 | 0.0026 | 0.0002 |
+| odp_corr | case_incurred | 0.2076 | 0.1998 | 0.2024 | 0.0026 | **0.0078** |
 
-**Noise floor = 0.0078** (the max spread above, on `odp_corr`/case_incurred). This is also, not coincidentally, the exact size of the v4-vs-v5 `odp_corr` case_incurred gap that originally looked like a code regression — it is fully explained by seed variation.
+Two independent draws (seed 42 and seed 7) are not enough to pin down the noise floor exactly — they only bound it. The **seed-only spreads** (42 vs 7, which hold the code fixed and vary only the random draw) run 0.0026-0.0042, giving a **lower bound of about 0.004** on the Monte Carlo band. The **v4-vs-seed-42 gaps** on these same unchanged-code methods run 0.0002-0.0078; the largest of these, 0.0078 on `odp_corr`/case_incurred, gives an **upper bound**, but it is a single unseeded-vs-seeded comparison and could include a small genuine v4-vs-v5 effect on top of noise, not purely noise. Treat **0.004-0.0078** as the plausible Monte Carlo band rather than a precisely measured floor; a tighter estimate would need more than two seeds.
 
 ### Step 2 comparison table: v4 vs v5 (full precision, then rounded)
 
-Delta = KS(v5) − KS(v4), computed from full-precision `ks_stat` values in each calibration CSV before rounding. Rows with `|delta| > 0.0078` (the noise floor) are marked as attributable to an actual code/library change; smaller deltas are noise.
+Delta = KS(v5) − KS(v4), computed from full-precision `ks_stat` values in each calibration CSV before rounding. Rows with `|delta|` clearly above the ~0.004-0.0078 noise band are marked as attributable to an actual code/library change; smaller deltas are within (or near) that band and are treated as noise.
 
-| Method | Loss type | KS v4 | KS v5 | Delta | Above noise floor? |
+| Method | Loss type | KS v4 | KS v5 | Delta | Above the ~0.004-0.0078 noise band? |
 |--------|-----------|:-----:|:-----:|:-----:|:--:|
 | mack | paid | 0.2656 | 0.2558 | -0.0098 | yes (sigma interpolation) |
 | mack | case_incurred | 0.1750 | 0.1892 | +0.0142 | yes (sigma interpolation) |
@@ -387,7 +387,7 @@ Delta = KS(v5) − KS(v4), computed from full-precision `ks_stat` values in each
 | odp_param | paid | 0.1760 | 0.1792 | +0.0032 | no (noise) |
 | odp_param | case_incurred | 0.1996 | 0.1930 | -0.0066 | no (noise) |
 | odp_corr | paid | 0.1508 | 0.1506 | -0.0002 | no (noise) |
-| odp_corr | case_incurred | 0.2076 | 0.1998 | -0.0078 | no (at the noise floor) |
+| odp_corr | case_incurred | 0.2076 | 0.1998 | -0.0078 | no (at the upper bound of the band) |
 | odp_bf | paid | 0.4666 | 0.2456 | -0.2210 | yes (lognormal apriori) |
 | odp_bf | case_incurred | 0.5220 | 0.4538 | -0.0682 | yes (lognormal apriori) |
 | odp_cc | paid | 0.4764 | 0.3366 | -0.1398 | yes (lognormal apriori) |
@@ -428,15 +428,15 @@ KS statistic vs uniform (lower = better); C80% = % of actuals in central 80% int
 | odp_bf | case_incurred | 200 | 0.246 | 20.5% | 42.5% | 0.454 | 0.163 | 4.6% |
 | odp_cc | case_incurred | 200 | 0.229 | 19.5% | 32.5% | 0.506 | 0.171 | 4.8% |
 
-**Winners**: `odp_corr` (paid, KS=0.151) and `odp` (case_incurred, KS=0.068) — same winners as v4, and the delta on both is within the 0.0078 noise floor, i.e. effectively unchanged.
+**Winners**: `odp_corr` (paid, KS=0.151) and `odp` (case_incurred, KS=0.068) — same winners as v4, and the delta on both is within the ~0.004-0.0078 noise band, i.e. effectively unchanged.
 
 ### Findings
 
-1. **`odp` and `odp_corr` are unchanged within Monte Carlo noise.** Every v4-vs-v5 delta on the three methods whose code path did not change (`odp`, `odp_param`, `odp_corr`) is at or below the measured noise floor of 0.0078 — including the `odp_corr` case_incurred gap (0.2076 → 0.1998, delta -0.0078) that initially looked like a regression. The seed-sensitivity check (v4 unseeded vs seed 42 vs seed 7) shows spreads of 0.0026-0.0078 on exactly these method/loss-type pairs, so the v4-vs-v5 gap is fully explained by v4 having been run without a fixed seed. `odp_corr` remains the best paid method and `odp` remains the best case_incurred method, unchanged from v4.
+1. **`odp` and `odp_corr` are unchanged within Monte Carlo noise.** Every v4-vs-v5 delta on the three methods whose code path did not change (`odp`, `odp_param`, `odp_corr`) falls within the ~0.004-0.0078 noise band established above — including the `odp_corr` case_incurred gap (0.2076 → 0.1998, delta -0.0078) that initially looked like a regression, which sits right at the upper bound of that band. A proper point estimate of the Monte Carlo floor would need more than two seeds; what the two-seed check shows is that a gap of this size is consistent with sampling noise alone, not that it is fully explained by it. `odp_corr` remains the best paid method and `odp` remains the best case_incurred method, unchanged from v4.
 
-2. **Mack's tail-sigma interpolation change moved KS beyond the noise floor, in opposite directions by loss type.** Switching to the Mack (1994) sigma-interpolation default (`--mack-sigma-interpolation mack`, replacing the pre-0.10 `log-linear` rule) improved Mack's paid KS (0.2656 → 0.2558, -0.0098) but worsened its case_incurred KS (0.1750 → 0.1892, +0.0142) — both moves exceed the 0.0078 noise floor, so both are attributable to the interpolation change rather than to sampling variation. Mack is still comfortably out-performed by `odp_corr` (paid) and `odp` (case_incurred).
+2. **Mack's tail-sigma interpolation change moved KS well above the noise band, in opposite directions by loss type.** Switching to the Mack (1994) sigma-interpolation default (`--mack-sigma-interpolation mack`, replacing the pre-0.10 `log-linear` rule) improved Mack's paid KS (0.2656 → 0.2558, -0.0098) but worsened its case_incurred KS (0.1750 → 0.1892, +0.0142) — both moves (0.010-0.014) sit above even the upper bound of the ~0.004-0.0078 band, so both are attributable to the interpolation change rather than to sampling variation. Mack is still comfortably out-performed by `odp_corr` (paid) and `odp` (case_incurred).
 
-3. **Lognormal BF/CC apriori draws produced a large, consistent paid-side improvement and a smaller case_incurred improvement, well beyond the noise floor.** All four BF/CC variants improved on paid by 0.07-0.22 KS (`odp_bf` -0.2210, `odp_corr_bf` -0.1980, `odp_cc` -0.1398, `odp_corr_cc` -0.0706) and on case_incurred by 0.02-0.07 KS (`odp_cc` -0.0388, `odp_corr_bf` -0.0558, `odp_bf` -0.0682, `odp_corr_cc` -0.0230). These are the same four methods v4 flagged as "systematically over-reserved" under a fixed apriori; the chainladder 0.10.1 lognormal apriori draw narrows that gap substantially on paid data (e.g. `odp_bf` paid KS 0.467 → 0.246) without fully closing it — BF/CC remain the worst-calibrated group on case_incurred (KS 0.43-0.51), still far behind `odp`/`odp_corr`.
+3. **Lognormal BF/CC apriori draws produced a large, consistent paid-side improvement and a smaller case_incurred improvement, far above the noise band.** All four BF/CC variants improved on paid by 0.07-0.22 KS (`odp_bf` -0.2210, `odp_corr_bf` -0.1980, `odp_cc` -0.1398, `odp_corr_cc` -0.0706) and on case_incurred by 0.02-0.07 KS (`odp_cc` -0.0388, `odp_corr_bf` -0.0558, `odp_bf` -0.0682, `odp_corr_cc` -0.0230) — all comfortably above the ~0.004-0.0078 band. These are the same four methods v4 flagged as "systematically over-reserved" under a fixed apriori; the chainladder 0.10.1 lognormal apriori draw narrows that gap substantially on paid data (e.g. `odp_bf` paid KS 0.467 → 0.246) without fully closing it — BF/CC remain the worst-calibrated group on case_incurred (KS 0.43-0.51), still far behind `odp`/`odp_corr`.
 
 4. **`bz` is markedly worse-calibrated than the winners, but on a small, self-selected sample.** `bz` only produced results for 54/200 paid triangles and 3/200 case_incurred triangles (343 of 400 combinations failed on non-positive incrementals), so its KS of 0.342 (paid) and 0.348 (case_incurred, N=3 only) should be read as indicative rather than a like-for-like ranking against the other 8 methods, all of which ran on all 200 triangles. The case_incurred result in particular (N=3) is too small a sample to draw a reliable conclusion from.
 
