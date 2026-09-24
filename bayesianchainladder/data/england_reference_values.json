@@ -1,0 +1,160 @@
+{
+  "_provenance": {
+    "source": "https://github.com/DrPeterEngland/StochasticReserving",
+    "commit": "e7ed85a29dba64db1192140e504f4e09cf149134",
+    "licence": "MIT (Peter England / EMC Actuarial and Analytics Ltd)",
+    "transcription": "Values transcribed on 2026-09-24 from the rendered output tables (matplotlib PNGs) embedded in the executed notebooks Python_Examples/EVW_2019.ipynb and Python_Examples/EV_2006_PredictiveDistributions.ipynb. Figures are as displayed (rounded to units; CoV in percent to one decimal).",
+    "triangle": "Taylor & Ashe (1983) incremental paid, claims_triangle.csv == chainladder 'genins'; origins labelled OP 1..10 (loaded here as 2001..2010).",
+    "origins": [2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010]
+  },
+  "evw_2019": {
+    "settings": {
+      "method": "Mack",
+      "bootstrap_dist": "Gamma",
+      "forecast_dist": "Gamma",
+      "seed": 101,
+      "iterations": 10000,
+      "discount_rate": 0.03,
+      "payment_offset": 0.5,
+      "coc_rate": 0.06,
+      "coc_offset": 1,
+      "var_level_cdr": 0.995
+    },
+    "table2_analytic_mack": {
+      "latest": [3901463, 5339085, 4909315, 4588268, 3873311, 3691712, 3483130, 2864498, 1363294, 344014],
+      "reserves": [0, 94634, 469511, 709638, 984889, 1419459, 2177641, 3920301, 4278972, 4625811],
+      "reserve_sd": [0, 75535, 121700, 133551, 261412, 411028, 558356, 875430, 971385, 1363385],
+      "reserve_cov_pct": [0, 79.8, 25.9, 18.8, 26.5, 29.0, 25.6, 22.3, 22.7, 29.5],
+      "total_latest": 34358090,
+      "total_reserve": 18680856,
+      "total_sd": 2447618,
+      "total_cov_pct": 13.1,
+      "note": "England's last sigma = min(sigma_7, sigma_8); chainladder extrapolates log-linearly, so mack_analytic_rmsep (a chainladder wrapper) gives total SD 2,441,364."
+    },
+    "table4_bootstrap_and_one_year_cdr": {
+      "avg_reserves": [0, 95074, 468910, 710114, 986086, 1419666, 2170856, 3925758, 4291475, 4627404],
+      "bootstrap_sd": [0, 75539, 123014, 132633, 264386, 409969, 557202, 880188, 973226, 1373073],
+      "bootstrap_cov_pct": [0, 79.5, 26.2, 18.7, 26.8, 28.9, 25.7, 22.4, 22.7, 29.7],
+      "cdr_sd": [0, 75539, 106349, 80547, 236116, 316505, 358346, 625837, 587668, 1020565],
+      "cdr_sd_ratio_pct": [0, 79.5, 22.7, 11.3, 23.9, 22.3, 16.5, 15.9, 13.7, 22.1],
+      "total_avg_reserve": 18695344,
+      "total_bootstrap_sd": 2456271,
+      "total_bootstrap_cov_pct": 13.1,
+      "total_cdr_sd": 1759833,
+      "total_cdr_sd_ratio_pct": 9.4
+    },
+    "table6_incremental_cdr_sd_total": [1759833, 1177709, 905977, 612340, 429636, 271983, 130118, 96696, 48864],
+    "table6_incremental_cdr_sd_sqrt_sum_squares_total": 2442744,
+    "table6_cumulative_cdr_sd_total": [1759833, 2126706, 2316928, 2397850, 2432844, 2449840, 2451084, 2455001, 2456271],
+    "table7_var_cdr_995_total": [4771636, 3185570, 2411616, 1571998, 1125132, 727206, 348637, 255688, 134280],
+    "table7_var_cdr_995_one_year_by_origin": [null, 198437, 281875, 210137, 636891, 838593, 936933, 1725891, 1571931, 2871029],
+    "bootstrap_reserve_summary_total": {
+      "mean": 18695344, "sd": 2456271, "cov_pct": 13.14, "min": 10224965,
+      "p0.5": 12934974, "p1": 13346775, "p5": 14805994, "p10": 15629925, "p25": 16971275,
+      "p50": 18614939, "p75": 20289227, "p90": 21874289, "p95": 22912881, "p99": 24792194,
+      "p99.5": 25726418, "max": 28010762
+    },
+    "table5_discounted_3pct": {
+      "avg_reserves": [0, 93679, 459346, 683780, 938799, 1335527, 2026178, 3661179, 3967200, 4228389],
+      "bootstrap_sd": [0, 74431, 119842, 126398, 255460, 392773, 525804, 822927, 894556, 1245259],
+      "total_avg": 17394078,
+      "total_sd": 2254273,
+      "total_cov_pct": 13.0
+    },
+    "table8_coc_risk_margin_best_estimate_basis": {
+      "disc_future_reserves": [17381602, 12598695, 8735034, 5818790, 3834408, 2364307, 1239956, 521786, 85285],
+      "capital": [4771636, 3458622, 2397961, 1597387, 1052630, 649055, 340396, 143242, 23413],
+      "capital_profile": [1, 0.725, 0.503, 0.335, 0.221, 0.136, 0.071, 0.03, 0.005],
+      "cost_of_capital": [286298, 207517, 143878, 95843, 63158, 38943, 20424, 8595, 1405],
+      "disc_cost_of_capital": [277959, 195605, 131668, 85155, 54480, 32614, 16606, 6785, 1077],
+      "risk_margin": 801951,
+      "note": "Opening capital = VaR@99.5% of the one-year total CDR (4,771,636). Future reserves discounted deterministically from the chain-ladder forecast."
+    },
+    "table9_capital_bases": {
+      "best_estimate_capital": [4771636, 3458622, 2397961, 1597387, 1052630, 649055, 340396, 143242, 23413],
+      "cdr_sd_capital": [4771636, 3193257, 2456477, 1660307, 1164921, 737457, 352803, 262182, 132492],
+      "cdr_var_capital": [4771636, 3185570, 2411616, 1571998, 1125132, 727206, 348637, 255688, 134280],
+      "risk_margin": {"best_estimate": 801951, "cdr_sd": 815019, "cdr_var": 804410}
+    },
+    "table10_risk_adjustments": {
+      "var": {"level_pct": 75, "risk_adjustment": 1464304.3, "best_estimate_disc": 17394077.9, "total": 18858382.1, "pct": 8.4},
+      "tvar": {"level_pct": 40, "risk_adjustment": 1440648.1, "best_estimate_disc": 17394077.9, "total": 18834726.0, "pct": 8.3},
+      "pht": {"param_pct": 185, "risk_adjustment": 1444380.2, "best_estimate_disc": 17394077.9, "total": 18838458.0, "pct": 8.3}
+    },
+    "table11_equivalent_risk_tolerance": {
+      "coc": {"risk_adjustment": 801950.7, "best_estimate_disc": 17381601.9, "total": 18183552.5, "pct": 4.6},
+      "var": {"level_pct": 64.5, "risk_adjustment": 801776.8, "pct": 4.6},
+      "tvar": {"level_pct": 21.1, "risk_adjustment": 801979.2, "pct": 4.6},
+      "pht": {"param_pct": 143.2, "risk_adjustment": 801950.7, "pct": 4.6}
+    },
+    "table12_coc_risk_margin_reserve_bases": {
+      "avg_disc_reserves": [17394078, 12618000, 8750300, 5827497, 3843421, 2369366, 1242148, 523297, 86026],
+      "sd_disc_reserves": [2254273, 1912240, 1520412, 1103913, 787162, 532428, 328575, 199790, 74622],
+      "sd_undisc_reserves": [2456271, 2057875, 1619386, 1167842, 826575, 555068, 340305, 204405, 75733],
+      "var_disc_reserves_at_64_5pct": [4771010, 4081830, 3226324, 2367752, 1694853, 1159507, 712665, 448375, 169576],
+      "var_disc_reserves_at_99_5pct": [6454793, 5402313, 4378360, 3116797, 2223085, 1521698, 965795, 619718, 231623],
+      "risk_margin": {"avg": 802382, "sd_disc": 1012111, "sd_undisc": 992714, "var_64_5": 1021936, "var_99_5": 1366746}
+    },
+    "table13_coc_risk_margin_reverse_cdr": {
+      "sd_simulated": [2456271, 1699581, 1216082, 809604, 534324, 320586, 171115, 108814, 48864],
+      "var_at_96_9pct": [4769349, 3256928, 2330309, 1550165, 1005175, 605409, 325018, 204873, 91351],
+      "var_at_99_5pct": [6990365, 4650522, 3269851, 2150458, 1430446, 853767, 436408, 292885, 134280],
+      "risk_margin": {"sd": 793477, "var_96_9": 784822, "var_99_5": 1122675},
+      "note": "MW RMSEP column left blank in England's Python version (Merz-Wuthrich not implemented)."
+    }
+  },
+  "ev_2006": {
+    "settings": {
+      "method": "ODPConstant",
+      "bootstrap_dist": "Gamma",
+      "forecast_dist": "Gamma",
+      "seed": 101,
+      "iterations": 10000,
+      "mcmc": "CmdStan, 4 chains x 2,500 sampling iterations (10,000 draws), 1,000 warmup, flat priors, quasi-Poisson likelihood with plug-in constant scale, Gamma forecast distribution"
+    },
+    "ml_analytic_odp_constant": {
+      "latest": [3901463, 5339085, 4909315, 4588268, 3873311, 3691712, 3483130, 2864498, 1363294, 344014],
+      "reserves": [0, 94634, 469511, 709638, 984889, 1419459, 2177641, 3920301, 4278972, 4625811],
+      "reserve_sd": [0, 110099, 216042, 260871, 303549, 375012, 495376, 789957, 1046508, 1980091],
+      "reserve_cov_pct": [0, 116.3, 46.0, 36.8, 30.8, 26.4, 22.7, 20.2, 24.5, 42.8],
+      "total_reserve": 18680856,
+      "total_sd": 2945646,
+      "total_cov_pct": 15.8,
+      "sqrt_scale": 229.35
+    },
+    "ml_parameters": {
+      "labels": ["Intercept", "OP2", "OP3", "OP4", "OP5", "OP6", "OP7", "OP8", "OP9", "OP10", "DP2", "DP3", "DP4", "DP5", "DP6", "DP7", "DP8", "DP9", "DP10"],
+      "estimate": [12.506, 0.331, 0.321, 0.306, 0.219, 0.27, 0.372, 0.553, 0.369, 0.242, 0.913, 0.959, 1.026, 0.435, 0.08, -0.006, -0.394, 0.009, -1.38],
+      "standard_error": [0.173, 0.154, 0.158, 0.161, 0.168, 0.171, 0.174, 0.187, 0.239, 0.428, 0.149, 0.153, 0.157, 0.184, 0.215, 0.238, 0.31, 0.32, 0.897]
+    },
+    "mcmc_parameters": {
+      "labels": ["Intercept", "OP2", "OP3", "OP4", "OP5", "OP6", "OP7", "OP8", "OP9", "OP10", "DP2", "DP3", "DP4", "DP5", "DP6", "DP7", "DP8", "DP9", "DP10"],
+      "posterior_mean": [12.489, 0.332, 0.323, 0.308, 0.22, 0.27, 0.371, 0.552, 0.362, 0.183, 0.919, 0.966, 1.033, 0.44, 0.079, -0.015, -0.422, -0.014, -1.795],
+      "posterior_sd": [0.174, 0.154, 0.156, 0.161, 0.168, 0.172, 0.176, 0.187, 0.242, 0.441, 0.15, 0.152, 0.156, 0.182, 0.219, 0.239, 0.316, 0.326, 1.096]
+    },
+    "bootstrap_odp_constant": {
+      "avg_reserves": [0, 93572, 473108, 712923, 989285, 1433274, 2183609, 3937888, 4314944, 4727535],
+      "sd": [0, 109301, 220092, 260734, 305872, 377821, 492788, 786556, 1049731, 2007248],
+      "cov_pct": [0, 116.8, 46.5, 36.6, 30.9, 26.4, 22.6, 20.0, 24.3, 42.5],
+      "total_avg_reserve": 18866138,
+      "total_sd": 2968615,
+      "total_cov_pct": 15.7,
+      "total_summary": {
+        "min": 10663383, "p0.5": 12635166, "p1": 13071145, "p5": 14416307, "p10": 15225145, "p25": 16774553,
+        "p50": 18619965, "p75": 20681900, "p90": 22761694, "p95": 24114519, "p99": 26827898, "p99.5": 28121974, "max": 35099619
+      }
+    },
+    "mcmc_odp_constant": {
+      "avg_reserves": [0, 94497, 473377, 713963, 994634, 1427398, 2185862, 3939219, 4327368, 4730275],
+      "sd": [0, 110589, 216833, 264946, 308600, 378706, 502610, 801520, 1074894, 2040253],
+      "cov_pct": [0, 117.0, 45.8, 37.1, 31.0, 26.5, 23.0, 20.3, 24.8, 43.1],
+      "total_avg_reserve": 18886591,
+      "total_sd": 3024716,
+      "total_cov_pct": 16.0,
+      "total_summary": {
+        "min": 10719451, "p0.5": 12490478, "p1": 12991893, "p5": 14460013, "p10": 15264728, "p25": 16707775,
+        "p50": 18612980, "p75": 20777959, "p90": 22890551, "p95": 24198524, "p99": 27067958, "p99.5": 28043640, "max": 34480207
+      }
+    }
+  }
+}

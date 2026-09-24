@@ -47,8 +47,22 @@ except PackageNotFoundError:
     __version__ = "0.1.0"
 
 # Main estimators
+# Analytic prediction errors
+from .analytic import (
+    AnalyticResult,
+    mack_analytic_rmsep,
+    odp_analytic_rmsep,
+    poisson_irls,
+)
+
 # Base contract
-from .base import BaseStochasticReserve, MethodSummary
+from .base import (
+    DEFAULT_QUANTILES,
+    BaseStochasticReserve,
+    MethodSummary,
+    ReserveSamples,
+    incurred_to_paid,
+)
 
 # Frequentist estimators
 from .bootstrap import (
@@ -61,13 +75,31 @@ from .bootstrap import (
     CorrelatedBootstrapODPSample,
     MackChainLadder,
 )
+
+# Claims Development Result
+from .cdr import CDRResult, claims_development_result
+
+# Data
+from .datasets import load_england_sample
 from .estimators import BayesianChainLadderGLM, BayesianCSR
+
+# Link-ratio models
+from .linkratio import (
+    BayesianMackChainLadder,
+    MackBootstrap,
+    NegativeBinomialBootstrap,
+    draw_with_moments,
+    forecast_link_ratio_paths,
+    sample_pseudo_factors,
+)
 
 # Model building functions
 from .models import (
     build_bambi_model,
     build_csr_model,
+    build_link_ratio_model,
     build_pymc_model,
+    build_quasi_poisson_model,
     compute_loo,
     compute_prior_predictive_summary,
     compute_waic,
@@ -82,8 +114,10 @@ from .models import (
 from .plots import (
     create_summary_table,
     plot_actual_vs_fitted,
+    plot_capital_profiles,
     plot_development_pattern,
     plot_energy,
+    plot_fan_chart,
     plot_forest,
     plot_heatmap_residuals,
     plot_posterior,
@@ -98,8 +132,27 @@ from .plots import (
     plot_rank,
     plot_reserve_distribution,
     plot_residuals,
+    plot_scaled_residuals,
+    plot_sensitivity_heatmap,
     plot_trace,
 )
+
+# Risk measures
+from .riskmeasures import (
+    capital_profile,
+    cash_flow_periods,
+    cost_of_capital_risk_margin,
+    discount_factors,
+    discounted_reserves,
+    equivalent_risk_tolerance,
+    future_reserve_profile,
+    proportional_hazards_transform,
+    tail_value_at_risk,
+    value_at_risk,
+)
+
+# Sensitivity analysis
+from .sensitivity import link_ratio_sensitivity, top_influential
 
 # Utility functions
 from .utils import (
@@ -107,6 +160,7 @@ from .utils import (
     compute_log_exposure_offset,
     create_design_info,
     get_future_dataframe,
+    long_to_triangle,
     prepare_csr_data,
     prepare_model_data,
     triangle_to_dataframe,
@@ -119,9 +173,17 @@ __all__ = [
     # Main estimators
     "BayesianChainLadderGLM",
     "BayesianCSR",
+    # Analytic prediction errors
+    "AnalyticResult",
+    "odp_analytic_rmsep",
+    "mack_analytic_rmsep",
+    "poisson_irls",
     # Base contract
     "BaseStochasticReserve",
     "MethodSummary",
+    "ReserveSamples",
+    "DEFAULT_QUANTILES",
+    "incurred_to_paid",
     # Frequentist estimators
     "MackChainLadder",
     "BootstrapODPChainLadder",
@@ -131,10 +193,24 @@ __all__ = [
     "CorrelatedBootstrapODPSample",
     "CorrelatedBootstrapODPBornhuetterFerguson",
     "CorrelatedBootstrapODPCapeCod",
+    # Claims Development Result
+    "CDRResult",
+    "claims_development_result",
+    # Data
+    "load_england_sample",
+    # Link-ratio models
+    "BayesianMackChainLadder",
+    "MackBootstrap",
+    "NegativeBinomialBootstrap",
+    "draw_with_moments",
+    "forecast_link_ratio_paths",
+    "sample_pseudo_factors",
     # Model functions
     "build_bambi_model",
     "build_csr_model",
+    "build_link_ratio_model",
     "build_pymc_model",
+    "build_quasi_poisson_model",
     "fit_model",
     "predict_posterior",
     "posterior_predictive_check",
@@ -165,6 +241,11 @@ __all__ = [
     "plot_prior_predictive_triangle",
     "plot_prior_predictive_summary",
     "plot_prior_vs_posterior",
+    # Plotting functions - England & Verrall diagnostics
+    "plot_fan_chart",
+    "plot_scaled_residuals",
+    "plot_sensitivity_heatmap",
+    "plot_capital_profiles",
     # Utility functions
     "triangle_to_dataframe",
     "get_future_dataframe",
@@ -174,4 +255,19 @@ __all__ = [
     "compute_log_exposure_offset",
     "create_design_info",
     "validate_triangle",
+    "long_to_triangle",
+    # Sensitivity analysis
+    "link_ratio_sensitivity",
+    "top_influential",
+    # Risk measures
+    "value_at_risk",
+    "tail_value_at_risk",
+    "proportional_hazards_transform",
+    "cash_flow_periods",
+    "discount_factors",
+    "discounted_reserves",
+    "future_reserve_profile",
+    "capital_profile",
+    "cost_of_capital_risk_margin",
+    "equivalent_risk_tolerance",
 ]

@@ -18,13 +18,16 @@ import pymc as pm
 import xarray as xr
 
 from .base import BaseStochasticReserve
-from .models import build_bambi_model, build_csr_model, fit_model, sample_prior_predictive
+from .models import (
+    build_bambi_model,
+    build_csr_model,
+    fit_model,
+    sample_prior_predictive,
+)
 from .utils import (
     add_categorical_columns,
-    get_future_dataframe,
     prepare_csr_data,
     prepare_model_data,
-    triangle_to_dataframe,
     validate_triangle,
 )
 
@@ -221,7 +224,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         triangle: cl.Triangle,
         exposure_triangle: cl.Triangle | None = None,
         sample_weight: pd.Series | np.ndarray | None = None,
-    ) -> "BayesianChainLadderGLM":
+    ) -> BayesianChainLadderGLM:
         """
         Fit the Bayesian chain ladder model to a triangle.
 
@@ -253,7 +256,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         # Add categorical encoding (spline columns stay numeric)
         self.data_ = add_categorical_columns(self.data_, formula=self.formula)
-        self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
+        self.future_data_ = add_categorical_columns(
+            self.future_data_, formula=self.formula
+        )
 
         # Drop origins that have ZERO observations in training data.
         # An origin with all NaN values contributes no likelihood information.
@@ -308,10 +313,13 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self._n_dummy_rows = 0
         self._dummy_dev_levels = set()
         if len(self.future_data_) > 0:
-            self.data_, self.future_data_, self._n_dummy_rows, self._dummy_dev_levels = (
-                self._pad_missing_dev_levels(
-                    self.data_, self.future_data_, self.formula
-                )
+            (
+                self.data_,
+                self.future_data_,
+                self._n_dummy_rows,
+                self._dummy_dev_levels,
+            ) = self._pad_missing_dev_levels(
+                self.data_, self.future_data_, self.formula
             )
 
         # If response_per_exposure=True, divide the response by exposure in the
@@ -330,7 +338,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 )
             exp_vals = np.asarray(self.data_[self.exposure].values, dtype=np.float64)
             self.data_ = self.data_.copy()
-            response_vals = np.asarray(self.data_[response_col].values, dtype=np.float64)
+            response_vals = np.asarray(
+                self.data_[response_col].values, dtype=np.float64
+            )
             self.data_[response_col] = response_vals / exp_vals
             # Clear the exposure so build_bambi_model does not append a log offset.
             self.exposure = None
@@ -354,10 +364,13 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 response_col = self.formula.split("~")[0].strip()
                 if response_col not in self.data_.columns:
                     response_col = "incremental"
-                resp_vals = np.asarray(self.data_[response_col].values, dtype=np.float64)
+                resp_vals = np.asarray(
+                    self.data_[response_col].values, dtype=np.float64
+                )
                 min_val = float(np.nanmin(resp_vals))
                 if min_val <= 0:
                     import warnings as _w
+
                     shift = abs(min_val) + 1.0
                     _w.warn(
                         f"BayesianChainLadderGLM: response column '{response_col}' "
@@ -471,7 +484,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             ``_build_cl_informed_priors`` to assign tighter priors to those
             levels.
         """
-        c_wrapped_cols = re.findall(r'\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)', formula)
+        c_wrapped_cols = re.findall(
+            r"\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)", formula
+        )
         if not c_wrapped_cols:
             # Mark real rows and return unchanged (no C(...) terms in formula)
             data = data.copy()
@@ -540,18 +555,26 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             try:
                 all_levels = sorted(
                     set(int(v) for v in padded[col].dropna().unique())
-                    | set(int(v) for v in future_data[col].dropna().unique()
-                          if col in future_data.columns)
+                    | set(
+                        int(v)
+                        for v in future_data[col].dropna().unique()
+                        if col in future_data.columns
+                    )
                 )
             except (TypeError, ValueError):
                 all_levels = sorted(
                     set(padded[col].dropna().unique().tolist())
-                    | (set(future_data[col].dropna().unique().tolist())
-                       if col in future_data.columns else set())
+                    | (
+                        set(future_data[col].dropna().unique().tolist())
+                        if col in future_data.columns
+                        else set()
+                    )
                 )
             padded[col] = pd.Categorical(padded[col], categories=all_levels)
             if col in future_data.columns:
-                future_data[col] = pd.Categorical(future_data[col], categories=all_levels)
+                future_data[col] = pd.Categorical(
+                    future_data[col], categories=all_levels
+                )
 
         return padded, future_data, n_dummy, dummy_dev_levels
 
@@ -562,7 +585,11 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # same column in whatever DataFrame we pass.  We compute it here so
         # that both observed and future frames have it.
         obs_data = self.data_.copy()
-        fut_data = self.future_data_.copy() if len(self.future_data_) > 0 else self.future_data_
+        fut_data = (
+            self.future_data_.copy()
+            if len(self.future_data_) > 0
+            else self.future_data_
+        )
         if self.exposure and self.exposure in obs_data.columns:
             obs_data["logoffset"] = np.log(
                 np.asarray(obs_data[self.exposure].values, dtype=np.float64)
@@ -605,7 +632,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         fitted_data["fitted_mean"] = fitted_mean.values
         if self._n_dummy_rows > 0:
             # Dummy rows were appended at the END of data_; keep only real rows.
-            fitted_data = fitted_data.iloc[: len(fitted_data) - self._n_dummy_rows].copy()
+            fitted_data = fitted_data.iloc[
+                : len(fitted_data) - self._n_dummy_rows
+            ].copy()
         self.fitted_ = fitted_data
 
         # Predict future cells.
@@ -615,6 +644,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # ensures every future level IS present in training, so this guard only
         # fires if some edge case slips through (e.g. C(calendar) extrapolation).
         import formulae as _formulae
+
         _prev_unseen = _formulae.config["EVAL_UNSEEN_CATEGORIES"]
         _formulae.config["EVAL_UNSEEN_CATEGORIES"] = "silent"
         try:
@@ -628,7 +658,10 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                     _pv_success = False
                     try:
                         self.model_.predict(
-                            self.idata, data=fut_data, kind="response", inplace=True,
+                            self.idata,
+                            data=fut_data,
+                            kind="response",
+                            inplace=True,
                             sample_new_groups=True,
                         )
                         _pv_success = True
@@ -645,12 +678,18 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 # Parameter-only path (include_process_variance=False, or fallback).
                 try:
                     self.model_.predict(
-                        self.idata, data=fut_data, kind="response_params", inplace=True,
+                        self.idata,
+                        data=fut_data,
+                        kind="response_params",
+                        inplace=True,
                         sample_new_groups=True,
                     )
                 except (TypeError, ValueError):
                     self.model_.predict(
-                        self.idata, data=fut_data, kind="mean", inplace=True,
+                        self.idata,
+                        data=fut_data,
+                        kind="mean",
+                        inplace=True,
                         sample_new_groups=True,
                     )
 
@@ -737,7 +776,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 # _response_shift (applied before fitting).  Subtract the total
                 # shift for this origin to restore the original scale.
                 if self._response_shift != 0.0:
-                    origin_total = origin_total - self._response_shift * n_cells_for_origin
+                    origin_total = (
+                        origin_total - self._response_shift * n_cells_for_origin
+                    )
 
                 reserve_samples[origin] = origin_total
 
@@ -752,14 +793,62 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 reserves_list, dim=pd.Index(origins, name="origin")
             )
             # Standardize to (origin, sample) for the base class helper
-            self.reserves_posterior_ = (
-                reserves_posterior
-                .stack(sample=["chain", "draw"])
-                .reset_index("sample", drop=True)
-            )
+            self.reserves_posterior_ = reserves_posterior.stack(
+                sample=["chain", "draw"]
+            ).reset_index("sample", drop=True)
 
             # Compute ultimate and IBNR summaries (helper now lives in the base)
             self._build_reserve_summaries()
+
+            self._store_full_posterior(future_predictions, obs_dim, future_start)
+
+    def _store_full_posterior(
+        self, future_predictions: xr.DataArray, obs_dim: str, future_start: int
+    ) -> None:
+        """Assemble complete simulated cumulative triangles (origin, dev,
+        sample) from observed incrementals plus per-cell future predictions,
+        applying the same loss-ratio back-transform and response shift as
+        ``_compute_reserves`` so both views agree cell by cell."""
+        from ._triangle_ops import cumulative_array, cumulative_to_incremental
+
+        cum, origins, devs = cumulative_array(self.triangle_)
+        incr_obs = cumulative_to_incremental(cum)
+        observed = ~np.isnan(incr_obs)
+
+        fut = (
+            future_predictions.isel({obs_dim: slice(future_start, None)})
+            .stack(sample=["chain", "draw"])
+            .transpose(obs_dim, "sample")
+            .values
+        )
+        n_samples = fut.shape[1]
+        incr = np.repeat(
+            np.where(observed, incr_obs, 0.0)[..., None], n_samples, axis=-1
+        )
+        valid = observed.copy()
+
+        ep_col = self._original_exposure_col if self.response_per_exposure else None
+        if ep_col is not None and ep_col not in self.future_data_.columns:
+            ep_col = None
+
+        fut_origin = self.future_data_["origin"].values
+        fut_dev = self.future_data_["dev"].values
+        for k in range(len(self.future_data_)):
+            o, d = int(fut_origin[k]), int(fut_dev[k])
+            if o not in origins or d not in devs:
+                continue
+            i, j = origins.index(o), devs.index(d)
+            cell = np.asarray(fut[k], dtype=float)
+            if ep_col is not None:
+                cell = cell * float(self.future_data_.iloc[k][ep_col])
+            if self._response_shift != 0.0:
+                cell = cell - self._response_shift
+            incr[i, j, :] = cell
+            valid[i, j] = True
+
+        full = np.cumsum(incr, axis=1)
+        full[~valid] = np.nan
+        self._set_full_cumulative_posterior(full, origins, devs)
 
     def predict(
         self,
@@ -850,7 +939,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             Parameter summary table.
         """
         self._check_is_fitted()
-        return az.summary(self.idata, var_names=var_names, filter_vars=filter_vars, hdi_prob=hdi_prob)
+        return az.summary(
+            self.idata, var_names=var_names, filter_vars=filter_vars, hdi_prob=hdi_prob
+        )
 
     def get_origin_effects(self) -> pd.DataFrame:
         """
@@ -892,7 +983,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         self,
         triangle: cl.Triangle,
         exposure_triangle: cl.Triangle | None = None,
-    ) -> "BayesianChainLadderGLM":
+    ) -> BayesianChainLadderGLM:
         """
         Build the Bayesian model without fitting.
 
@@ -934,7 +1025,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
         # Add categorical encoding
         self.data_ = add_categorical_columns(self.data_, formula=self.formula)
-        self.future_data_ = add_categorical_columns(self.future_data_, formula=self.formula)
+        self.future_data_ = add_categorical_columns(
+            self.future_data_, formula=self.formula
+        )
 
         # Validate data compatibility with chosen family
         self._validate_data_family_compatibility()
@@ -1107,15 +1200,17 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 raise ValueError(f"Column '{by}' not found in data")
 
             # Sum means across group (for aggregate statistics)
-            agg_summary = summary_df.groupby(by).agg({
-                "mean": "sum",
-                "std": lambda x: np.sqrt((x**2).sum()),  # Sum variances, take sqrt
-                "2.5%": "sum",
-                "25.0%": "sum",
-                "50.0%": "sum",
-                "75.0%": "sum",
-                "97.5%": "sum",
-            })
+            agg_summary = summary_df.groupby(by).agg(
+                {
+                    "mean": "sum",
+                    "std": lambda x: np.sqrt((x**2).sum()),  # Sum variances, take sqrt
+                    "2.5%": "sum",
+                    "25.0%": "sum",
+                    "50.0%": "sum",
+                    "75.0%": "sum",
+                    "97.5%": "sum",
+                }
+            )
             return agg_summary
 
         return summary_df
@@ -1180,7 +1275,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             _y_vals = y_vals
             _mask_vals = mask_vals
 
-            def _gamma_mask(mu_val: "pt.TensorVariable", alpha_val: "pt.TensorVariable") -> "pt.TensorVariable":
+            def _gamma_mask(
+                mu_val: pt.TensorVariable, alpha_val: pt.TensorVariable
+            ) -> pt.TensorVariable:
                 """Subtract dummy-row gamma logp from the joint log-likelihood."""
                 import pytensor.tensor as _pt
                 import pytensor.tensor.special as _pts
@@ -1233,8 +1330,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             terms.  Entries for unrecognised / unsupported terms are omitted
             (Bambi will use its own defaults for those).
         """
-        import chainladder as cl
         import warnings
+
+        import chainladder as cl
 
         priors: dict[str, Any] = {}
         tri = self.triangle_
@@ -1244,13 +1342,17 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # Detect effective link: log vs identity
         # -------------------------------------------------------------------
         from .models import _get_default_link as _gdl
+
         family_lower = self.family.lower()
         canonical = {
-            "t": "t", "student_t": "t", "studentt": "t",
-            "gaussian": "gaussian", "normal": "gaussian",
+            "t": "t",
+            "student_t": "t",
+            "studentt": "t",
+            "gaussian": "gaussian",
+            "normal": "gaussian",
         }.get(family_lower, family_lower)
         effective_link = self.link if self.link else _gdl(canonical)
-        is_log_link = (effective_link == "log")
+        is_log_link = effective_link == "log"
         # If response_per_exposure is True the transformed response is on
         # loss-ratio scale (identity link effective).
         is_identity = not is_log_link
@@ -1264,6 +1366,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 cl_fit = cl.Chainladder().fit(tri)
         except Exception as e:
             import warnings as _w
+
             _w.warn(
                 f"BayesianChainLadderGLM: could not fit chain ladder for "
                 f"init_priors_from_chainladder ({e}); using default priors.",
@@ -1308,28 +1411,42 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 return max(1, round(p.days / 365))
             return int(p)
 
-        tri_origin_vals = [_period_to_int(o) for o in tri.origin]   # list[int]
-        tri_dev_vals    = [_period_to_int(d) for d in tri.development]  # list[int]
-        origin_val_to_idx: dict[int, int] = {v: i for i, v in enumerate(tri_origin_vals)}
-        dev_val_to_idx:    dict[int, int] = {v: i for i, v in enumerate(tri_dev_vals)}
+        tri_origin_vals = [_period_to_int(o) for o in tri.origin]  # list[int]
+        tri_dev_vals = [_period_to_int(d) for d in tri.development]  # list[int]
+        origin_val_to_idx: dict[int, int] = {
+            v: i for i, v in enumerate(tri_origin_vals)
+        }
+        dev_val_to_idx: dict[int, int] = {v: i for i, v in enumerate(tri_dev_vals)}
 
         # Observed levels = values that actually appear in the training data.
         # Bambi's treatment-coding reference = first observed level (sorted asc).
         if self.data_ is not None:
-            obs_origins_sorted = sorted(int(v) for v in self.data_["origin"].dropna().unique())
-            obs_devs_sorted    = sorted(int(v) for v in self.data_["dev"].dropna().unique())
+            obs_origins_sorted = sorted(
+                int(v) for v in self.data_["origin"].dropna().unique()
+            )
+            obs_devs_sorted = sorted(
+                int(v) for v in self.data_["dev"].dropna().unique()
+            )
         else:
             obs_origins_sorted = tri_origin_vals
-            obs_devs_sorted    = tri_dev_vals
+            obs_devs_sorted = tri_dev_vals
 
         # Reference cells: first *observed* origin/dev (Bambi treatment reference)
-        ref_origin_idx = origin_val_to_idx.get(obs_origins_sorted[0], 0) if obs_origins_sorted else 0
-        ref_dev_idx    = dev_val_to_idx.get(obs_devs_sorted[0], 0)       if obs_devs_sorted    else 0
+        ref_origin_idx = (
+            origin_val_to_idx.get(obs_origins_sorted[0], 0) if obs_origins_sorted else 0
+        )
+        ref_dev_idx = (
+            dev_val_to_idx.get(obs_devs_sorted[0], 0) if obs_devs_sorted else 0
+        )
 
-        ref_ult   = float(ult_arr[ref_origin_idx]) if ult_arr.size > ref_origin_idx else 1.0
-        ref_ult   = max(ref_ult, 1e-8)
-        ref_frac  = float(incr_pct[ref_dev_idx]) if incr_pct.size > ref_dev_idx else 1e-10
-        ref_frac  = max(ref_frac, 1e-10)
+        ref_ult = (
+            float(ult_arr[ref_origin_idx]) if ult_arr.size > ref_origin_idx else 1.0
+        )
+        ref_ult = max(ref_ult, 1e-8)
+        ref_frac = (
+            float(incr_pct[ref_dev_idx]) if incr_pct.size > ref_dev_idx else 1e-10
+        )
+        ref_frac = max(ref_frac, 1e-10)
 
         # -------------------------------------------------------------------
         # Per-origin EP (needed for identity/loss-ratio scale)
@@ -1337,16 +1454,18 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         ep_by_origin: dict[int, float] | None = None
         if is_identity and self.data_ is not None:
             # _original_exposure_col holds the exposure col name before it was cleared
-            exp_col = self._original_exposure_col if self._original_exposure_col else self.exposure
+            exp_col = (
+                self._original_exposure_col
+                if self._original_exposure_col
+                else self.exposure
+            )
             if exp_col and exp_col in self.data_.columns:
-                ep_by_origin = (
-                    self.data_.groupby("origin")[exp_col].first().to_dict()
-                )
+                ep_by_origin = self.data_.groupby("origin")[exp_col].first().to_dict()
 
         # -------------------------------------------------------------------
         # C(origin) priors — log-contrast or linear-contrast
         # -------------------------------------------------------------------
-        c_origin_match = re.search(r'\bC\s*\(\s*origin\s*\)', self.formula)
+        c_origin_match = re.search(r"\bC\s*\(\s*origin\s*\)", self.formula)
         if c_origin_match and self.data_ is not None and len(obs_origins_sorted) >= 2:
             # Bambi treatment coding: contrasts for obs_origins_sorted[1:] vs [0].
             # Only observed origins get contrast columns — levels with no training
@@ -1356,25 +1475,44 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
             if is_log_link:
                 # Prior means = log(ult[k] / ult[ref]) for each contrast origin k
-                origin_mus = np.array([
-                    np.log(max(float(ult_arr[origin_val_to_idx[o]]), 1e-8)) - np.log(ref_ult)
-                    if o in origin_val_to_idx and origin_val_to_idx[o] < len(ult_arr)
-                    else 0.0
-                    for o in contrast_origins
-                ], dtype=float)
+                origin_mus = np.array(
+                    [
+                        (
+                            np.log(max(float(ult_arr[origin_val_to_idx[o]]), 1e-8))
+                            - np.log(ref_ult)
+                            if o in origin_val_to_idx
+                            and origin_val_to_idx[o] < len(ult_arr)
+                            else 0.0
+                        )
+                        for o in contrast_origins
+                    ],
+                    dtype=float,
+                )
             else:
                 # Identity link: prior on loss-ratio-scale origin effects
                 # LR[k] = ult[k] / EP[k]; contrast mu_k = (LR[k] - LR[ref]) * frac[ref]
                 if ep_by_origin is not None:
-                    origin_mus = np.array([
-                        (
-                            float(ult_arr[origin_val_to_idx[o]]) / max(ep_by_origin.get(o, 1.0), 1e-8)
-                            - ref_ult / max(ep_by_origin.get(obs_origins_sorted[0], 1.0), 1e-8)
-                        ) * ref_frac
-                        if o in origin_val_to_idx and origin_val_to_idx[o] < len(ult_arr)
-                        else 0.0
-                        for o in contrast_origins
-                    ], dtype=float)
+                    origin_mus = np.array(
+                        [
+                            (
+                                (
+                                    float(ult_arr[origin_val_to_idx[o]])
+                                    / max(ep_by_origin.get(o, 1.0), 1e-8)
+                                    - ref_ult
+                                    / max(
+                                        ep_by_origin.get(obs_origins_sorted[0], 1.0),
+                                        1e-8,
+                                    )
+                                )
+                                * ref_frac
+                                if o in origin_val_to_idx
+                                and origin_val_to_idx[o] < len(ult_arr)
+                                else 0.0
+                            )
+                            for o in contrast_origins
+                        ],
+                        dtype=float,
+                    )
                 else:
                     origin_mus = np.zeros(n_contrasts_origin)
 
@@ -1388,7 +1526,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # -------------------------------------------------------------------
         # C(dev) priors — log-contrast or linear-contrast
         # -------------------------------------------------------------------
-        c_dev_match = re.search(r'\bC\s*\(\s*dev\s*\)', self.formula)
+        c_dev_match = re.search(r"\bC\s*\(\s*dev\s*\)", self.formula)
         if c_dev_match and len(obs_devs_sorted) >= 2:
             # Bambi treatment coding: contrasts for obs_devs_sorted[1:] vs [0].
             # Only dev levels that have at least one observed training row are
@@ -1422,19 +1560,29 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                         ep_vals = np.asarray(
                             self.data_[exp_col].dropna().values, dtype=float
                         )
-                        mean_ep_val = float(np.mean(ep_vals[ep_vals > 0])) if ep_vals.size > 0 else 1.0
+                        mean_ep_val = (
+                            float(np.mean(ep_vals[ep_vals > 0]))
+                            if ep_vals.size > 0
+                            else 1.0
+                        )
                         # loss ratio = mean(ult / EP) across origins
                         lr_vals = []
                         for oi, ou in zip(tri_origin_vals, ult_arr):
-                            ep_origin = float(
-                                np.mean(
-                                    ep_vals[
-                                        (self.data_["origin"].values == oi)
-                                        if "origin" in self.data_.columns
-                                        else np.ones(len(ep_vals), dtype=bool)
-                                    ]
+                            ep_origin = (
+                                float(
+                                    np.mean(
+                                        ep_vals[
+                                            (
+                                                (self.data_["origin"].values == oi)
+                                                if "origin" in self.data_.columns
+                                                else np.ones(len(ep_vals), dtype=bool)
+                                            )
+                                        ]
+                                    )
                                 )
-                            ) if len(ep_vals) > 0 else 1.0
+                                if len(ep_vals) > 0
+                                else 1.0
+                            )
                             if ep_origin > 0 and ou > 0:
                                 lr_vals.append(float(ou) / ep_origin)
                         mean_lr = float(np.mean(lr_vals)) if lr_vals else 1.0
@@ -1446,8 +1594,14 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                         # No EP column available; use a rough scale based on mean incremental
                         resp_col = self.formula.split("~")[0].strip()
                         if resp_col in self.data_.columns:
-                            resp_vals = np.asarray(self.data_[resp_col].values, dtype=float)
-                            mean_incr = float(np.nanmean(resp_vals[resp_vals > 0])) if resp_vals.size > 0 else 1.0
+                            resp_vals = np.asarray(
+                                self.data_[resp_col].values, dtype=float
+                            )
+                            mean_incr = (
+                                float(np.nanmean(resp_vals[resp_vals > 0]))
+                                if resp_vals.size > 0
+                                else 1.0
+                            )
                             mean_lr = 1.0  # dimensionless
                             shift_per_ep = float(response_shift) / max(mean_incr, 1.0)
                         else:
@@ -1461,26 +1615,37 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
 
                 ref_frac_shifted = _shifted_frac(ref_frac)
 
-                dev_mus = np.array([
-                    np.log(_shifted_frac(float(incr_pct[dev_val_to_idx[d]]))) - np.log(ref_frac_shifted)
-                    if d in dev_val_to_idx and dev_val_to_idx[d] < len(incr_pct)
-                    else 0.0
-                    for d in contrast_devs
-                ], dtype=float)
+                dev_mus = np.array(
+                    [
+                        (
+                            np.log(_shifted_frac(float(incr_pct[dev_val_to_idx[d]])))
+                            - np.log(ref_frac_shifted)
+                            if d in dev_val_to_idx and dev_val_to_idx[d] < len(incr_pct)
+                            else 0.0
+                        )
+                        for d in contrast_devs
+                    ],
+                    dtype=float,
+                )
             else:
                 # Identity link: incremental LR deviation from reference dev
                 # ref origin LR * (frac[j] - frac[ref])
                 if ep_by_origin is not None and obs_origins_sorted:
                     ref_ep = max(ep_by_origin.get(obs_origins_sorted[0], 1.0), 1e-8)
                     lr_ref = ref_ult / ref_ep
-                    dev_mus = np.array([
-                        lr_ref * (
-                            float(incr_pct[dev_val_to_idx[d]]) - ref_frac
-                            if d in dev_val_to_idx and dev_val_to_idx[d] < len(incr_pct)
-                            else 0.0
-                        )
-                        for d in contrast_devs
-                    ], dtype=float)
+                    dev_mus = np.array(
+                        [
+                            lr_ref
+                            * (
+                                float(incr_pct[dev_val_to_idx[d]]) - ref_frac
+                                if d in dev_val_to_idx
+                                and dev_val_to_idx[d] < len(incr_pct)
+                                else 0.0
+                            )
+                            for d in contrast_devs
+                        ],
+                        dtype=float,
+                    )
                 else:
                     dev_mus = np.zeros(n_contrasts_dev)
 
@@ -1492,10 +1657,10 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 # the coefficient close to the chain-ladder informed mean while
                 # still allowing small Bayesian updates.
                 dummy_devs = getattr(self, "_dummy_dev_levels", set())
-                dev_sigmas = np.array([
-                    0.1 if (d in dummy_devs) else sd
-                    for d in contrast_devs
-                ], dtype=float)
+                dev_sigmas = np.array(
+                    [0.1 if (d in dummy_devs) else sd for d in contrast_devs],
+                    dtype=float,
+                )
                 priors["C(dev)"] = bmb.Prior(
                     "Normal",
                     mu=dev_mus.astype(float),
@@ -1505,7 +1670,9 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # -------------------------------------------------------------------
         # bs(dev_idx, df=N) spline priors — project CL pattern onto basis
         # -------------------------------------------------------------------
-        spline_match = re.search(r'\bbs\s*\(\s*dev_idx\s*,\s*df\s*=\s*(\d+)\s*\)', self.formula)
+        spline_match = re.search(
+            r"\bbs\s*\(\s*dev_idx\s*,\s*df\s*=\s*(\d+)\s*\)", self.formula
+        )
         if spline_match and self.data_ is not None:
             df_spline = int(spline_match.group(1))
             try:
@@ -1554,11 +1721,13 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
                 else:
                     interior_knots = np.array([])
                 # Full knot vector: boundary repeated (degree+1) times each
-                knots = np.concatenate([
-                    np.repeat(x_min, degree + 1),
-                    interior_knots,
-                    np.repeat(x_max, degree + 1),
-                ])
+                knots = np.concatenate(
+                    [
+                        np.repeat(x_min, degree + 1),
+                        interior_knots,
+                        np.repeat(x_max, degree + 1),
+                    ]
+                )
                 # Build design matrix: one column per basis function
                 n_basis = len(knots) - degree - 1
                 B = np.zeros((n_train_devs, n_basis))
@@ -1602,7 +1771,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # -------------------------------------------------------------------
         # (1 | origin) random intercept — HalfNormal on sigma
         # -------------------------------------------------------------------
-        re_origin_match = re.search(r'\(1\s*\|\s*origin\s*\)', self.formula)
+        re_origin_match = re.search(r"\(1\s*\|\s*origin\s*\)", self.formula)
         if re_origin_match:
             # Empirical SD of log(ultimates) across origins.
             # Use exactly 1× the empirical SD as the HalfNormal scale: the
@@ -1627,7 +1796,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # HalfNormal(0.2) gives a 95th percentile of ~0.4 on log scale,
         # corresponding to roughly a ±40% calendar-year swing — weakly
         # informative but much tighter than Bambi's sd(y)-scaled default.
-        re_cal_match = re.search(r'\(1\s*\|\s*calendar\s*\)', self.formula)
+        re_cal_match = re.search(r"\(1\s*\|\s*calendar\s*\)", self.formula)
         if re_cal_match:
             priors["1|calendar"] = bmb.Prior(
                 "Normal",
@@ -1659,10 +1828,14 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         # Detect effective link: use explicit self.link if set, else fall back to
         # the family default.  t / gaussian / normal are identity-link by default.
         from .models import _get_default_link as _gdl
+
         family_lower = self.family.lower()
         canonical = {
-            "t": "t", "student_t": "t", "studentt": "t",
-            "gaussian": "gaussian", "normal": "gaussian",
+            "t": "t",
+            "student_t": "t",
+            "studentt": "t",
+            "gaussian": "gaussian",
+            "normal": "gaussian",
         }.get(family_lower, family_lower)
         effective_link = self.link if self.link else _gdl(canonical)
         is_log_link = effective_link == "log"
@@ -1700,9 +1873,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         }
 
         if is_log_link:
-            for term in re.findall(
-                r"C\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\)", self.formula
-            ):
+            for term in re.findall(r"C\(\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\)", self.formula):
                 key = re.sub(r"\s+", "", term)
                 defaults[key] = bmb.Prior("Normal", mu=0.0, sigma=1.0)
 
@@ -1722,7 +1893,12 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
         family_lower = self.family.lower()
 
         # Count distributions require non-negative values
-        count_families = ("negativebinomial", "negative_binomial", "negbinom", "poisson")
+        count_families = (
+            "negativebinomial",
+            "negative_binomial",
+            "negbinom",
+            "poisson",
+        )
         # Positive continuous distributions require positive values
         positive_families = ("gamma",)
 
@@ -1744,6 +1920,7 @@ class BayesianChainLadderGLM(BaseStochasticReserve):
             # Check for non-integer values (warning only for count distributions)
             if not np.allclose(response, np.round(response)):
                 import warnings
+
                 warnings.warn(
                     f"The '{self.family}' family is intended for count (integer) data, "
                     f"but the incremental data contains non-integer values. "
@@ -1912,7 +2089,7 @@ class BayesianCSR(BaseStochasticReserve):
         triangle: cl.Triangle,
         premium_triangle: cl.Triangle | None = None,
         premium_value: float | None = None,
-    ) -> "BayesianCSR":
+    ) -> BayesianCSR:
         """
         Fit the Bayesian CSR model to a triangle.
 
@@ -1996,6 +2173,8 @@ class BayesianCSR(BaseStochasticReserve):
         Note: For fully developed origins (no future cells), Ultimate = Paid,
         StdErr = 0, and IBNR = 0 with no uncertainty.
         """
+        from ._triangle_ops import cumulative_array
+
         # Get posterior samples of model parameters
         posterior = self.idata.posterior
 
@@ -2016,6 +2195,13 @@ class BayesianCSR(BaseStochasticReserve):
         # The ultimate development period is the maximum dev in the triangle
         ultimate_dev = max(dev_levels)
         ultimate_dev_idx = dev_levels.index(ultimate_dev)
+
+        # Per-cell cumulative posterior paths (England & Verrall "Complete
+        # Cumulatives"): start from the observed diagonal, broadcast across
+        # samples, and fill in future cells origin-by-origin below.
+        cum_obs, tri_origins, tri_devs = cumulative_array(self.triangle_)
+        n_samples_total = int(np.prod(alpha.shape[:2]))
+        full_paths = np.repeat(cum_obs[..., None], n_samples_total, axis=-1)
 
         # Get origins with future cells
         origins_with_future = set()
@@ -2051,30 +2237,36 @@ class BayesianCSR(BaseStochasticReserve):
 
             if origin in origins_with_future:
                 # Origin has future cells - compute posterior predictive
-                # Compute mu at ultimate development period
-                # mu = logprem + logelr + alpha[origin] + beta[ultimate_dev] * speedup[origin]
-                mu_ultimate = (
-                    logprem
-                    + logelr
-                    + alpha[:, :, origin_idx]
-                    + beta[:, :, ultimate_dev_idx] * speedup[:, :, origin_idx]
-                )
-
-                # Get sigma at ultimate development period
-                sig_ultimate = sig[:, :, ultimate_dev_idx]
-
-                # Generate predictions for ultimate cumulative loss
-                if self.include_process_variance:
-                    # Sample from Normal(mu, sigma) and exponentiate for lognormal
-                    # This includes both parameter uncertainty and process variance
-                    logloss_samples = mu_ultimate + sig_ultimate * np.random.standard_normal(
-                        mu_ultimate.shape
+                # comonotonic paths: one standard-normal shock per (chain,
+                # draw) is shared across every future development period for
+                # this origin, so the simulated triangle is internally
+                # consistent cell-to-cell (England & Verrall "Complete
+                # Cumulatives"), while the ultimate cell reproduces exactly
+                # the distribution the original single-cell formula gives.
+                last_dev_idx = dev_levels.index(last_observed_dev)
+                future_dev_idx = list(range(last_dev_idx + 1, ultimate_dev_idx + 1))
+                z = np.random.standard_normal(
+                    alpha.shape[:2]
+                )  # one shock per (chain, draw)
+                path_cells = {}
+                for k in future_dev_idx:
+                    mu_k = (
+                        logprem
+                        + logelr
+                        + alpha[:, :, origin_idx]
+                        + beta[:, :, k] * speedup[:, :, origin_idx]
                     )
-                    ultimate_cumulative = np.exp(logloss_samples)
-                else:
-                    # Use expected value without process variance
-                    # For lognormal: E[exp(X)] = exp(mu + sigma²/2)
-                    ultimate_cumulative = np.exp(mu_ultimate + 0.5 * sig_ultimate**2)
+                    sig_k = sig[:, :, k]
+                    if self.include_process_variance:
+                        path_cells[k] = np.exp(mu_k + sig_k * z)
+                    else:
+                        path_cells[k] = np.exp(mu_k + 0.5 * sig_k**2)
+                ultimate_cumulative = path_cells[ultimate_dev_idx]
+
+                tri_i = tri_origins.index(int(origin))
+                for k, cells in path_cells.items():
+                    tri_j = tri_devs.index(int(dev_levels[k]))
+                    full_paths[tri_i, tri_j, :] = cells.reshape(-1)
 
                 # IBNR = Ultimate - Paid to date
                 ibnr = ultimate_cumulative - last_observed_cumulative
@@ -2099,6 +2291,8 @@ class BayesianCSR(BaseStochasticReserve):
         # Create reserve summaries
         if all_predictions:
             self._compute_reserve_summaries(all_predictions)
+
+        self._set_full_cumulative_posterior(full_paths, tri_origins, tri_devs)
 
     def _compute_reserve_summaries(
         self, future_predictions: dict[Any, dict[str, np.ndarray]]

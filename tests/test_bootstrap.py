@@ -51,7 +51,13 @@ class TestMackChainLadder:
 
         model = MackChainLadder().fit(raa_triangle)
         assert list(model.ibnr_.columns) == [
-            "mean", "std", "median", "5%", "25%", "75%", "95%"
+            "mean",
+            "std",
+            "median",
+            "5%",
+            "25%",
+            "75%",
+            "95%",
         ]
 
     def test_summary_has_total_row(self, raa_triangle):
@@ -143,32 +149,27 @@ class TestBootstrapODPChainLadder:
     def test_fit_populates_reserves_posterior(self, genins_triangle):
         from bayesianchainladder.bootstrap import BootstrapODPChainLadder
 
-        model = BootstrapODPChainLadder(n_sims=100, random_seed=42).fit(
-            genins_triangle
-        )
+        model = BootstrapODPChainLadder(n_sims=100, random_seed=42).fit(genins_triangle)
         assert model.reserves_posterior_ is not None
         # Expect dims (origin, sample) with sample size = n_sims
         assert "origin" in model.reserves_posterior_.dims
         sample_dims = [d for d in model.reserves_posterior_.dims if d != "origin"]
-        sample_size = int(np.prod([model.reserves_posterior_.sizes[d]
-                                   for d in sample_dims]))
+        sample_size = int(
+            np.prod([model.reserves_posterior_.sizes[d] for d in sample_dims])
+        )
         assert sample_size == 100
 
     def test_summary_has_total_row(self, genins_triangle):
         from bayesianchainladder.bootstrap import BootstrapODPChainLadder
 
-        model = BootstrapODPChainLadder(n_sims=100, random_seed=42).fit(
-            genins_triangle
-        )
+        model = BootstrapODPChainLadder(n_sims=100, random_seed=42).fit(genins_triangle)
         summary = model.summary()
         assert "Total" in summary.index
 
     def test_total_summary_returns_finite(self, genins_triangle):
         from bayesianchainladder.bootstrap import BootstrapODPChainLadder
 
-        model = BootstrapODPChainLadder(n_sims=200, random_seed=42).fit(
-            genins_triangle
-        )
+        model = BootstrapODPChainLadder(n_sims=200, random_seed=42).fit(genins_triangle)
         result = model.total_summary()
         assert np.isfinite(result.total_reserve_mean)
         assert np.isfinite(result.total_reserve_stddev)
@@ -182,9 +183,7 @@ class TestBootstrapODPChainLadder:
         cl_model = cl.Chainladder().fit(genins_triangle)
         cl_total = float(np.nansum(np.asarray(cl_model.ibnr_.values)))
 
-        model = BootstrapODPChainLadder(n_sims=500, random_seed=42).fit(
-            genins_triangle
-        )
+        model = BootstrapODPChainLadder(n_sims=500, random_seed=42).fit(genins_triangle)
         boot_total = model.total_summary().total_reserve_mean
 
         assert boot_total == pytest.approx(cl_total, rel=0.05)
@@ -209,9 +208,7 @@ class TestCorrelatedBootstrapODPSample:
     def test_fit_with_rho_zero(self, genins_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
 
-        sampler = CorrelatedBootstrapODPSample(
-            n_sims=50, rho=0.0, random_state=42
-        )
+        sampler = CorrelatedBootstrapODPSample(n_sims=50, rho=0.0, random_state=42)
         sampler.fit(genins_triangle)
         # rho=0 path doesn't build a correlation matrix
         assert sampler.correlation_matrix_ is None
@@ -220,9 +217,7 @@ class TestCorrelatedBootstrapODPSample:
     def test_fit_with_rho_positive_builds_correlation_matrix(self, genins_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
 
-        sampler = CorrelatedBootstrapODPSample(
-            n_sims=50, rho=0.5, random_state=42
-        )
+        sampler = CorrelatedBootstrapODPSample(n_sims=50, rho=0.5, random_state=42)
         sampler.fit(genins_triangle)
         assert sampler.correlation_matrix_ is not None
         # Diagonal should be 1
@@ -251,9 +246,7 @@ class TestCorrelatedBootstrapODPSample:
     def test_transform_produces_n_sims_resamples(self, genins_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
 
-        sampler = CorrelatedBootstrapODPSample(
-            n_sims=20, rho=0.3, random_state=42
-        )
+        sampler = CorrelatedBootstrapODPSample(n_sims=20, rho=0.3, random_state=42)
         sampler.fit(genins_triangle)
         resampled = sampler.transform(genins_triangle)
         # The resampled triangle's first dim should be n_sims
@@ -270,9 +263,7 @@ class TestCorrelatedBootstrapChainLadder:
     def test_fit_returns_self(self, genins_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
 
-        model = CorrelatedBootstrapChainLadder(
-            n_sims=100, rho=0.3, random_seed=42
-        )
+        model = CorrelatedBootstrapChainLadder(n_sims=100, rho=0.3, random_seed=42)
         result = model.fit(genins_triangle)
         assert result is model
         assert model._is_fitted is True
@@ -280,9 +271,9 @@ class TestCorrelatedBootstrapChainLadder:
     def test_summary_has_total_row(self, genins_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
 
-        model = CorrelatedBootstrapChainLadder(
-            n_sims=200, rho=0.3, random_seed=42
-        ).fit(genins_triangle)
+        model = CorrelatedBootstrapChainLadder(n_sims=200, rho=0.3, random_seed=42).fit(
+            genins_triangle
+        )
         summary = model.summary()
         assert "Total" in summary.index
 
@@ -297,12 +288,10 @@ class TestCorrelatedBootstrapChainLadder:
 
         # Note: not exact match because the underlying samplers differ in
         # implementation, but the totals should be in the same ballpark.
-        indep = BootstrapODPChainLadder(n_sims=500, random_seed=42).fit(
+        indep = BootstrapODPChainLadder(n_sims=500, random_seed=42).fit(genins_triangle)
+        corr = CorrelatedBootstrapChainLadder(n_sims=500, rho=0.0, random_seed=42).fit(
             genins_triangle
         )
-        corr = CorrelatedBootstrapChainLadder(
-            n_sims=500, rho=0.0, random_seed=42
-        ).fit(genins_triangle)
 
         indep_std = indep.total_summary().total_reserve_stddev
         corr_std = corr.total_summary().total_reserve_stddev
@@ -312,12 +301,12 @@ class TestCorrelatedBootstrapChainLadder:
         """Higher rho should produce a wider total reserve distribution."""
         from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
 
-        low = CorrelatedBootstrapChainLadder(
-            n_sims=500, rho=0.0, random_seed=42
-        ).fit(genins_triangle)
-        high = CorrelatedBootstrapChainLadder(
-            n_sims=500, rho=0.5, random_seed=42
-        ).fit(genins_triangle)
+        low = CorrelatedBootstrapChainLadder(n_sims=500, rho=0.0, random_seed=42).fit(
+            genins_triangle
+        )
+        high = CorrelatedBootstrapChainLadder(n_sims=500, rho=0.5, random_seed=42).fit(
+            genins_triangle
+        )
 
         assert (
             high.total_summary().total_reserve_stddev
@@ -352,9 +341,9 @@ class TestCorrelatedBootstrapChainLadder:
             ).fit(genins_triangle)
             mean = model.total_summary().total_reserve_mean
             # Allow 10% tolerance for Monte Carlo noise at n_sims=1000
-            assert abs(mean / cl_total - 1) < 0.10, (
-                f"rho={rho}: mean={mean:,.0f} drifted >{10}% from CL={cl_total:,.0f}"
-            )
+            assert (
+                abs(mean / cl_total - 1) < 0.10
+            ), f"rho={rho}: mean={mean:,.0f} drifted >{10}% from CL={cl_total:,.0f}"
 
 
 class TestBootstrapODPBornhuetterFerguson:
@@ -369,12 +358,16 @@ class TestBootstrapODPBornhuetterFerguson:
     def test_fit_returns_self(self, genins_triangle, genins_premium_triangle):
         from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
 
-        model = BootstrapODPBornhuetterFerguson(n_sims=100, apriori=0.65, random_seed=42)
+        model = BootstrapODPBornhuetterFerguson(
+            n_sims=100, apriori=0.65, random_seed=42
+        )
         result = model.fit(genins_triangle, exposure_triangle=genins_premium_triangle)
         assert result is model
         assert model._is_fitted is True
 
-    def test_fit_populates_reserves_posterior(self, genins_triangle, genins_premium_triangle):
+    def test_fit_populates_reserves_posterior(
+        self, genins_triangle, genins_premium_triangle
+    ):
         from bayesianchainladder.bootstrap import BootstrapODPBornhuetterFerguson
 
         model = BootstrapODPBornhuetterFerguson(
@@ -400,7 +393,13 @@ class TestBootstrapODPBornhuetterFerguson:
             n_sims=100, apriori=0.65, random_seed=42
         ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
         assert list(model.ibnr_.columns) == [
-            "mean", "std", "median", "5%", "25%", "75%", "95%"
+            "mean",
+            "std",
+            "median",
+            "5%",
+            "25%",
+            "75%",
+            "95%",
         ]
 
     def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
@@ -432,7 +431,9 @@ class TestBootstrapODPBornhuetterFerguson:
         bf = BootstrapODPBornhuetterFerguson(
             n_sims=200, apriori=0.65, random_seed=42
         ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
-        cl_model = BootstrapODPChainLadder(n_sims=200, random_seed=42).fit(genins_triangle)
+        cl_model = BootstrapODPChainLadder(n_sims=200, random_seed=42).fit(
+            genins_triangle
+        )
 
         bf_mean = bf.total_summary().total_reserve_mean
         cl_mean = cl_model.total_summary().total_reserve_mean
@@ -457,12 +458,14 @@ class TestBootstrapODPCapeCod:
         assert result is model
         assert model._is_fitted is True
 
-    def test_fit_populates_reserves_posterior(self, genins_triangle, genins_premium_triangle):
+    def test_fit_populates_reserves_posterior(
+        self, genins_triangle, genins_premium_triangle
+    ):
         from bayesianchainladder.bootstrap import BootstrapODPCapeCod
 
-        model = BootstrapODPCapeCod(
-            n_sims=100, random_seed=42
-        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        model = BootstrapODPCapeCod(n_sims=100, random_seed=42).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
         assert model.reserves_posterior_ is not None
         assert "origin" in model.reserves_posterior_.dims
         assert model.reserves_posterior_.sizes["sample"] == 100
@@ -470,18 +473,18 @@ class TestBootstrapODPCapeCod:
     def test_summary_has_total_row(self, genins_triangle, genins_premium_triangle):
         from bayesianchainladder.bootstrap import BootstrapODPCapeCod
 
-        model = BootstrapODPCapeCod(
-            n_sims=100, random_seed=42
-        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        model = BootstrapODPCapeCod(n_sims=100, random_seed=42).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
         summary = model.summary()
         assert "Total" in summary.index
 
     def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
         from bayesianchainladder.bootstrap import BootstrapODPCapeCod
 
-        model = BootstrapODPCapeCod(
-            n_sims=200, random_seed=42
-        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        model = BootstrapODPCapeCod(n_sims=200, random_seed=42).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
         result = model.total_summary()
         assert np.isfinite(result.total_reserve_mean)
         assert np.isfinite(result.total_reserve_stddev)
@@ -494,7 +497,9 @@ class TestBootstrapODPCapeCod:
         with pytest.raises(ValueError, match="exposure_triangle is required"):
             model.fit(genins_triangle)
 
-    def test_random_seed_makes_run_deterministic(self, genins_triangle, genins_premium_triangle):
+    def test_random_seed_makes_run_deterministic(
+        self, genins_triangle, genins_premium_triangle
+    ):
         from bayesianchainladder.bootstrap import BootstrapODPCapeCod
 
         model_a = BootstrapODPCapeCod(n_sims=100, random_seed=7).fit(
@@ -512,13 +517,17 @@ class TestCorrelatedBootstrapODPBornhuetterFerguson:
     """Smoke tests for correlated ODP bootstrap Bornhuetter-Ferguson."""
 
     def test_inherits_from_base(self):
-        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+        from bayesianchainladder.bootstrap import (
+            CorrelatedBootstrapODPBornhuetterFerguson,
+        )
 
         model = CorrelatedBootstrapODPBornhuetterFerguson()
         assert isinstance(model, BaseStochasticReserve)
 
     def test_fit_returns_self(self, genins_triangle, genins_premium_triangle):
-        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+        from bayesianchainladder.bootstrap import (
+            CorrelatedBootstrapODPBornhuetterFerguson,
+        )
 
         model = CorrelatedBootstrapODPBornhuetterFerguson(
             n_sims=100, rho=0.3, apriori=0.65, random_seed=42
@@ -528,7 +537,9 @@ class TestCorrelatedBootstrapODPBornhuetterFerguson:
         assert model._is_fitted is True
 
     def test_summary_has_total_row(self, genins_triangle, genins_premium_triangle):
-        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+        from bayesianchainladder.bootstrap import (
+            CorrelatedBootstrapODPBornhuetterFerguson,
+        )
 
         model = CorrelatedBootstrapODPBornhuetterFerguson(
             n_sims=100, rho=0.3, apriori=0.65, random_seed=42
@@ -537,7 +548,9 @@ class TestCorrelatedBootstrapODPBornhuetterFerguson:
         assert "Total" in summary.index
 
     def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
-        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+        from bayesianchainladder.bootstrap import (
+            CorrelatedBootstrapODPBornhuetterFerguson,
+        )
 
         model = CorrelatedBootstrapODPBornhuetterFerguson(
             n_sims=200, rho=0.3, apriori=0.65, random_seed=42
@@ -548,15 +561,21 @@ class TestCorrelatedBootstrapODPBornhuetterFerguson:
         assert result.total_reserve_stddev > 0
 
     def test_missing_exposure_raises(self, genins_triangle):
-        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+        from bayesianchainladder.bootstrap import (
+            CorrelatedBootstrapODPBornhuetterFerguson,
+        )
 
         model = CorrelatedBootstrapODPBornhuetterFerguson(n_sims=50, apriori=0.65)
         with pytest.raises(ValueError, match="exposure_triangle is required"):
             model.fit(genins_triangle)
 
-    def test_rho_positive_widens_distribution(self, genins_triangle, genins_premium_triangle):
+    def test_rho_positive_widens_distribution(
+        self, genins_triangle, genins_premium_triangle
+    ):
         """Higher rho should produce a wider total reserve distribution (B-F)."""
-        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPBornhuetterFerguson
+        from bayesianchainladder.bootstrap import (
+            CorrelatedBootstrapODPBornhuetterFerguson,
+        )
 
         low = CorrelatedBootstrapODPBornhuetterFerguson(
             n_sims=500, rho=0.0, apriori=0.65, random_seed=42
@@ -583,9 +602,7 @@ class TestCorrelatedBootstrapODPCapeCod:
     def test_fit_returns_self(self, genins_triangle, genins_premium_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
 
-        model = CorrelatedBootstrapODPCapeCod(
-            n_sims=100, rho=0.3, random_seed=42
-        )
+        model = CorrelatedBootstrapODPCapeCod(n_sims=100, rho=0.3, random_seed=42)
         result = model.fit(genins_triangle, exposure_triangle=genins_premium_triangle)
         assert result is model
         assert model._is_fitted is True
@@ -593,18 +610,18 @@ class TestCorrelatedBootstrapODPCapeCod:
     def test_summary_has_total_row(self, genins_triangle, genins_premium_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
 
-        model = CorrelatedBootstrapODPCapeCod(
-            n_sims=100, rho=0.3, random_seed=42
-        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        model = CorrelatedBootstrapODPCapeCod(n_sims=100, rho=0.3, random_seed=42).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
         summary = model.summary()
         assert "Total" in summary.index
 
     def test_total_summary_is_finite(self, genins_triangle, genins_premium_triangle):
         from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
 
-        model = CorrelatedBootstrapODPCapeCod(
-            n_sims=200, rho=0.3, random_seed=42
-        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        model = CorrelatedBootstrapODPCapeCod(n_sims=200, rho=0.3, random_seed=42).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
         result = model.total_summary()
         assert np.isfinite(result.total_reserve_mean)
         assert np.isfinite(result.total_reserve_stddev)
@@ -617,18 +634,179 @@ class TestCorrelatedBootstrapODPCapeCod:
         with pytest.raises(ValueError, match="exposure_triangle is required"):
             model.fit(genins_triangle)
 
-    def test_rho_positive_widens_distribution(self, genins_triangle, genins_premium_triangle):
+    def test_rho_positive_widens_distribution(
+        self, genins_triangle, genins_premium_triangle
+    ):
         """Higher rho should produce a wider total reserve distribution (CC)."""
         from bayesianchainladder.bootstrap import CorrelatedBootstrapODPCapeCod
 
-        low = CorrelatedBootstrapODPCapeCod(
-            n_sims=500, rho=0.0, random_seed=42
-        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
-        high = CorrelatedBootstrapODPCapeCod(
-            n_sims=500, rho=0.5, random_seed=42
-        ).fit(genins_triangle, exposure_triangle=genins_premium_triangle)
+        low = CorrelatedBootstrapODPCapeCod(n_sims=500, rho=0.0, random_seed=42).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
+        high = CorrelatedBootstrapODPCapeCod(n_sims=500, rho=0.5, random_seed=42).fit(
+            genins_triangle, exposure_triangle=genins_premium_triangle
+        )
 
         assert (
             high.total_summary().total_reserve_stddev
             > low.total_summary().total_reserve_stddev
+        )
+
+
+class TestFullCumulativePosteriorWrappers:
+    @pytest.fixture
+    def genins(self):
+        return cl.load_sample("genins")
+
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda: __import__(
+                "bayesianchainladder.bootstrap", fromlist=["x"]
+            ).BootstrapODPChainLadder(n_sims=200, random_seed=1),
+            lambda: __import__(
+                "bayesianchainladder.bootstrap", fromlist=["x"]
+            ).CorrelatedBootstrapChainLadder(n_sims=200, rho=0.3, random_seed=1),
+        ],
+    )
+    def test_chainladder_wrappers_expose_consistent_full_posterior(
+        self, genins, factory
+    ):
+        model = factory().fit(genins)
+        full = model.full_cumulative_posterior_
+        assert full.dims == ("origin", "dev", "sample")
+        assert full.shape == (10, 10, 200)
+        cum = np.asarray(genins.values)[0, 0]
+        obs = ~np.isnan(cum)
+        # observed cells are constant across samples and equal the data
+        np.testing.assert_allclose(
+            full.values[obs], np.repeat(cum[obs][:, None], 200, axis=1), rtol=1e-9
+        )
+        derived = model._reserves_from_full_posterior()
+        np.testing.assert_allclose(
+            derived.values, model.reserves_posterior_.values, rtol=1e-6, atol=1e-6
+        )
+        assert not np.isnan(full.values).any()
+
+    def test_chainladder_wrapper_future_cells_carry_independent_process_noise(
+        self, genins
+    ):
+        """Regression guard: future cells must carry their own simulated
+        process noise per cell, not a deterministic emergence-pattern
+        back-fill scaled to hit a noisy endpoint. A deterministic back-fill
+        would make the ratio of any two future incremental cells for the
+        same origin constant across simulations; genuine bootstrap process
+        noise makes it vary."""
+        from bayesianchainladder.bootstrap import BootstrapODPChainLadder
+
+        model = BootstrapODPChainLadder(n_sims=200, random_seed=1).fit(genins)
+        incr = model.incremental_posterior()
+
+        origin = 2010  # most recent origin: only dev=12 observed, 24...120 future
+        ratio = incr.sel(origin=origin, dev=24) / incr.sel(origin=origin, dev=36)
+        assert float(ratio.std()) > 1e-6
+
+        future_devs = [d for d in incr.coords["dev"].values if d > 12]
+        for dev in future_devs:
+            cell_std = float(incr.sel(origin=origin, dev=dev).std("sample"))
+            assert cell_std > 0, f"dev={dev} has zero variance across samples"
+
+    def test_bf_cc_wrappers_expose_full_posterior(
+        self, genins, genins_premium_triangle
+    ):
+        from bayesianchainladder.bootstrap import (
+            BootstrapODPBornhuetterFerguson,
+            BootstrapODPCapeCod,
+        )
+
+        for cls in (BootstrapODPBornhuetterFerguson, BootstrapODPCapeCod):
+            model = cls(n_sims=100, random_seed=3).fit(
+                genins, exposure_triangle=genins_premium_triangle
+            )
+            full = model.full_cumulative_posterior_
+            assert full.shape == (10, 10, 100)
+            cum = np.asarray(genins.values)[0, 0]
+            obs = ~np.isnan(cum)
+            np.testing.assert_allclose(
+                full.values[obs], np.repeat(cum[obs][:, None], 100, axis=1), rtol=1e-9
+            )
+            # ultimates from the full posterior agree with the wrapper's own IBNR
+            derived = model._reserves_from_full_posterior()
+            np.testing.assert_allclose(
+                derived.transpose("origin", "sample").values,
+                model.reserves_posterior_.transpose("origin", "sample").values,
+                rtol=1e-6,
+                atol=1e-6,
+            )
+            # per-cell process noise: future incremental cells for the same
+            # origin must vary independently across simulations, not share a
+            # deterministic emergence-pattern back-fill.
+            incr = model.incremental_posterior()
+            ratio = incr.sel(origin=2010, dev=24) / incr.sel(origin=2010, dev=36)
+            assert float(ratio.std()) > 1e-6
+
+    def test_mack_wrapper_has_no_full_posterior(self, raa_triangle):
+        from bayesianchainladder.bootstrap import MackChainLadder
+
+        model = MackChainLadder().fit(raa_triangle)
+        assert model.full_cumulative_posterior_ is None
+        with pytest.raises(ValueError, match="per-cell"):
+            model._require_full_posterior()
+
+
+class TestNonConstantScale:
+    @pytest.fixture
+    def genins(self):
+        return cl.load_sample("genins")
+
+    def test_constant_scale_vector_equals_pooled_phi(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        s = CorrelatedBootstrapODPSample(n_sims=50, random_state=1).fit(genins)
+        assert s.scale_by_dev_.shape == (10,)
+        np.testing.assert_allclose(s.scale_by_dev_, float(s.scale_))
+        assert s.standardized_residuals_.shape == (10, 10)
+
+    def test_nonconstant_scale_follows_england_rules(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapODPSample
+
+        s = CorrelatedBootstrapODPSample(
+            n_sims=50, random_state=1, scale="nonconstant"
+        ).fit(genins)
+        phi = s.scale_by_dev_
+        assert phi.shape == (10,)
+        assert np.all(phi >= 0)
+        assert phi[-1] == pytest.approx(min(phi[-2], phi[-3]))
+        assert not np.allclose(phi, phi[0])  # genuinely varies by development period
+        with pytest.raises(ValueError):
+            CorrelatedBootstrapODPSample(scale="weird")
+
+    def test_process_scale_override_changes_sd_not_mean(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        base = CorrelatedBootstrapChainLadder(n_sims=2000, rho=0.0, random_seed=5).fit(
+            genins
+        )
+        phi = base.sampler_.scale_by_dev_
+        none = CorrelatedBootstrapChainLadder(
+            n_sims=2000, rho=0.0, random_seed=5, process_scale=np.zeros(10)
+        ).fit(genins)
+        big = CorrelatedBootstrapChainLadder(
+            n_sims=2000, rho=0.0, random_seed=5, process_scale=phi * 9.0
+        ).fit(genins)
+        sd = lambda m: m.total_summary().total_reserve_stddev  # noqa: E731
+        mean = lambda m: m.total_summary().total_reserve_mean  # noqa: E731
+        assert sd(none) < sd(base) < sd(big)
+        assert mean(none) == pytest.approx(mean(base), rel=0.03)
+        assert mean(big) == pytest.approx(mean(base), rel=0.05)
+
+    def test_drop_passes_through_wrapper(self, genins):
+        from bayesianchainladder.bootstrap import CorrelatedBootstrapChainLadder
+
+        base = CorrelatedBootstrapChainLadder(n_sims=300, random_seed=2).fit(genins)
+        dropped = CorrelatedBootstrapChainLadder(
+            n_sims=300, random_seed=2, drop=[("2003", 72)]
+        ).fit(genins)
+        assert dropped.total_summary().total_reserve_mean != pytest.approx(
+            base.total_summary().total_reserve_mean, rel=1e-4
         )

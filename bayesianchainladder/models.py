@@ -117,7 +117,7 @@ def build_bambi_model(
     return model
 
 
-def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
+def _get_family(family: str, link: str | None = None) -> str | bmb.Family:
     """Return a Bambi family spec — either a name string (default link) or a custom Family object.
 
     When ``link`` matches the family default (or is None), a plain string is returned so that
@@ -187,7 +187,11 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
             "default_priors": {"alpha": "HalfCauchy"},
         },
         "negativebinomial": {
-            "likelihood": {"name": "NegativeBinomial", "params": ["mu", "alpha"], "parent": "mu"},
+            "likelihood": {
+                "name": "NegativeBinomial",
+                "params": ["mu", "alpha"],
+                "parent": "mu",
+            },
             "link": {"mu": link, "alpha": "log"},
             "family_cls_name": "NegativeBinomial",
             "default_priors": {"alpha": "HalfCauchy"},
@@ -211,7 +215,11 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
             "default_priors": {"lam": "HalfCauchy"},
         },
         "t": {
-            "likelihood": {"name": "StudentT", "params": ["mu", "sigma", "nu"], "parent": "mu"},
+            "likelihood": {
+                "name": "StudentT",
+                "params": ["mu", "sigma", "nu"],
+                "parent": "mu",
+            },
             "link": {"mu": link, "sigma": "log", "nu": "log"},
             "family_cls_name": "StudentT",
             "default_priors": {"sigma": "HalfNormal", "nu": "Gamma"},
@@ -221,6 +229,7 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
     if bambi_name not in _family_specs:
         # Fallback for any future family additions — warn and return the string.
         import warnings
+
         warnings.warn(
             f"Custom link '{link}' for family '{bambi_name}' is not supported; "
             "using the default link instead.",
@@ -232,6 +241,7 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
 
     # Dynamically import the Bambi family class by name.
     from bambi.families import univariate as _bmb_univariate
+
     family_cls = getattr(_bmb_univariate, spec["family_cls_name"])
 
     return _bmb_gen_family(
@@ -538,9 +548,9 @@ def predict_posterior(
         )
 
         if kind == "mean":
-            return idata.posterior[f"{model.response_component.response.name}_mean"] # type: ignore
+            return idata.posterior[f"{model.response_component.response.name}_mean"]  # type: ignore
         else:
-            return idata.posterior_predictive[model.response_component.response.name] # type: ignore
+            return idata.posterior_predictive[model.response_component.response.name]  # type: ignore
 
     else:
         # PyMC model - use sample_posterior_predictive with updated data
@@ -597,8 +607,8 @@ def _predict_pymc(
         DataArray with posterior predictions.
     """
     # Get the original coords to map new data to indices
-    origin_levels = list(model.coords["origin"]) # type: ignore
-    dev_levels = list(model.coords["dev"]) # type: ignore
+    origin_levels = list(model.coords["origin"])  # type: ignore
+    dev_levels = list(model.coords["dev"])  # type: ignore
 
     # Encode new data using the same levels
     def encode_column(values: pd.Series, levels: list) -> np.ndarray:
@@ -619,7 +629,7 @@ def _predict_pymc(
         raise ValueError(f"Unknown dev levels in prediction data: {unknown}")
 
     # Extract posterior samples
-    posterior = idata.posterior # type: ignore
+    posterior = idata.posterior  # type: ignore
 
     # Get parameter arrays - stack chains and draws
     alpha_origin = posterior["alpha_origin"].values  # shape: (chains, draws, n_origin)
@@ -647,7 +657,7 @@ def _predict_pymc(
 
     # Add calendar effects if present
     if calendar_col is not None and "alpha_calendar" in posterior:
-        calendar_levels = list(model.coords["calendar"]) # type: ignore
+        calendar_levels = list(model.coords["calendar"])  # type: ignore
         calendar_codes = encode_column(data[calendar_col], calendar_levels)
         if (calendar_codes == -1).any():
             unknown = data[calendar_col][calendar_codes == -1].unique()
@@ -951,7 +961,7 @@ def extract_parameter_summary(
     pd.DataFrame
         Summary statistics for parameters.
     """
-    return az.summary(idata, var_names=var_names, filter_vars=filter_vars, hdi_prob=hdi_prob) # type: ignore
+    return az.summary(idata, var_names=var_names, filter_vars=filter_vars, hdi_prob=hdi_prob)  # type: ignore
 
 
 def sample_prior_predictive(
@@ -1064,3 +1074,100 @@ def compute_prior_predictive_summary(
         summary_data[q_label] = pp_flat.quantile(q, dim="sample").values
 
     return pd.DataFrame(summary_data)
+
+
+def build_quasi_poisson_model(
+    data: pd.DataFrame,
+    response_col: str = "incremental",
+    origin_col: str = "origin",
+    dev_col: str = "dev",
+    scale=1.0,
+    coef_sigma: float = 10.0,
+) -> pm.Model:
+    """Cross-classified chain ladder with an over-dispersed Poisson
+    quasi-likelihood, ``sum((y log mu - mu) / phi_j)``, as a ``pm.Potential``.
+
+    ``scale`` is the plug-in dispersion: a scalar (constant scale) or one value
+    per development period (non-constant scale). This mirrors the ODP Stan
+    model in England & Verrall (2006) and lets non-integer, over-dispersed
+    increments be fitted with wide Normal priors on the log-linear effects.
+    """
+    y = data[response_col].to_numpy(dtype=float)
+    origin_codes, origin_levels = pd.factorize(data[origin_col], sort=True)
+    dev_codes, dev_levels = pd.factorize(data[dev_col], sort=True)
+    n_dev = len(dev_levels)
+    phi = np.asarray(scale, dtype=float)
+    if phi.ndim == 0:
+        phi = np.full(n_dev, float(phi))
+    elif phi.shape != (n_dev,):
+        raise ValueError(
+            f"scale must be a scalar or have shape ({n_dev},), got {phi.shape}"
+        )
+    phi_obs = np.maximum(phi[dev_codes], 1e-12)
+
+    coords = {
+        "origin_raw": list(origin_levels[1:]),
+        "dev_raw": list(dev_levels[1:]),
+        "obs": np.arange(len(y)),
+    }
+    with pm.Model(coords=coords) as model:
+        intercept = pm.Normal(
+            "intercept", mu=np.log(max(y.mean(), 1e-8)), sigma=coef_sigma
+        )
+        alpha_raw = pm.Normal("alpha_raw", mu=0.0, sigma=coef_sigma, dims="origin_raw")
+        beta_raw = pm.Normal("beta_raw", mu=0.0, sigma=coef_sigma, dims="dev_raw")
+        alpha = pt.concatenate([pt.zeros(1), alpha_raw])
+        beta = pt.concatenate([pt.zeros(1), beta_raw])
+        eta = intercept + alpha[origin_codes] + beta[dev_codes]
+        mu = pm.Deterministic("mu", pt.exp(eta), dims="obs")
+        pm.Potential("quasi_poisson", pt.sum((y * pt.log(mu) - mu) / phi_obs))
+    return model
+
+
+def build_link_ratio_model(
+    triangle,
+    model: str = "mack",
+    drop=None,
+    sigma=None,
+    coef_sigma: float = 10.0,
+) -> pm.Model:
+    """Bayesian link-ratio model: observed ratios F_ij ~ Normal(lambda_j,
+    sigma_j sqrt(v(f_j)) / sqrt(C_ij)). ``model='mack'`` uses a log link and
+    v = 1 (England & Verrall 2006 Mack Stan model); ``model='negbin'`` uses a
+    log-log link (factors > 1) and v = f (f - 1) with the chain-ladder factor
+    plugged into the variance."""
+    from ._triangle_ops import (
+        cumulative_array,
+        link_ratio_mask,
+        link_ratio_sigma,
+        volume_weighted_factors,
+    )
+
+    if model not in ("mack", "negbin"):
+        raise ValueError("model must be 'mack' or 'negbin'")
+    cum, origins, devs = cumulative_array(triangle)
+    mask = link_ratio_mask(cum, drop, origins, devs)
+    f0 = volume_weighted_factors(cum, mask)
+    vf = np.ones_like(f0) if model == "mack" else np.abs(f0 * (f0 - 1.0))
+    if sigma is None:
+        sigma, _ = link_ratio_sigma(cum, mask, f0, vf)
+    sigma = np.asarray(sigma, dtype=float)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratios = cum[:, 1:] / cum[:, :-1]
+    idx = np.argwhere(mask > 0)
+    rows, cols = idx[:, 0], idx[:, 1]
+    f_obs = ratios[rows, cols]
+    w_obs = cum[rows, cols]
+    sd_obs = np.maximum(sigma[cols] * np.sqrt(vf[cols]) / np.sqrt(np.abs(w_obs)), 1e-9)
+
+    coords = {"dev_ratio": [int(d) for d in devs[:-1]], "obs": np.arange(len(f_obs))}
+    start = (
+        np.log(f0) if model == "mack" else np.log(np.log(np.maximum(f0, 1.0 + 1e-6)))
+    )
+    with pm.Model(coords=coords) as pymc_model:
+        coefs = pm.Normal("coefs", mu=start, sigma=coef_sigma, dims="dev_ratio")
+        lam = pt.exp(coefs) if model == "mack" else pt.exp(pt.exp(coefs))
+        factors = pm.Deterministic("factors", lam, dims="dev_ratio")
+        pm.Normal("ratio", mu=factors[cols], sigma=sd_obs, observed=f_obs, dims="obs")
+    return pymc_model

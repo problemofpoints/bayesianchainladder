@@ -1,30 +1,29 @@
 """Tests for model building functions."""
 
+import bambi as bmb
 import numpy as np
 import pandas as pd
-import pytest
-
-import bambi as bmb
-
 import pymc as pm
+import pytest
 
 from bayesianchainladder.models import (
     _get_family,
     build_bambi_model,
     build_csr_model,
-    extract_parameter_summary,
 )
 
 
 @pytest.fixture
 def sample_data():
     """Create sample data for model testing."""
-    return pd.DataFrame({
-        "incremental": [100, 80, 60, 50, 110, 90, 70, 120, 100, 130],
-        "origin": [1, 1, 1, 1, 2, 2, 2, 3, 3, 4],
-        "dev": [1, 2, 3, 4, 1, 2, 3, 1, 2, 1],
-        "calendar": [1, 2, 3, 4, 2, 3, 4, 3, 4, 4],
-    })
+    return pd.DataFrame(
+        {
+            "incremental": [100, 80, 60, 50, 110, 90, 70, 120, 100, 130],
+            "origin": [1, 1, 1, 1, 2, 2, 2, 3, 3, 4],
+            "dev": [1, 2, 3, 4, 1, 2, 3, 1, 2, 1],
+            "calendar": [1, 2, 3, 4, 2, 3, 4, 3, 4, 4],
+        }
+    )
 
 
 class TestBuildBambiModel:
@@ -209,7 +208,9 @@ class TestFamilyMapping:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            idata = model.fit(draws=200, tune=100, chains=1, random_seed=42, progressbar=False)
+            idata = model.fit(
+                draws=200, tune=100, chains=1, random_seed=42, progressbar=False
+            )
 
         intercept_mean = float(idata.posterior["Intercept"].values.mean())
         log_mean_y = float(np.log(np.mean(sample_data["incremental"])))
@@ -245,12 +246,14 @@ class TestFamilyMapping:
 @pytest.fixture
 def csr_sample_data():
     """Create sample data for CSR model testing."""
-    return pd.DataFrame({
-        "logprem": [10.0, 10.0, 10.0, 10.0, 10.1, 10.1, 10.1, 10.2, 10.2, 10.3],
-        "logloss": [8.0, 8.5, 8.8, 8.9, 8.1, 8.6, 8.85, 8.2, 8.65, 8.3],
-        "origin": [1, 1, 1, 1, 2, 2, 2, 3, 3, 4],
-        "dev": [1, 2, 3, 4, 1, 2, 3, 1, 2, 1],
-    })
+    return pd.DataFrame(
+        {
+            "logprem": [10.0, 10.0, 10.0, 10.0, 10.1, 10.1, 10.1, 10.2, 10.2, 10.3],
+            "logloss": [8.0, 8.5, 8.8, 8.9, 8.1, 8.6, 8.85, 8.2, 8.65, 8.3],
+            "origin": [1, 1, 1, 1, 2, 2, 2, 3, 3, 4],
+            "dev": [1, 2, 3, 4, 1, 2, 3, 1, 2, 1],
+        }
+    )
 
 
 class TestBuildCSRModel:
@@ -325,12 +328,14 @@ class TestBuildCSRModel:
 
     def test_custom_column_names(self):
         """Test model with custom column names."""
-        data = pd.DataFrame({
-            "log_premium": [10.0, 10.0, 10.1, 10.2],
-            "log_cumulative": [8.0, 8.5, 8.1, 8.2],
-            "accident_year": [1, 1, 2, 3],
-            "development": [1, 2, 1, 1],
-        })
+        data = pd.DataFrame(
+            {
+                "log_premium": [10.0, 10.0, 10.1, 10.2],
+                "log_cumulative": [8.0, 8.5, 8.1, 8.2],
+                "accident_year": [1, 1, 2, 3],
+                "development": [1, 2, 1, 1],
+            }
+        )
 
         model = build_csr_model(
             data,
@@ -341,3 +346,64 @@ class TestBuildCSRModel:
         )
 
         assert isinstance(model, pm.Model)
+
+
+@pytest.mark.slow
+def test_quasi_poisson_posterior_mean_matches_irls():
+    import chainladder as cl
+    import numpy as np
+    import pymc as pm
+
+    from bayesianchainladder.analytic import odp_analytic_rmsep
+    from bayesianchainladder.models import build_quasi_poisson_model
+    from bayesianchainladder.utils import prepare_model_data
+
+    tri = cl.load_sample("genins")
+    obs, _ = prepare_model_data(tri)
+    analytic = odp_analytic_rmsep(tri, scale="constant")
+    model = build_quasi_poisson_model(obs, scale=float(analytic.scale[0]))
+    with model:
+        idata = pm.sample(
+            draws=300, tune=300, chains=1, random_seed=1, progressbar=False
+        )
+    mu_post = idata.posterior["mu"].mean(dim=["chain", "draw"]).values
+    mu_irls = np.exp(
+        __import__("bayesianchainladder.analytic", fromlist=["x"])._design_matrix(
+            10, 10
+        )[0]
+        @ analytic.coefficients
+    )
+    obs_mask = ~np.isnan(np.asarray(tri.cum_to_incr().values)[0, 0]).ravel()
+    np.testing.assert_allclose(mu_post, mu_irls[obs_mask], rtol=0.03)
+
+
+def test_quasi_poisson_scale_vector_validation():
+    import chainladder as cl
+    import numpy as np
+    import pytest
+
+    from bayesianchainladder.models import build_quasi_poisson_model
+    from bayesianchainladder.utils import prepare_model_data
+
+    obs, _ = prepare_model_data(cl.load_sample("genins"))
+    model = build_quasi_poisson_model(obs, scale=np.linspace(1e4, 1e5, 10))
+    assert "mu" in model.named_vars
+    with pytest.raises(ValueError, match="scale"):
+        build_quasi_poisson_model(obs, scale=np.ones(3))
+
+
+def test_build_link_ratio_model_structure():
+    import chainladder as cl
+    import pytest
+
+    from bayesianchainladder.models import build_link_ratio_model
+
+    tri = cl.load_sample("genins")
+    m = build_link_ratio_model(tri)
+    assert "factors" in m.named_vars and m.coords["dev_ratio"] == tuple(
+        12 * k for k in range(1, 10)
+    )
+    m2 = build_link_ratio_model(tri, model="negbin", drop=[("2003", 72)])
+    assert "factors" in m2.named_vars
+    with pytest.raises(ValueError, match="model"):
+        build_link_ratio_model(tri, model="odp")

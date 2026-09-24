@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
+    from .base import BaseStochasticReserve
     from .estimators import BayesianChainLadderGLM
 
 
@@ -240,9 +241,7 @@ def plot_rank(
     if model.idata is None:
         raise ValueError("Model must be fitted before plotting")
 
-    axes = az.plot_rank(
-        model.idata, var_names=var_names, figsize=figsize, **kwargs
-    )
+    axes = az.plot_rank(model.idata, var_names=var_names, figsize=figsize, **kwargs)
     fig = plt.gcf()
     fig.tight_layout()
 
@@ -737,7 +736,7 @@ def plot_heatmap_residuals(
 
 def plot_prior_predictive(
     model: BayesianChainLadderGLM,
-    prior_idata: "az.InferenceData | None" = None,
+    prior_idata: az.InferenceData | None = None,
     kind: str = "kde",
     num_pp_samples: int = 100,
     show_observed: bool = True,
@@ -832,32 +831,68 @@ def plot_prior_predictive(
     if kind == "kde":
         # Plot prior predictive KDE
         if len(pp_sample) > 0:
-            az.plot_kde(pp_sample, ax=ax, plot_kwargs={"color": "steelblue", "alpha": 0.7},
-                       label="Prior Predictive", **kwargs)
+            az.plot_kde(
+                pp_sample,
+                ax=ax,
+                plot_kwargs={"color": "steelblue", "alpha": 0.7},
+                label="Prior Predictive",
+                **kwargs,
+            )
 
         if show_observed:
-            az.plot_kde(observed, ax=ax, plot_kwargs={"color": "darkred", "linewidth": 2},
-                       label="Observed", **kwargs)
+            az.plot_kde(
+                observed,
+                ax=ax,
+                plot_kwargs={"color": "darkred", "linewidth": 2},
+                label="Observed",
+                **kwargs,
+            )
 
     elif kind == "hist":
         if len(pp_sample) > 0:
-            ax.hist(pp_sample, bins=50, density=True, alpha=0.6, color="steelblue",
-                   label="Prior Predictive", **kwargs)
+            ax.hist(
+                pp_sample,
+                bins=50,
+                density=True,
+                alpha=0.6,
+                color="steelblue",
+                label="Prior Predictive",
+                **kwargs,
+            )
 
         if show_observed:
-            ax.hist(observed, bins=30, density=True, alpha=0.8, color="darkred",
-                   histtype="step", linewidth=2, label="Observed", **kwargs)
+            ax.hist(
+                observed,
+                bins=30,
+                density=True,
+                alpha=0.8,
+                color="darkred",
+                histtype="step",
+                linewidth=2,
+                label="Observed",
+                **kwargs,
+            )
 
     elif kind == "ecdf":
         if len(pp_sample) > 0:
             sorted_pp = np.sort(pp_sample)
-            ax.plot(sorted_pp, np.linspace(0, 1, len(sorted_pp)),
-                   color="steelblue", alpha=0.7, label="Prior Predictive")
+            ax.plot(
+                sorted_pp,
+                np.linspace(0, 1, len(sorted_pp)),
+                color="steelblue",
+                alpha=0.7,
+                label="Prior Predictive",
+            )
 
         if show_observed:
             sorted_obs = np.sort(observed)
-            ax.plot(sorted_obs, np.linspace(0, 1, len(sorted_obs)),
-                   color="darkred", linewidth=2, label="Observed")
+            ax.plot(
+                sorted_obs,
+                np.linspace(0, 1, len(sorted_obs)),
+                color="darkred",
+                linewidth=2,
+                label="Observed",
+            )
             ax.set_ylabel("ECDF")
 
     if log_scale and len(pp_sample) > 0 and pp_sample.min() > 0:
@@ -872,7 +907,7 @@ def plot_prior_predictive(
 
 def plot_prior_predictive_by_origin(
     model: BayesianChainLadderGLM,
-    prior_idata: "az.InferenceData | None" = None,
+    prior_idata: az.InferenceData | None = None,
     show_observed: bool = True,
     figsize: tuple[float, float] | None = None,
     **kwargs: Any,
@@ -953,8 +988,11 @@ def plot_prior_predictive_by_origin(
             lower, upper = np.percentile(pp_origin, [1, 99])
             pp_origin_filtered = pp_origin[(pp_origin >= lower) & (pp_origin <= upper)]
             if len(pp_origin_filtered) > 0:
-                az.plot_kde(pp_origin_filtered, ax=ax,
-                           plot_kwargs={"color": "steelblue", "alpha": 0.7})
+                az.plot_kde(
+                    pp_origin_filtered,
+                    ax=ax,
+                    plot_kwargs={"color": "steelblue", "alpha": 0.7},
+                )
 
         if show_observed:
             observed = model.data_.loc[mask, "incremental"].values
@@ -979,7 +1017,7 @@ def plot_prior_predictive_by_origin(
 
 def plot_prior_predictive_development(
     model: BayesianChainLadderGLM,
-    prior_idata: "az.InferenceData | None" = None,
+    prior_idata: az.InferenceData | None = None,
     show_observed: bool = True,
     hdi_prob: float = 0.94,
     figsize: tuple[float, float] | None = None,
@@ -1082,14 +1120,35 @@ def plot_prior_predictive_development(
     x = np.arange(len(dev_periods))
 
     # Plot prior predictive mean and HDI
-    ax.plot(x, pp_means, "o-", color="steelblue", linewidth=2,
-            label=f"Prior Predictive Mean", **kwargs)
-    ax.fill_between(x, pp_lower, pp_upper, color="steelblue", alpha=0.3,
-                   label=f"{int(hdi_prob*100)}% HDI")
+    ax.plot(
+        x,
+        pp_means,
+        "o-",
+        color="steelblue",
+        linewidth=2,
+        label="Prior Predictive Mean",
+        **kwargs,
+    )
+    ax.fill_between(
+        x,
+        pp_lower,
+        pp_upper,
+        color="steelblue",
+        alpha=0.3,
+        label=f"{int(hdi_prob*100)}% HDI",
+    )
 
     if show_observed:
-        ax.plot(x, observed_means, "s--", color="darkred", linewidth=2,
-               markersize=8, label="Observed", **kwargs)
+        ax.plot(
+            x,
+            observed_means,
+            "s--",
+            color="darkred",
+            linewidth=2,
+            markersize=8,
+            label="Observed",
+            **kwargs,
+        )
 
     ax.set_xticks(x)
     ax.set_xticklabels(dev_periods)
@@ -1103,7 +1162,7 @@ def plot_prior_predictive_development(
 
 def plot_prior_predictive_reserves(
     model: BayesianChainLadderGLM,
-    prior_idata: "az.InferenceData | None" = None,
+    prior_idata: az.InferenceData | None = None,
     by: str = "total",
     kind: str = "kde",
     reference_reserve: float | None = None,
@@ -1197,7 +1256,9 @@ def plot_prior_predictive_reserves(
             # the relationship to infer reserve levels
 
             # Use the last observed cell as a proxy for future development
-            future_mask = (model.data_["origin"] == origin) & (model.data_["dev"] == max_observed_dev)
+            future_mask = (model.data_["origin"] == origin) & (
+                model.data_["dev"] == max_observed_dev
+            )
             future_idx = np.where(future_mask)[0]
 
             if len(future_idx) > 0:
@@ -1226,7 +1287,9 @@ def plot_prior_predictive_reserves(
         # Filter extreme values
         total_reserves = total_reserves[np.isfinite(total_reserves)]
         lower, upper = np.percentile(total_reserves, [0.5, 99.5])
-        total_reserves = total_reserves[(total_reserves >= lower) & (total_reserves <= upper)]
+        total_reserves = total_reserves[
+            (total_reserves >= lower) & (total_reserves <= upper)
+        ]
 
         if figsize is None:
             figsize = (10, 6)
@@ -1234,8 +1297,11 @@ def plot_prior_predictive_reserves(
         fig, ax = plt.subplots(figsize=figsize)
 
         if kind == "kde" and len(total_reserves) > 0:
-            az.plot_kde(total_reserves, ax=ax,
-                       plot_kwargs={"color": "steelblue", "linewidth": 2})
+            az.plot_kde(
+                total_reserves,
+                ax=ax,
+                plot_kwargs={"color": "steelblue", "linewidth": 2},
+            )
         elif kind == "hist":
             ax.hist(total_reserves, bins=50, density=True, alpha=0.7, color="steelblue")
         elif kind == "ecdf":
@@ -1244,8 +1310,13 @@ def plot_prior_predictive_reserves(
             ax.set_ylabel("ECDF")
 
         if reference_reserve is not None:
-            ax.axvline(reference_reserve, color="darkred", linestyle="--", linewidth=2,
-                      label=f"Reference: {reference_reserve:,.0f}")
+            ax.axvline(
+                reference_reserve,
+                color="darkred",
+                linestyle="--",
+                linewidth=2,
+                label=f"Reference: {reference_reserve:,.0f}",
+            )
             ax.legend()
 
         # Add summary statistics
@@ -1256,8 +1327,16 @@ def plot_prior_predictive_reserves(
             q95 = np.percentile(total_reserves, 95)
 
             text = f"Mean: {mean_res:,.0f}\nMedian: {median_res:,.0f}\n5%-95%: [{q05:,.0f}, {q95:,.0f}]"
-            ax.text(0.98, 0.98, text, transform=ax.transAxes, ha="right", va="top",
-                   fontsize=9, bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+            ax.text(
+                0.98,
+                0.98,
+                text,
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                fontsize=9,
+                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+            )
 
         ax.set_xlabel("Total Reserves (Prior Predictive)")
         ax.set_title("Prior Predictive Distribution of Total Reserves")
@@ -1291,14 +1370,22 @@ def plot_prior_predictive_reserves(
 
             if len(origin_res) > 0:
                 lower, upper = np.percentile(origin_res, [1, 99])
-                origin_res_filtered = origin_res[(origin_res >= lower) & (origin_res <= upper)]
+                origin_res_filtered = origin_res[
+                    (origin_res >= lower) & (origin_res <= upper)
+                ]
 
                 if kind == "kde" and len(origin_res_filtered) > 0:
-                    az.plot_kde(origin_res_filtered, ax=ax,
-                               plot_kwargs={"color": "steelblue"})
+                    az.plot_kde(
+                        origin_res_filtered, ax=ax, plot_kwargs={"color": "steelblue"}
+                    )
                 elif kind == "hist":
-                    ax.hist(origin_res_filtered, bins=30, density=True, alpha=0.7,
-                           color="steelblue")
+                    ax.hist(
+                        origin_res_filtered,
+                        bins=30,
+                        density=True,
+                        alpha=0.7,
+                        color="steelblue",
+                    )
 
             ax.set_title(f"Origin {origin}")
             ax.set_xlabel("Reserves")
@@ -1319,7 +1406,7 @@ def plot_prior_predictive_reserves(
 
 def plot_prior_predictive_triangle(
     model: BayesianChainLadderGLM,
-    prior_idata: "az.InferenceData | None" = None,
+    prior_idata: az.InferenceData | None = None,
     statistic: str = "mean",
     show_observed: bool = True,
     figsize: tuple[float, float] | None = None,
@@ -1424,9 +1511,20 @@ def plot_prior_predictive_triangle(
             for j in range(len(pp_pivot.columns)):
                 val = pp_pivot.iloc[i, j]
                 if not np.isnan(val):
-                    text_color = "white" if val > pp_pivot.values[np.isfinite(pp_pivot.values)].mean() else "black"
-                    ax1.text(j, i, f"{val:,.0f}", ha="center", va="center",
-                            color=text_color, fontsize=8)
+                    text_color = (
+                        "white"
+                        if val > pp_pivot.values[np.isfinite(pp_pivot.values)].mean()
+                        else "black"
+                    )
+                    ax1.text(
+                        j,
+                        i,
+                        f"{val:,.0f}",
+                        ha="center",
+                        va="center",
+                        color=text_color,
+                        fontsize=8,
+                    )
 
         fig.colorbar(im1, ax=ax1, label=f"Prior Predictive {statistic.capitalize()}")
 
@@ -1446,9 +1544,20 @@ def plot_prior_predictive_triangle(
             for j in range(len(obs_pivot.columns)):
                 val = obs_pivot.iloc[i, j]
                 if not np.isnan(val):
-                    text_color = "white" if val > obs_pivot.values[np.isfinite(obs_pivot.values)].mean() else "black"
-                    ax2.text(j, i, f"{val:,.0f}", ha="center", va="center",
-                            color=text_color, fontsize=8)
+                    text_color = (
+                        "white"
+                        if val > obs_pivot.values[np.isfinite(obs_pivot.values)].mean()
+                        else "black"
+                    )
+                    ax2.text(
+                        j,
+                        i,
+                        f"{val:,.0f}",
+                        ha="center",
+                        va="center",
+                        color=text_color,
+                        fontsize=8,
+                    )
 
         fig.colorbar(im2, ax=ax2, label="Observed")
         ax = axes
@@ -1470,9 +1579,20 @@ def plot_prior_predictive_triangle(
             for j in range(len(pp_pivot.columns)):
                 val = pp_pivot.iloc[i, j]
                 if not np.isnan(val):
-                    text_color = "white" if val > pp_pivot.values[np.isfinite(pp_pivot.values)].mean() else "black"
-                    ax.text(j, i, f"{val:,.0f}", ha="center", va="center",
-                            color=text_color, fontsize=8)
+                    text_color = (
+                        "white"
+                        if val > pp_pivot.values[np.isfinite(pp_pivot.values)].mean()
+                        else "black"
+                    )
+                    ax.text(
+                        j,
+                        i,
+                        f"{val:,.0f}",
+                        ha="center",
+                        va="center",
+                        color=text_color,
+                        fontsize=8,
+                    )
 
         fig.colorbar(im, ax=ax, label=f"Prior Predictive {statistic.capitalize()}")
 
@@ -1483,7 +1603,7 @@ def plot_prior_predictive_triangle(
 
 def plot_prior_vs_posterior(
     model: BayesianChainLadderGLM,
-    prior_idata: "az.InferenceData | None" = None,
+    prior_idata: az.InferenceData | None = None,
     var_names: list[str] | None = None,
     figsize: tuple[float, float] | None = None,
     **kwargs: Any,
@@ -1581,11 +1701,16 @@ def plot_prior_vs_posterior(
             samples_clean = samples[np.isfinite(samples)]
             if len(samples_clean) > 0:
                 lower, upper = np.percentile(samples_clean, [1, 99])
-                samples_filtered = samples_clean[(samples_clean >= lower) & (samples_clean <= upper)]
+                samples_filtered = samples_clean[
+                    (samples_clean >= lower) & (samples_clean <= upper)
+                ]
                 if len(samples_filtered) > 0:
-                    az.plot_kde(samples_filtered, ax=ax,
-                               plot_kwargs={"color": color, "alpha": 0.7, "linewidth": 2},
-                               label=label)
+                    az.plot_kde(
+                        samples_filtered,
+                        ax=ax,
+                        plot_kwargs={"color": color, "alpha": 0.7, "linewidth": 2},
+                        label=label,
+                    )
 
         ax.set_title(var)
         ax.legend(fontsize=8)
@@ -1604,7 +1729,7 @@ def plot_prior_vs_posterior(
 
 def plot_prior_predictive_summary(
     model: BayesianChainLadderGLM,
-    prior_idata: "az.InferenceData | None" = None,
+    prior_idata: az.InferenceData | None = None,
     figsize: tuple[float, float] | None = None,
     **kwargs: Any,
 ) -> tuple[Figure, Axes]:
@@ -1657,12 +1782,12 @@ def plot_prior_predictive_summary(
         lower, upper = np.percentile(pp_flat, [0.5, 99.5])
         pp_filtered = pp_flat[(pp_flat >= lower) & (pp_flat <= upper)]
         if len(pp_filtered) > 0:
-            az.plot_kde(pp_filtered, ax=ax1,
-                       plot_kwargs={"color": "steelblue", "alpha": 0.7})
+            az.plot_kde(
+                pp_filtered, ax=ax1, plot_kwargs={"color": "steelblue", "alpha": 0.7}
+            )
 
     observed = model.data_["incremental"].values
-    az.plot_kde(observed, ax=ax1,
-               plot_kwargs={"color": "darkred", "linewidth": 2})
+    az.plot_kde(observed, ax=ax1, plot_kwargs={"color": "darkred", "linewidth": 2})
 
     ax1.set_xlabel("Incremental Loss")
     ax1.set_title("Prior Predictive vs Observed")
@@ -1722,13 +1847,25 @@ def plot_prior_predictive_summary(
 
     # Create boxplots
     positions = np.arange(len(origins))
-    bp1 = ax3.boxplot(pp_by_origin, positions=positions - 0.2, widths=0.35,
-                     patch_artist=True, boxprops=dict(facecolor="steelblue", alpha=0.6))
-    bp2 = ax3.boxplot(obs_by_origin, positions=positions + 0.2, widths=0.35,
-                     patch_artist=True, boxprops=dict(facecolor="darkred", alpha=0.6))
+    bp1 = ax3.boxplot(
+        pp_by_origin,
+        positions=positions - 0.2,
+        widths=0.35,
+        patch_artist=True,
+        boxprops=dict(facecolor="steelblue", alpha=0.6),
+    )
+    bp2 = ax3.boxplot(
+        obs_by_origin,
+        positions=positions + 0.2,
+        widths=0.35,
+        patch_artist=True,
+        boxprops=dict(facecolor="darkred", alpha=0.6),
+    )
 
     ax3.set_xticks(positions)
-    ax3.set_xticklabels([str(o)[-2:] if len(str(o)) > 4 else str(o) for o in origins], fontsize=8)
+    ax3.set_xticklabels(
+        [str(o)[-2:] if len(str(o)) > 4 else str(o) for o in origins], fontsize=8
+    )
     ax3.set_xlabel("Origin Year")
     ax3.set_ylabel("Incremental Loss")
     ax3.set_title("Distribution by Origin")
@@ -1759,10 +1896,171 @@ def plot_prior_predictive_summary(
         summary_text += f"Std Dev: {np.std(observed):,.0f}\n"
         summary_text += f"Median: {np.median(observed):,.0f}\n"
 
-        ax4.text(0.1, 0.95, summary_text, transform=ax4.transAxes,
-                fontsize=10, family="monospace", verticalalignment="top",
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+        ax4.text(
+            0.1,
+            0.95,
+            summary_text,
+            transform=ax4.transAxes,
+            fontsize=10,
+            family="monospace",
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+        )
 
     fig.suptitle("Prior Predictive Check Summary", fontsize=14, y=0.98)
 
     return fig, [ax1, ax2, ax3, ax4]
+
+
+def plot_fan_chart(
+    model: BaseStochasticReserve,
+    origin,
+    bands: tuple[tuple[float, float], ...] = ((0.01, 0.99), (0.05, 0.95), (0.25, 0.75)),
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> tuple[Figure, Axes]:
+    """Reserve development ("fan") chart of simulated cumulative claims for one
+    origin, after England's ``fan_plot``: nested quantile bands, the mean path
+    and the observed cells."""
+    full = model._require_full_posterior()
+    data = full.sel(origin=origin).values  # (dev, sample)
+    devs = full.coords["dev"].values
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    for k, (lo, hi) in enumerate(
+        sorted(bands, key=lambda b: b[1] - b[0], reverse=True)
+    ):
+        ax.fill_between(
+            devs,
+            np.nanquantile(data, lo, axis=1),
+            np.nanquantile(data, hi, axis=1),
+            color="tab:blue",
+            alpha=0.15 + 0.2 * k,
+            linewidth=0,
+            label=f"{lo * 100:g}%–{hi * 100:g}%",
+        )
+    ax.plot(devs, np.nanmean(data, axis=1), color="black", linewidth=2, label="Mean")
+    cum = np.asarray(model.triangle_.values, dtype=float)[0, 0]
+    origin_idx = list(full.coords["origin"].values).index(origin)
+    observed = cum[origin_idx]
+    ax.plot(
+        devs[~np.isnan(observed)],
+        observed[~np.isnan(observed)],
+        "o",
+        color="tab:red",
+        label="Observed",
+    )
+    ax.set_title(f"Origin {origin}: simulated cumulative development")
+    ax.set_xlabel("Development (months)")
+    ax.set_ylabel("Cumulative claims")
+    ax.legend(loc="upper left")
+    ax.grid(alpha=0.3)
+    return fig, ax
+
+
+def plot_scaled_residuals(
+    residuals: np.ndarray,
+    by: str = "dev",
+    sigma: np.ndarray | None = None,
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+    title: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Scatter of (scaled) residuals by origin, development or calendar index,
+    with the per-index average and, optionally, the sigma / sqrt(scale) vector
+    on a twin axis (England's ``scatter_plot``). Indices are 1-based."""
+    resid = np.asarray(residuals, dtype=float)
+    n_o, n_c = resid.shape
+    i, j = np.indices(resid.shape)
+    if by == "origin":
+        x = i + 1
+    elif by == "dev":
+        x = j + 1
+    elif by == "calendar":
+        x = i + j + 1
+    else:
+        raise ValueError("by must be 'origin', 'dev' or 'calendar'")
+    ok = np.isfinite(resid)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    ax.axhline(0, color="black", linestyle="--", linewidth=1)
+    ax.scatter(x[ok], resid[ok], marker="x", color="tab:blue", label="Residual")
+    levels = np.unique(x[ok])
+    means = [resid[ok & (x == lv)].mean() for lv in levels]
+    ax.plot(levels, means, color="tab:green", linewidth=2, label="Average")
+    ax.set_xlabel(f"{by.capitalize()} period")
+    ax.set_ylabel("Scaled residual")
+    ax.set_title(title or f"Scaled residuals by {by} period")
+    ax.grid(alpha=0.3)
+    if sigma is not None and by == "dev":
+        ax2 = ax.twinx()
+        ax2.plot(
+            np.arange(1, len(sigma) + 1),
+            sigma,
+            color="tab:orange",
+            linewidth=2,
+            label="Sigma",
+        )
+        ax2.set_ylabel("Sigma / sqrt(scale)")
+        ax2.legend(loc="upper right")
+    ax.legend(loc="upper left")
+    return fig, ax
+
+
+def plot_sensitivity_heatmap(
+    result: pd.DataFrame,
+    value: str = "sd_diff",
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> tuple[Figure, Axes]:
+    """Heatmap of a ``link_ratio_sensitivity`` column (origin × development)."""
+    pivot = result.pivot(index="origin", columns="dev", values=value)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    im = ax.imshow(pivot.values, cmap="RdBu", aspect="auto")
+    ax.set_xticks(range(pivot.shape[1]), [str(c) for c in pivot.columns])
+    ax.set_yticks(range(pivot.shape[0]), [str(r) for r in pivot.index])
+    ax.set_xlabel("Development (months) of link ratio")
+    ax.set_ylabel("Origin")
+    ax.set_title(f"Change in {value} when each link ratio is excluded")
+    for r in range(pivot.shape[0]):
+        for c in range(pivot.shape[1]):
+            v = pivot.values[r, c]
+            if np.isfinite(v):
+                ax.text(
+                    c,
+                    r,
+                    f"{v:,.0f}" if abs(v) >= 10 else f"{v:.3f}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                )
+    fig.colorbar(im, ax=ax)
+    return fig, ax
+
+
+def plot_capital_profiles(
+    profiles: dict[str, np.ndarray],
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> tuple[Figure, Axes]:
+    """Capital run-off profiles as a percentage of opening capital (EVW 2019 Fig. 1)."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    for label, prof in profiles.items():
+        p = np.asarray(prof, dtype=float)
+        ax.plot(np.arange(len(p)), 100 * p / p[0], marker="o", linewidth=2, label=label)
+    ax.set_xlabel("Future year")
+    ax.set_ylabel("Percent of opening capital")
+    ax.set_title("Capital profiles by year")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    return fig, ax

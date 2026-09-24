@@ -14,6 +14,21 @@ if TYPE_CHECKING:
     import chainladder as cl
 
 
+DEFAULT_QUANTILES: tuple[float, ...] = (
+    0.005,
+    0.01,
+    0.05,
+    0.10,
+    0.25,
+    0.50,
+    0.75,
+    0.90,
+    0.95,
+    0.99,
+    0.995,
+)
+
+
 @dataclass(frozen=True)
 class MethodSummary:
     """Total-reserve summary returned by ``BaseStochasticReserve.total_summary``."""
@@ -23,6 +38,9 @@ class MethodSummary:
     total_reserve_75th_percentile: float
     total_reserve_90th_percentile: float
     total_reserve_95th_percentile: float
+    total_reserve_99_5th_percentile: float = float("nan")
+    total_reserve_min: float = float("nan")
+    total_reserve_max: float = float("nan")
 
     @property
     def total_reserve_cv(self) -> float:
@@ -55,6 +73,7 @@ class BaseStochasticReserve(ABC):
     ibnr_: pd.DataFrame | None
     ultimate_: pd.DataFrame | None
     reserves_posterior_: xr.DataArray | None
+    full_cumulative_posterior_: xr.DataArray | None
     _is_fitted: bool
 
     def __init__(self) -> None:
@@ -62,6 +81,7 @@ class BaseStochasticReserve(ABC):
         self.ibnr_ = None
         self.ultimate_ = None
         self.reserves_posterior_ = None
+        self.full_cumulative_posterior_ = None
         self._is_fitted = False
 
     @abstractmethod
@@ -113,39 +133,162 @@ class BaseStochasticReserve(ABC):
                 ibnr_q75 = float(np.percentile(samples, 75))
                 ibnr_q95 = float(np.percentile(samples, 95))
 
-            rows.append({
-                "origin": origin,
-                "paid_to_date": paid_origin,
-                "ibnr_mean": ibnr_mean,
-                "ibnr_std": ibnr_std,
-                "ibnr_median": ibnr_median,
-                "ibnr_5%": ibnr_q05,
-                "ibnr_25%": ibnr_q25,
-                "ibnr_75%": ibnr_q75,
-                "ibnr_95%": ibnr_q95,
-                "ultimate_mean": paid_origin + ibnr_mean,
-                "ultimate_std": ibnr_std,
-                "ultimate_median": paid_origin + ibnr_median,
-                "ultimate_5%": paid_origin + ibnr_q05,
-                "ultimate_25%": paid_origin + ibnr_q25,
-                "ultimate_75%": paid_origin + ibnr_q75,
-                "ultimate_95%": paid_origin + ibnr_q95,
-            })
+            rows.append(
+                {
+                    "origin": origin,
+                    "paid_to_date": paid_origin,
+                    "ibnr_mean": ibnr_mean,
+                    "ibnr_std": ibnr_std,
+                    "ibnr_median": ibnr_median,
+                    "ibnr_5%": ibnr_q05,
+                    "ibnr_25%": ibnr_q25,
+                    "ibnr_75%": ibnr_q75,
+                    "ibnr_95%": ibnr_q95,
+                    "ultimate_mean": paid_origin + ibnr_mean,
+                    "ultimate_std": ibnr_std,
+                    "ultimate_median": paid_origin + ibnr_median,
+                    "ultimate_5%": paid_origin + ibnr_q05,
+                    "ultimate_25%": paid_origin + ibnr_q25,
+                    "ultimate_75%": paid_origin + ibnr_q75,
+                    "ultimate_95%": paid_origin + ibnr_q95,
+                }
+            )
 
         df = pd.DataFrame(rows).set_index("origin")
         self.ibnr_ = df[
-            ["ibnr_mean", "ibnr_std", "ibnr_median",
-             "ibnr_5%", "ibnr_25%", "ibnr_75%", "ibnr_95%"]
+            [
+                "ibnr_mean",
+                "ibnr_std",
+                "ibnr_median",
+                "ibnr_5%",
+                "ibnr_25%",
+                "ibnr_75%",
+                "ibnr_95%",
+            ]
         ].copy()
         self.ibnr_.columns = ["mean", "std", "median", "5%", "25%", "75%", "95%"]
 
         self.ultimate_ = df[
-            ["paid_to_date", "ultimate_mean", "ultimate_std", "ultimate_median",
-             "ultimate_5%", "ultimate_25%", "ultimate_75%", "ultimate_95%"]
+            [
+                "paid_to_date",
+                "ultimate_mean",
+                "ultimate_std",
+                "ultimate_median",
+                "ultimate_5%",
+                "ultimate_25%",
+                "ultimate_75%",
+                "ultimate_95%",
+            ]
         ].copy()
         self.ultimate_.columns = [
-            "paid_to_date", "mean", "std", "median", "5%", "25%", "75%", "95%"
+            "paid_to_date",
+            "mean",
+            "std",
+            "median",
+            "5%",
+            "25%",
+            "75%",
+            "95%",
         ]
+
+    # ------------------------------------------------------------------
+    # Per-cell simulated triangles (England & Verrall "Complete_Cumulatives")
+    # ------------------------------------------------------------------
+    def _set_full_cumulative_posterior(self, cumulative, origins, devs) -> None:
+        arr = np.asarray(cumulative, dtype=float)
+        if arr.ndim != 3:
+            raise ValueError("cumulative must have shape (origin, dev, sample)")
+        self.full_cumulative_posterior_ = xr.DataArray(
+            arr,
+            dims=["origin", "dev", "sample"],
+            coords={
+                "origin": list(origins),
+                "dev": list(devs),
+                "sample": np.arange(arr.shape[2]),
+            },
+        )
+
+    def _require_full_posterior(self) -> xr.DataArray:
+        self._check_is_fitted()
+        if self.full_cumulative_posterior_ is None:
+            raise ValueError(
+                f"{type(self).__name__} does not provide per-cell simulated "
+                "triangles (full_cumulative_posterior_ is None); this analysis "
+                "needs an estimator that simulates every future cell."
+            )
+        return self.full_cumulative_posterior_
+
+    def _reserves_from_full_posterior(self) -> xr.DataArray:
+        from ._triangle_ops import cumulative_array, latest_diagonal
+
+        full = self._require_full_posterior()
+        cum, _, _ = cumulative_array(self.triangle_)
+        latest, _ = latest_diagonal(cum)
+        latest_da = xr.DataArray(
+            latest, dims=["origin"], coords={"origin": full.coords["origin"]}
+        )
+        return (full.isel(dev=-1) - latest_da).transpose("origin", "sample")
+
+    def incremental_posterior(self) -> xr.DataArray:
+        full = self._require_full_posterior()
+        vals = full.values.copy()
+        vals[:, 1:, :] = full.values[:, 1:, :] - full.values[:, :-1, :]
+        return full.copy(data=vals)
+
+    def future_incremental_posterior(self) -> xr.DataArray:
+        from ._triangle_ops import cumulative_array
+
+        incr = self.incremental_posterior()
+        cum, _, _ = cumulative_array(self.triangle_)
+        observed = ~np.isnan(cum)
+        vals = np.where(observed[..., None], 0.0, incr.values)
+        return incr.copy(data=vals)
+
+    # ------------------------------------------------------------------
+    # England-style summary statistics with tail quantiles
+    # ------------------------------------------------------------------
+    def summary_statistics(
+        self,
+        output: str = "reserves",
+        quantiles: tuple[float, ...] = DEFAULT_QUANTILES,
+    ) -> pd.DataFrame:
+        self._check_is_fitted()
+        if self.reserves_posterior_ is None:
+            raise ValueError("No reserve posterior available")
+        res = self.reserves_posterior_.transpose("origin", "sample").values
+        origins = list(self.reserves_posterior_.coords["origin"].values)
+        if output == "reserves":
+            data = res
+        elif output == "ultimates":
+            paid_series = self._paid_to_date()
+            missing = [o for o in origins if o not in paid_series.index]
+            if missing:
+                raise ValueError(
+                    f"triangle is missing paid-to-date for origin(s) {missing}"
+                )
+            paid = paid_series.reindex(origins).values
+            data = res + paid[:, None]
+        else:
+            raise ValueError("output must be 'reserves' or 'ultimates'")
+        data = np.vstack([data, data.sum(axis=0, keepdims=True)])
+        mean = np.nanmean(data, axis=1)
+        std = (
+            np.nanstd(data, axis=1, ddof=1)
+            if data.shape[1] > 1
+            else np.zeros(len(mean))
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cov = np.where(mean != 0, std / np.abs(mean), np.nan)
+        table: dict[str, np.ndarray] = {
+            "mean": mean,
+            "std": std,
+            "cov": cov,
+            "min": np.nanmin(data, axis=1),
+        }
+        for q in quantiles:
+            table[f"{q * 100:g}%"] = np.nanquantile(data, q, axis=1)
+        table["max"] = np.nanmax(data, axis=1)
+        return pd.DataFrame(table, index=[*origins, "Total"])
 
     def summary(self, include_totals: bool = True) -> pd.DataFrame:
         self._check_is_fitted()
@@ -202,6 +345,57 @@ class BaseStochasticReserve(ABC):
         idx = rng.choice(total.size, size=n_samples, replace=replace)
         return total[idx]
 
+    def scale_to_target(
+        self, target_ultimates, method="multiplicative"
+    ) -> ReserveSamples:
+        """Shift or scale each origin's reserve samples so their mean ultimate
+        hits ``target_ultimates`` (England's ``Scaled_Results``).
+
+        ``additive`` preserves the absolute standard deviation; ``multiplicative``
+        preserves the coefficient of variation. ``method`` may be a dict mapping
+        origin to method. The per-cell posterior is not carried over because
+        cash flows would need their own scaling rule.
+        """
+        self._check_is_fitted()
+        origins = list(self.reserves_posterior_.coords["origin"].values)
+        paid = self._paid_to_date().reindex(origins).fillna(0.0).values
+        if isinstance(target_ultimates, dict | pd.Series):
+            target = pd.Series(target_ultimates)
+            missing = [o for o in origins if o not in target.index]
+            if missing:
+                raise ValueError(f"target_ultimates is missing origin(s) {missing}")
+            target = target.reindex(origins).values.astype(float)
+        else:
+            target = np.asarray(target_ultimates, dtype=float)
+            if target.shape != (len(origins),):
+                raise ValueError("target_ultimates must have one value per origin")
+        if isinstance(method, str):
+            methods = dict.fromkeys(origins, method)
+        else:
+            methods = dict(method)
+        bad = set(methods.values()) - {"additive", "multiplicative"}
+        if bad or set(origins) - set(methods):
+            raise ValueError(
+                "method must be 'additive' or 'multiplicative' for every origin"
+            )
+
+        res = self.reserves_posterior_.transpose("origin", "sample").values.copy()
+        mean = res.mean(axis=1)
+        target_reserve = target - paid
+        for k, origin in enumerate(origins):
+            if methods[origin] == "additive":
+                res[k] += target_reserve[k] - mean[k]
+            elif mean[k] != 0:
+                res[k] *= target_reserve[k] / mean[k]
+            else:
+                res[k] = target_reserve[k]
+        scaled = xr.DataArray(
+            res,
+            dims=["origin", "sample"],
+            coords={"origin": origins, "sample": np.arange(res.shape[1])},
+        )
+        return ReserveSamples(self.triangle_, scaled)
+
     def total_summary(self) -> MethodSummary:
         self._check_is_fitted()
         if self.reserves_posterior_ is None:
@@ -218,8 +412,68 @@ class BaseStochasticReserve(ABC):
             )
         return MethodSummary(
             total_reserve_mean=float(np.mean(total)),
-            total_reserve_stddev=float(np.std(total, ddof=1)) if total.size > 1 else 0.0,
+            total_reserve_stddev=(
+                float(np.std(total, ddof=1)) if total.size > 1 else 0.0
+            ),
             total_reserve_75th_percentile=float(np.quantile(total, 0.75)),
             total_reserve_90th_percentile=float(np.quantile(total, 0.90)),
             total_reserve_95th_percentile=float(np.quantile(total, 0.95)),
+            total_reserve_99_5th_percentile=float(np.quantile(total, 0.995)),
+            total_reserve_min=float(np.min(total)),
+            total_reserve_max=float(np.max(total)),
         )
+
+
+class ReserveSamples(BaseStochasticReserve):
+    """Reserve samples produced outside a fit (scaling, incurred-to-paid,
+    external simulations) exposed through the shared interface."""
+
+    def __init__(
+        self,
+        triangle,
+        reserves_posterior: xr.DataArray,
+        full_cumulative_posterior: xr.DataArray | None = None,
+    ) -> None:
+        super().__init__()
+        self.triangle_ = triangle.copy()
+        self.reserves_posterior_ = reserves_posterior.transpose("origin", "sample")
+        self.full_cumulative_posterior_ = (
+            None
+            if full_cumulative_posterior is None
+            else full_cumulative_posterior.transpose("origin", "dev", "sample")
+        )
+        self._build_reserve_summaries()
+        self._is_fitted = True
+
+    def fit(self, triangle, **kwargs: Any):
+        raise NotImplementedError(
+            "ReserveSamples is constructed from samples, not fitted"
+        )
+
+
+def incurred_to_paid(model: BaseStochasticReserve, paid_triangle) -> ReserveSamples:
+    """Turn an incurred-basis IBNR distribution into a reserve distribution by
+    subtracting the latest paid instead of the latest incurred (England's
+    ``Incurred_to_Paid``). The absolute SD is unchanged; the CoV becomes
+    meaningful for comparison with a paid analysis."""
+    from .utils import triangle_to_dataframe
+
+    model._check_is_fitted()
+    origins = list(model.reserves_posterior_.coords["origin"].values)
+    latest_incurred = model._paid_to_date().reindex(origins).fillna(0.0).values
+    paid_df = triangle_to_dataframe(paid_triangle)
+    latest_paid_series = paid_df.groupby("origin", observed=True)["incremental"].sum()
+    missing = [o for o in origins if o not in latest_paid_series.index]
+    if missing:
+        raise ValueError(f"paid triangle is missing origin(s) {missing}")
+    latest_paid = latest_paid_series.reindex(origins).values
+    res = model.reserves_posterior_.transpose("origin", "sample").values
+    reserves = res + (latest_incurred - latest_paid)[:, None]
+    return ReserveSamples(
+        paid_triangle,
+        xr.DataArray(
+            reserves,
+            dims=["origin", "sample"],
+            coords={"origin": origins, "sample": np.arange(reserves.shape[1])},
+        ),
+    )

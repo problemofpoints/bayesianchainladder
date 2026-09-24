@@ -100,9 +100,7 @@ class MackChainLadder(BaseStochasticReserve):
 
         # Per-origin Mack std error — use latest_diagonal to get one value per
         # origin (mack_std_err_ is a full triangle shape, not per-origin vector)
-        std_per_origin = np.asarray(
-            mack.mack_std_err_.latest_diagonal.values
-        ).flatten()
+        std_per_origin = np.asarray(mack.mack_std_err_.latest_diagonal.values).flatten()
 
         # Calibrated totals (used to override sample_reserves / total_summary)
         self.total_reserve_mean_ = float(np.nansum(ibnr_per_origin))
@@ -117,10 +115,14 @@ class MackChainLadder(BaseStochasticReserve):
         # reserves_posterior_. These give correct per-origin marginals.
         rng = np.random.default_rng(self.random_seed)
         samples = np.empty((len(origins), self.n_samples))
-        for i, (mean, std) in enumerate(zip(ibnr_per_origin, std_per_origin, strict=True)):
+        for i, (mean, std) in enumerate(
+            zip(ibnr_per_origin, std_per_origin, strict=True)
+        ):
             mean_clean = float(mean) if np.isfinite(mean) else 0.0
             std_clean = float(std) if np.isfinite(std) and std >= 0 else 0.0
-            samples[i] = rng.normal(loc=mean_clean, scale=std_clean, size=self.n_samples)
+            samples[i] = rng.normal(
+                loc=mean_clean, scale=std_clean, size=self.n_samples
+            )
 
         self.reserves_posterior_ = xr.DataArray(
             samples,
@@ -249,7 +251,9 @@ class BootstrapODPChainLadder(BaseStochasticReserve):
         # n_origin=1 or n_sims=1 cases.
         ibnr_vals = np.asarray(model.ibnr_.values)
         per_sim_per_origin = np.nansum(ibnr_vals, axis=-1)  # (n_sims, 1, n_origin)
-        per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
+        per_sim_per_origin = np.squeeze(
+            per_sim_per_origin, axis=1
+        )  # (n_sims, n_origin)
         per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
 
         origins = [_extract_period_value(o) for o in triangle.origin]
@@ -263,6 +267,10 @@ class BootstrapODPChainLadder(BaseStochasticReserve):
             },
         )
 
+        full, origins_full, devs_full = _full_posterior_from_chainladder(
+            model, triangle
+        )
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -305,6 +313,106 @@ def _extract_ibnr_from_bf_or_cc(model_fitted, triangle) -> xr.DataArray:
             "sample": np.arange(per_origin_per_sim.shape[1]),
         },
     )
+
+
+def _full_posterior_from_chainladder(model_fitted, triangle):
+    """Complete simulated cumulative triangles from a chainladder method fitted
+    on ``n_sims`` resamples.
+
+    ``model_fitted.full_triangle_`` is a live (uncached) ``@property``
+    (``chainladder/core/common.py``). Internally, during ``fit()``,
+    ``_include_process_variance`` (``chainladder/methods/base.py``) computes
+    ``full_pre = self.full_triangle_`` using the *pre-noise* deterministic
+    ultimate, injects gamma process noise into the future increments to get
+    the true per-cell noisy path ``obj``, **overwrites**
+    ``self.ultimate_.values = obj.values[..., -1:]`` with that noisy
+    terminal column, and stores ``process_variance_ = obj - full_pre``. Any
+    access to ``full_triangle_`` *after* ``fit()`` returns (including ours)
+    therefore recomputes a smooth back-fill using the already-noisy
+    ``ultimate_`` as its target — a deterministic emergence pattern scaled to
+    hit the right (noisy) endpoint, not the actual per-cell noisy path
+    ``obj``. Using ``full_triangle_`` directly is wrong two ways: it gives
+    every future cell of a simulation the same shape (no independent process
+    noise per cell — verified numerically: the ratio of two future
+    incremental cells is constant across simulations, which breaks anything
+    downstream that needs the real simulated path, e.g. a one-year Claims
+    Development Result or discounted cash flows), and naively adding
+    ``process_variance_`` on top double-counts the noise already baked into
+    ``ultimate_`` (verified numerically: breaks the ``ibnr_`` identity below
+    by ~1%, far outside ``rtol=1e-6``).
+
+    The true per-cell noisy path ``obj`` is recoverable from what *is*
+    persisted after ``fit()`` (``ultimate_`` and ``process_variance_``, both
+    fixed single-draw attributes, not re-evaluated properties)::
+
+        ultimate_pre = ultimate_ - process_variance_[..., -1:]   # undo the mutation
+        full_pre     = _get_full_triangle(X_, ultimate_pre, X_.is_cumulative)
+                                                                  # same emergence
+                                                                  # pattern, pre-noise
+        obj          = full_pre + process_variance_              # the real noisy path
+
+    ``_get_full_triangle`` is imported from ``chainladder.core.common``; it
+    is a private helper but has been stable across the 0.9.x line this
+    project pins to. ``obj[..., -1] == ultimate_`` still holds (the noise
+    reapplied exactly cancels the noise undone), so the ``ibnr_`` identity
+    below is preserved to floating-point precision.
+
+    ``obj``'s cells are anchored to each simulation's own resampled latest
+    diagonal, not the real data (chainladder resamples every cell, observed
+    or not). To satisfy the contract that observed cells equal the real
+    triangle exactly while preserving each simulation's own noisy future
+    path, future cells are rebased onto the real latest diagonal: each
+    simulation's own projected increment beyond *its* resampled latest
+    diagonal is added to the *real* latest diagonal:
+    ``real_latest + (obj - resampled_latest)``. Since chainladder defines
+    ``ibnr_ = ultimate_ - resampled_latest`` (``MethodBase.ibnr_``), the real
+    latest diagonal cancels out exactly in
+    :meth:`BaseStochasticReserve._reserves_from_full_posterior`, exactly
+    reproducing ``ibnr_``.
+
+    If ``process_variance_`` is unavailable (``None`` — no process-variance
+    sampler configured on the fitted triangle), falls back to
+    ``full_triangle_`` alone (parameter risk only; smooth future path, no
+    per-cell process noise).
+
+    Returns ``(cumulative (n_o, n_d, S), origins, devs)``.
+    """
+    from chainladder.core.common import _get_full_triangle  # private, stable in 0.9.x
+
+    from ._triangle_ops import cumulative_array, latest_diagonal
+
+    n_dev = triangle.values.shape[-1]
+
+    process_var = getattr(model_fitted, "process_variance_", None)
+    if process_var is not None:
+        ultimate_pre = model_fitted.ultimate_ - process_var.iloc[..., -1:]
+        full_pre = _get_full_triangle(
+            model_fitted.X_, ultimate_pre, model_fitted.X_.is_cumulative
+        )
+        obj = full_pre + process_var
+        full = np.asarray(obj.values, dtype=float)[:, 0, :, :n_dev]
+    else:
+        full = np.asarray(model_fitted.full_triangle_.values, dtype=float)[
+            :, 0, :, :n_dev
+        ]
+
+    resampled_latest = np.asarray(model_fitted.latest_diagonal.values, dtype=float)[
+        :, 0, :, 0
+    ]
+
+    cum, origins, devs = cumulative_array(triangle)
+    latest, last_idx = latest_diagonal(cum)
+
+    n_sims, n_origin, n_dev_cols = full.shape
+    dev_idx = np.arange(n_dev_cols)
+    observed = dev_idx[None, :] <= last_idx[:, None]  # (n_origin, n_dev)
+
+    offset = full - resampled_latest[:, :, None]  # (S, n_origin, n_dev)
+    projected = latest[None, :, None] + offset  # (S, n_origin, n_dev)
+    observed_cum = np.broadcast_to(cum[None, :, :], (n_sims, n_origin, n_dev_cols))
+
+    combined = np.where(observed[None, :, :], observed_cum, projected)
+    return np.moveaxis(combined, 0, -1), origins, devs
 
 
 class BootstrapODPBornhuetterFerguson(BaseStochasticReserve):
@@ -399,6 +507,8 @@ class BootstrapODPBornhuetterFerguson(BaseStochasticReserve):
         ).fit(resampled, sample_weight=exposure_triangle)
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(bf, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(bf, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -491,6 +601,8 @@ class BootstrapODPCapeCod(BaseStochasticReserve):
         )
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(cc, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(cc, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -528,12 +640,34 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
     hat_adj : bool, default True
         Apply Shapland's hat-matrix adjustment to standardised residuals.
     drop, drop_high, drop_low, drop_valuation
-        Forwarded to ``chainladder.development.Development``.
+        Forwarded to ``chainladder.development.Development`` to exclude
+        specific (origin, development) link ratios from the fitted
+        expectation used for residuals and scale estimation; the
+        per-resample development factors are unrestricted (unlike
+        ``MackBootstrap``, ``claims_development_result``,
+        ``mack_analytic_rmsep`` and ``link_ratio_sensitivity``, where
+        ``drop`` changes the projection factors).
     random_state : int or numpy.random.RandomState, optional
         Seed/state for reproducibility.
     min_fitted_value : float, default 1.0
         Floor on fitted incremental losses to keep residuals stable
         (``delta`` parameter, paper eq 2.1.4).
+    scale : {"constant", "nonconstant"}, default "constant"
+        Dispersion assumption for process risk. ``"constant"`` uses the
+        pooled Pearson scale ``scale_`` for every development period.
+        ``"nonconstant"`` computes a per-development-period dispersion
+        ``scale_by_dev_`` from standardized Pearson residuals following
+        England & Verrall's carry-forward and min-of-two conventions.
+        ``"nonconstant"`` changes the process-variance (forecast) stage
+        only and is numerically identical to
+        ``scale="constant", process_scale=sampler.scale_by_dev_``; the
+        resampling stage still draws from the globally pooled residuals
+        (England's column-wise rescaling of the residual pool itself is
+        not implemented).
+    process_scale : array-like of shape (n_dev,), optional
+        User-supplied per-development-period dispersion to use at the
+        process-variance (forecast) stage instead of ``scale_by_dev_``.
+        Does not affect the resampling stage.
 
     Attributes
     ----------
@@ -541,6 +675,11 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         Bootstrap resamples (one per simulation).
     scale_ : float
         Dispersion (phi) for process risk.
+    scale_by_dev_ : ndarray of shape (n_dev,)
+        Per-development-period dispersion used for process variance; equal
+        to ``scale_`` repeated when ``scale="constant"``.
+    standardized_residuals_ : ndarray of shape (n_origin, n_dev)
+        Standardized Pearson residuals used to derive ``scale_by_dev_``.
     correlation_matrix_ : ndarray or None
         Calendar-year correlation matrix used by the Gaussian copula
         (``None`` when ``rho == 0``).
@@ -564,11 +703,15 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         drop_valuation=None,
         random_state=None,
         min_fitted_value: float = 1.0,
+        scale: str = "constant",
+        process_scale=None,
     ) -> None:
         if parametric_dist not in ("normal", "lognormal"):
             raise ValueError("parametric_dist must be 'normal' or 'lognormal'")
         if not (0.0 <= rho <= 1.0):
             raise ValueError(f"rho must be in [0, 1], got {rho}")
+        if scale not in ("constant", "nonconstant"):
+            raise ValueError("scale must be 'constant' or 'nonconstant'")
         self.n_sims = n_sims
         self.n_periods = n_periods
         self.rho = rho
@@ -581,6 +724,10 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         self.drop_valuation = drop_valuation
         self.random_state = random_state
         self.min_fitted_value = min_fitted_value
+        self.scale = scale
+        self.process_scale = (
+            None if process_scale is None else np.asarray(process_scale, dtype=float)
+        )
 
     # ----- correlation matrix construction -----
 
@@ -624,6 +771,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
     def fit(self, X, y=None, sample_weight=None):
         if X.shape[1] > 1:
             from chainladder.utils.utility_functions import concat
+
             out = [
                 CorrelatedBootstrapODPSample(**self.get_params()).fit(X.iloc[:, i])
                 for i in range(X.shape[1])
@@ -639,6 +787,8 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
             self.scale_ = xp.array([i.scale_ for i in out])
             self.w_ = out[0].w_
             self.correlation_matrix_ = out[0].correlation_matrix_
+            self.scale_by_dev_ = out[0].scale_by_dev_
+            self.standardized_residuals_ = out[0].standardized_residuals_
             return self
 
         backend = X.array_backend
@@ -671,7 +821,10 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
             try:
                 self.hat_ = self._get_hat(X, exp_incr_triangle)
             except Exception:
-                warn("Could not compute hat matrix. Setting hat_adj to False", stacklevel=2)
+                warn(
+                    "Could not compute hat matrix. Setting hat_adj to False",
+                    stacklevel=2,
+                )
                 self.hat_adj = False
                 self.hat_ = None
         else:
@@ -682,9 +835,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
 
         if self.rho != 0:
             self.correlation_matrix_, self.valid_indices_ = (
-                self._build_full_correlation_matrix(
-                    n_origin, n_dev, nan_triangle, xp
-                )
+                self._build_full_correlation_matrix(n_origin, n_dev, nan_triangle, xp)
             )
         else:
             self.correlation_matrix_ = None
@@ -707,7 +858,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         w_expanded[:, 1:] = w_[:, :] * w_[:, :]
         unscaled_residuals = unscaled_residuals * w_expanded
 
-        pearson_chi_sq = xp.nansum(unscaled_residuals ** 2)
+        pearson_chi_sq = xp.nansum(unscaled_residuals**2)
         if self.hat_ is not None:
             standardized_residuals = self.hat_ * unscaled_residuals
         else:
@@ -716,6 +867,16 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         n_params = self.design_matrix_.shape[1]
         degree_freedom = xp.nansum(nan_triangle) - n_params
         scale_phi = pearson_chi_sq / degree_freedom
+
+        self.standardized_residuals_ = np.asarray(standardized_residuals, dtype=float)
+        if self.scale == "nonconstant":
+            self.scale_by_dev_ = _nonconstant_scale(
+                self.standardized_residuals_, np.asarray(nan_triangle)
+            )
+        else:
+            self.scale_by_dev_ = np.full(
+                standardized_residuals.shape[1], float(scale_phi)
+            )
 
         resids_flat = standardized_residuals.flatten()
         adj_resid_dist = resids_flat[np.isfinite(resids_flat)]
@@ -729,12 +890,21 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
 
         if self.rho != 0 and self.correlation_matrix_ is not None:
             resampled_triangles = self._generate_correlated_samples(
-                X, exp_incr_triangle, nan_triangle, adj_resid_dist,
-                scale_phi, random_state, xp,
+                X,
+                exp_incr_triangle,
+                nan_triangle,
+                adj_resid_dist,
+                scale_phi,
+                random_state,
+                xp,
             )
         else:
             resampled_triangles = self._generate_independent_samples(
-                X, exp_incr_triangle, adj_resid_dist, random_state, xp,
+                X,
+                exp_incr_triangle,
+                adj_resid_dist,
+                random_state,
+                xp,
             )
 
         obj = X.copy()
@@ -766,9 +936,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         resampled_triangles = resampled_incr.cumsum(axis=2)
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
-    def _generate_parametric_samples(
-        self, X, exp_incr_triangle, random_state, xp
-    ):
+    def _generate_parametric_samples(self, X, exp_incr_triangle, random_state, xp):
         n_params = self.design_matrix_.shape[1]
         nan_triangle = X.nan_triangle
         degree_freedom = xp.nansum(nan_triangle) - n_params
@@ -787,7 +955,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
             resampled_incr = exp_incr_triangle + std_dev * z
         else:
             cv = std_dev / fitted_safe
-            sigma_sq = xp.log(1 + cv ** 2)
+            sigma_sq = xp.log(1 + cv**2)
             mu = -sigma_sq / 2
             sigma = xp.sqrt(sigma_sq)
             z = random_state.standard_normal(
@@ -800,8 +968,14 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
     def _generate_correlated_samples(
-        self, X, exp_incr_triangle, nan_triangle, adj_resid_dist, scale_phi,
-        random_state, xp,
+        self,
+        X,
+        exp_incr_triangle,
+        nan_triangle,
+        adj_resid_dist,
+        scale_phi,
+        random_state,
+        xp,
     ):
         n_cells = len(self.valid_indices_)
         correlated_uniforms = self._generate_correlated_uniforms(
@@ -809,17 +983,33 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         )
         if self.parametric:
             return self._generate_correlated_parametric(
-                X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-                scale_phi, random_state, xp,
+                X,
+                exp_incr_triangle,
+                nan_triangle,
+                correlated_uniforms,
+                scale_phi,
+                random_state,
+                xp,
             )
         return self._generate_correlated_nonparametric(
-            X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-            adj_resid_dist, random_state, xp,
+            X,
+            exp_incr_triangle,
+            nan_triangle,
+            correlated_uniforms,
+            adj_resid_dist,
+            random_state,
+            xp,
         )
 
     def _generate_correlated_parametric(
-        self, X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-        scale_phi, random_state, xp,
+        self,
+        X,
+        exp_incr_triangle,
+        nan_triangle,
+        correlated_uniforms,
+        scale_phi,
+        random_state,
+        xp,
     ):
         n_origin, n_dev = exp_incr_triangle.shape
         n_params = self.design_matrix_.shape[1]
@@ -838,7 +1028,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
                 resampled_incr[:, i, j] = exp_incr_triangle[i, j] + std_dev * z
             else:
                 cv = std_dev / fitted_val
-                sigma_sq = xp.log(1 + cv ** 2)
+                sigma_sq = xp.log(1 + cv**2)
                 mu = -sigma_sq / 2
                 sigma = xp.sqrt(sigma_sq)
                 multiplier = xp.exp(mu + sigma * z)
@@ -853,8 +1043,14 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
     def _generate_correlated_nonparametric(
-        self, X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-        adj_resid_dist, random_state, xp,
+        self,
+        X,
+        exp_incr_triangle,
+        nan_triangle,
+        correlated_uniforms,
+        adj_resid_dist,
+        random_state,
+        xp,
     ):
         n_origin, n_dev = exp_incr_triangle.shape
         sorted_resids = xp.sort(adj_resid_dist)
@@ -947,9 +1143,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         if n_keys == 1:
             X_new.kdims = np.array([[str(i)] for i in range(self.n_sims)])
         else:
-            original_kdims = (
-                X.kdims[0] if len(X.kdims.shape) > 1 else X.kdims
-            )
+            original_kdims = X.kdims[0] if len(X.kdims.shape) > 1 else X.kdims
             X_new.kdims = np.array(
                 [
                     [
@@ -961,6 +1155,15 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
             )
         X_new.key_labels = X.key_labels
         X_new.scale_ = self.scale_
+        if self.process_scale is not None:
+            if self.process_scale.shape != self.scale_by_dev_.shape:
+                raise ValueError(
+                    f"process_scale must have shape {self.scale_by_dev_.shape}, "
+                    f"got {self.process_scale.shape}"
+                )
+            X_new.scale_by_dev_ = self.process_scale
+        else:
+            X_new.scale_by_dev_ = self.scale_by_dev_
         X_new.random_state = self.random_state
         X_new.rho_ = self.rho
         X_new._get_process_variance = types.MethodType(_get_process_variance, X_new)
@@ -985,6 +1188,33 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
     hat_adj : bool, default True
     n_periods : int, default -1
     random_seed : int, optional
+    scale : {"constant", "nonconstant"}, default "constant"
+        Dispersion assumption for process risk, forwarded to
+        :class:`CorrelatedBootstrapODPSample`. ``"nonconstant"`` uses a
+        per-development-period dispersion derived from standardized Pearson
+        residuals instead of the pooled scale. It changes the
+        process-variance (forecast) stage only and is numerically identical
+        to ``scale="constant", process_scale=sampler.scale_by_dev_``; the
+        resampling stage still draws from the globally pooled residuals
+        (England's column-wise rescaling of the residual pool itself is
+        not implemented).
+    process_scale : array-like of shape (n_dev,), optional
+        User-supplied per-development-period dispersion for the
+        process-variance (forecast) stage, overriding ``scale_by_dev_``.
+    drop : optional
+        Forwarded to :class:`CorrelatedBootstrapODPSample` /
+        ``chainladder.development.Development`` to exclude specific
+        (origin, development) link ratios from the fitted expectation used
+        for residuals and scale estimation; the per-resample development
+        factors are unrestricted (unlike ``MackBootstrap``,
+        ``claims_development_result``, ``mack_analytic_rmsep`` and
+        ``link_ratio_sensitivity``, where ``drop`` changes the projection
+        factors).
+
+    Attributes
+    ----------
+    sampler_ : CorrelatedBootstrapODPSample
+        The fitted sampler used to generate the bootstrap resamples.
 
     Notes
     -----
@@ -1005,6 +1235,9 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
         hat_adj: bool = True,
         n_periods: int = -1,
         random_seed: int | None = None,
+        scale: str = "constant",
+        process_scale=None,
+        drop=None,
     ) -> None:
         super().__init__()
         self.n_sims = n_sims
@@ -1014,6 +1247,9 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
         self.hat_adj = hat_adj
         self.n_periods = n_periods
         self.random_seed = random_seed
+        self.scale = scale
+        self.process_scale = process_scale
+        self.drop = drop
 
     def fit(self, triangle):
         validate_triangle(triangle)
@@ -1031,13 +1267,19 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
             hat_adj=self.hat_adj,
             n_periods=self.n_periods,
             random_state=self.random_seed,
+            scale=self.scale,
+            process_scale=self.process_scale,
+            drop=self.drop,
         ).fit(prepared)
+        self.sampler_ = sampler
         resampled = sampler.transform(prepared)
         model = Chainladder().fit(resampled)
 
         ibnr_vals = np.asarray(model.ibnr_.values)
         per_sim_per_origin = np.nansum(ibnr_vals, axis=-1)  # (n_sims, 1, n_origin)
-        per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
+        per_sim_per_origin = np.squeeze(
+            per_sim_per_origin, axis=1
+        )  # (n_sims, n_origin)
         per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
 
         origins = [_extract_period_value(o) for o in triangle.origin]
@@ -1051,6 +1293,10 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
             },
         )
 
+        full, origins_full, devs_full = _full_posterior_from_chainladder(
+            model, triangle
+        )
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -1151,6 +1397,8 @@ class CorrelatedBootstrapODPBornhuetterFerguson(BaseStochasticReserve):
         ).fit(resampled, sample_weight=exposure_triangle)
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(bf, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(bf, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
@@ -1249,19 +1497,59 @@ class CorrelatedBootstrapODPCapeCod(BaseStochasticReserve):
         )
 
         self.reserves_posterior_ = _extract_ibnr_from_bf_or_cc(cc, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(cc, triangle)
+        self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
         return self
 
 
+def _nonconstant_scale(standardized_residuals, nan_triangle):
+    """Per-development-period dispersion phi_j from standardized Pearson
+    residuals, with England's conventions: carry forward when n_j <= 1 and set
+    the last period to the minimum of the previous two."""
+    resid_sq = np.where(np.isnan(nan_triangle), np.nan, standardized_residuals**2)
+    n_j = np.nansum(nan_triangle, axis=0)
+    ss = np.nansum(resid_sq, axis=0)
+    n_dev = resid_sq.shape[1]
+    phi = np.zeros(n_dev)
+    for j in range(n_dev - 1):
+        if n_j[j] > 1:
+            phi[j] = ss[j] / n_j[j]
+        else:
+            phi[j] = phi[j - 1] if j > 0 else 0.0
+    if n_dev >= 3:
+        phi[-1] = min(phi[-2], phi[-3])
+    elif n_dev == 2:
+        phi[-1] = phi[-2]
+    return phi
+
+
 def _get_process_variance(self, full_triangle):
-    """Inject random gamma process noise into the lower-right (future) cells."""
+    """Inject gamma process noise into future cells with a per-development
+    dispersion vector ``scale_by_dev_`` (constant when scale='constant')."""
     xp = full_triangle.get_array_module()
     lower_tri = full_triangle.cum_to_incr() - self.cum_to_incr()
     random_state = xp.random.RandomState(
         None if not self.random_state else self.random_state + 1
     )
+    scale_vec = np.asarray(
+        (
+            getattr(self, "scale_by_dev_", None)
+            if getattr(self, "scale_by_dev_", None) is not None
+            else np.full(
+                lower_tri.values.shape[-1], float(np.asarray(self.scale_).flatten()[0])
+            )
+        ),
+        dtype=float,
+    )
+    n_full = lower_tri.values.shape[-1]
+    if len(scale_vec) < n_full:  # placeholder tail and 9999 ultimate columns
+        scale_vec = np.concatenate(
+            [scale_vec, np.repeat(scale_vec[-1], n_full - len(scale_vec))]
+        )
+    scale_b = np.maximum(scale_vec[:n_full], 1e-12)[None, None, None, :]
     lower_tri.values = random_state.gamma(
-        shape=abs(lower_tri.values) / self.scale_, scale=self.scale_
+        shape=abs(lower_tri.values) / scale_b, scale=scale_b
     ) * xp.sign(xp.nan_to_num(lower_tri.values))
     return (lower_tri + self.cum_to_incr()).incr_to_cum()

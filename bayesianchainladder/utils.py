@@ -264,9 +264,7 @@ def prepare_model_data(
 
     if exposure_triangle is not None:
         # Add exposure to observed data
-        exp_df = triangle_to_dataframe(
-            exposure_triangle, value_column=exposure_column
-        )
+        exp_df = triangle_to_dataframe(exposure_triangle, value_column=exposure_column)
         # Merge on origin (exposure typically only varies by origin)
         if "dev" in exp_df.columns:
             # Take first development period's exposure
@@ -323,42 +321,43 @@ def add_categorical_columns(
 
     if formula is not None:
         import re
+
         # Match bs(...) or cr(...) - spline terms
-        spline_pattern = r'\b(?:bs|cr)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        spline_pattern = r"\b(?:bs|cr)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)"
         numeric_columns.update(re.findall(spline_pattern, formula))
 
         # Match column**N or pow(column, N) - polynomial terms
-        power_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\*\*\s*\d'
+        power_pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\*\*\s*\d"
         numeric_columns.update(re.findall(power_pattern, formula))
-        pow_pattern = r'\bpow\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        pow_pattern = r"\bpow\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)"
         numeric_columns.update(re.findall(pow_pattern, formula))
 
         # Match np.log(), np.sqrt(), np.maximum(), etc. - numpy transforms
         # Handles both np.func(col) and np.func(val, col) patterns
-        np_pattern = r'\bnp\.\w+\s*\([^)]*\b([a-zA-Z_][a-zA-Z0-9_]*_idx)\b'
+        np_pattern = r"\bnp\.\w+\s*\([^)]*\b([a-zA-Z_][a-zA-Z0-9_]*_idx)\b"
         numeric_columns.update(re.findall(np_pattern, formula))
-        np_pattern_simple = r'\bnp\.\w+\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[,)]'
+        np_pattern_simple = r"\bnp\.\w+\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[,)]"
         numeric_columns.update(re.findall(np_pattern_simple, formula))
 
         # Match {expr} syntax with column names inside (e.g., {origin**2})
-        brace_pattern = r'\{[^}]*\b([a-zA-Z_][a-zA-Z0-9_]*)\b[^}]*\}'
+        brace_pattern = r"\{[^}]*\b([a-zA-Z_][a-zA-Z0-9_]*)\b[^}]*\}"
         numeric_columns.update(re.findall(brace_pattern, formula))
 
         # Match bare column name (not wrapped in C()) used directly in formula
         # This catches "origin + ..." but not "C(origin) + ..."
         # Split by common operators and check each term
-        terms = re.split(r'[~+\-*/(),\s]+', formula)
+        terms = re.split(r"[~+\-*/(),\s]+", formula)
         for term in terms:
             # If a column appears as a bare term (not empty, not a number, not a function)
-            if term and term in columns and not re.match(r'^\d+\.?\d*$', term):
+            if term and term in columns and not re.match(r"^\d+\.?\d*$", term):
                 # Check if this column is NOT wrapped in C() in the formula
-                c_wrapped = re.search(rf'\bC\s*\(\s*{re.escape(term)}\s*\)', formula)
+                c_wrapped = re.search(rf"\bC\s*\(\s*{re.escape(term)}\s*\)", formula)
                 if not c_wrapped:
                     numeric_columns.add(term)
 
         # Check for _idx suffix usage - these need indexed versions
         # Match origin_idx, dev_idx, calendar_idx anywhere in formula
-        idx_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)_idx\b'
+        idx_pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)_idx\b"
         indexed_columns.update(re.findall(idx_pattern, formula))
 
         # Also add _idx columns to numeric_columns so they stay numeric
@@ -455,7 +454,9 @@ def create_design_info(
         "response": response,
         "terms": terms,
         "n_observations": len(df),
-        "origin_levels": sorted(df["origin"].unique()) if "origin" in df.columns else [],
+        "origin_levels": (
+            sorted(df["origin"].unique()) if "origin" in df.columns else []
+        ),
         "dev_levels": sorted(df["dev"].unique()) if "dev" in df.columns else [],
         "calendar_levels": (
             sorted(df["calendar"].unique()) if "calendar" in df.columns else []
@@ -635,3 +636,35 @@ def validate_triangle(triangle: cl.Triangle) -> None:
             "Triangle contains negative values. "
             "Consider using a family that supports negative values."
         )
+
+
+def long_to_triangle(
+    df: pd.DataFrame,
+    value_col: str,
+    origin_col: str = "origin",
+    dev_col: str = "dev",
+) -> cl.Triangle:
+    """Build a cumulative chainladder Triangle from long-format rows with an
+    integer origin year and development age in months (12, 24, ...).
+
+    chainladder needs a date-like development column, so the age is turned
+    into a year-end valuation date ``origin + dev/12 - 1``.
+    """
+    import chainladder as cl_
+
+    work = df[[origin_col, dev_col, value_col]].copy()
+    work.columns = ["origin", "dev", value_col]
+    work["origin"] = work["origin"].astype(int)
+    work["dev"] = work["dev"].astype(int)
+    eval_year = work["origin"] + work["dev"] // 12 - 1
+    work["dev_date"] = pd.to_datetime(
+        eval_year.astype(str) + "-12-31", format="%Y-%m-%d"
+    )
+    return cl_.Triangle(
+        data=work,
+        origin="origin",
+        development="dev_date",
+        columns=[value_col],
+        cumulative=True,
+        origin_format="%Y",
+    )
