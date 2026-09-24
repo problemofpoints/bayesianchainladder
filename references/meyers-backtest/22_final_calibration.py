@@ -285,7 +285,7 @@ def run_analysis(dataset: str = "meyers", prefix: str | None = None):
     print(f"  {len(cal_df):,} calibration rows computed")
 
     # ------------------------------------------------------------------
-    # 4. Summary calibration table (8 methods × 2 loss types)
+    # 4. Summary calibration table (all methods × 2 loss types)
     # ------------------------------------------------------------------
     print("\n" + "=" * 130)
     print(f"CALIBRATION TABLE [{dataset}]: {len(ALL_METHODS)} methods × 2 loss types")
@@ -353,7 +353,7 @@ def run_analysis(dataset: str = "meyers", prefix: str | None = None):
                 )
 
     # ------------------------------------------------------------------
-    # 6. Histogram grid: 8 methods × 2 loss types
+    # 6. Histogram grid: all methods × 2 loss types
     # ------------------------------------------------------------------
     print("\nGenerating calibration histogram grid...")
     methods_to_plot = [m for m in ALL_METHODS if m in cal_df["method"].unique()]
@@ -400,7 +400,7 @@ def run_analysis(dataset: str = "meyers", prefix: str | None = None):
 
     fig.suptitle(
         f"{cfg['title']}\n"
-        "8 Methods × 2 Loss Types (lognormal PV, rho=0.3, n=5000 sims)",
+        f"{len(methods_to_plot)} Methods × 2 Loss Types (lognormal PV, rho=0.3, n=5000 sims)",
         fontsize=11,
         y=1.01,
     )

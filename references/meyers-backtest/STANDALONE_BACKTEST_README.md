@@ -219,3 +219,108 @@ See `cache/meyers_final_calibration.csv` for the full table.
 
 - `figures/final_calibration_grid.png` — 8×2 histogram grid (8 methods × 2 loss types)
 - `figures/final_pp_chart.png` — PP chart (all 8 methods × 2 loss types overlaid)
+
+## v5 Analysis: clrd2025 extension (origins 1998-2007)
+
+**Date**: see git log (commit adding this section).
+
+### Setup
+
+- **Data**: `cl.load_sample("clrd2025")` (chainladder 0.10.1), origins 1998-2007, development 12-120 (10x10 triangles), company-lines built by `references/meyers-backtest/24_build_clrd2025_long.py`.
+- **Eligibility funnel** (out of 768 GRNAME x LOB triangles): complete 376 -> premium_positive 351 -> losses_positive 328 -> stable (`--max-premium-ratio 5`, default) **240**. Disabling the premium-stability filter (`--max-premium-ratio 0`) leaves all 328 `losses_positive` triangles eligible instead of 240.
+- **LOB counts at the default filter**: ppauto 80, comauto 75, othliab 64, wkcomp 12, prodliab 9 (240 total). **All six `medmal` company-lines are excluded** by the premium-stability filter — every medmal triangle that passes `losses_positive` has a max/min premium ratio of 10.4-33.7 over 1998-2007, all above the default threshold of 5. This is a 5-line (not 6-line) comparison at the default settings.
+- **Methods**: mack, odp, odp_param, odp_corr, odp_bf, odp_cc, odp_corr_bf, odp_corr_cc, `bz` (Barnett-Zehnwirth; new since v4) — 9 total.
+- **Defaults**: `--loss-col both --n-sims 5000 --rho 0.3 --apriori 0.65 --apriori-sigma 0.15 --n-jobs 8 --random-seed 42`
+- **bz coverage**: `bz` requires strictly positive incremental losses (log-linear model) and fails outright on any triangle with a non-positive cell. Of the 240 x 2 = 480 (triangle, loss type) combinations, `bz` produced results for only **31/240 paid** triangles and **9/240 case_incurred** triangles; the other **440** combinations were skipped with `bz requires strictly positive incremental losses ... found N non-positive cell(s)` (or a downstream `sample_weight` shape mismatch raised from the same code path once cells are dropped). No other method failed.
+- **Scripts / commands**:
+
+  ```bash
+  uv run python scripts/run_stochastic_reserving.py \
+    --input references/meyers-backtest/cache/clrd2025_long.csv \
+    --output references/meyers-backtest/cache/clrd2025_final.csv \
+    --methods mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc bz \
+    --loss-col both --n-sims 5000 --rho 0.3 --apriori 0.65 --apriori-sigma 0.15 \
+    --n-jobs 8 --random-seed 42 \
+    --save-samples references/meyers-backtest/cache/clrd2025_final_samples.parquet \
+    2>&1 | grep -v Warning > references/meyers-backtest/cache/clrd2025_final.log
+
+  uv run python references/meyers-backtest/22_final_calibration.py --dataset clrd2025
+  ```
+
+- **Outputs**: `cache/clrd2025_final.csv` (42,680 rows), `cache/clrd2025_final_samples.parquet` (19,400,000 rows, 3,880 unique (lob, group_id, loss_type, method) combos), `cache/clrd2025_final.log`, `cache/clrd2025_final_calibration.csv`, `cache/clrd2025_final_cal_detail.csv`, `figures/clrd2025_final_calibration_grid.png`, `figures/clrd2025_final_pp_chart.png`.
+
+### Final calibration table (lognormal PV, rho=0.3, n_sims=5000), sorted by KS
+
+KS statistic vs uniform (lower = better); C80% = % of actuals in central 80% interval.
+
+| Method | Loss type | N | Mean pctl | C50% | C80% | KS stat | Med CV | Med |%err| |
+|--------|-----------|:-:|:---------:|:----:|:----:|:-------:|:------:|:---------:|
+| odp | case_incurred | 240 | 0.481 | 48.3% | 72.1% | **0.085** | 0.352 | 3.0% |
+| odp_corr | paid | 240 | 0.541 | 44.6% | 68.3% | **0.100** | 0.399 | 3.4% |
+| odp_param | paid | 240 | 0.530 | 40.8% | 60.8% | 0.121 | 0.341 | 3.4% |
+| mack | case_incurred | 240 | 0.476 | 34.2% | 58.3% | 0.137 | 0.163 | 2.5% |
+| odp | paid | 240 | 0.518 | 32.9% | 59.6% | 0.144 | 0.245 | 3.6% |
+| odp_corr_cc | paid | 240 | 0.404 | 43.8% | 66.2% | 0.155 | 0.287 | 3.9% |
+| mack | paid | 240 | 0.515 | 33.8% | 58.8% | 0.177 | 0.232 | 3.3% |
+| odp_corr | case_incurred | 240 | 0.503 | 34.2% | 58.3% | 0.178 | 0.291 | 2.5% |
+| odp_param | case_incurred | 240 | 0.497 | 32.5% | 56.7% | 0.194 | 0.277 | 2.6% |
+| odp_cc | paid | 240 | 0.383 | 33.3% | 57.5% | 0.219 | 0.216 | 3.9% |
+| odp_corr_bf | paid | 240 | 0.305 | 32.1% | 59.6% | 0.311 | 0.258 | 5.9% |
+| odp_bf | paid | 240 | 0.302 | 32.9% | 60.0% | 0.318 | 0.251 | 5.9% |
+| bz | case_incurred | 9 | 0.365 | 11.1% | 44.4% | 0.391 | 0.217 | 3.2% |
+| bz | paid | 31 | 0.323 | 35.5% | 74.2% | 0.392 | 0.262 | 4.9% |
+| odp_corr_cc | case_incurred | 240 | 0.228 | 28.3% | 43.8% | 0.455 | 0.255 | 5.2% |
+| odp_cc | case_incurred | 240 | 0.203 | 21.2% | 36.7% | 0.528 | 0.178 | 5.0% |
+| odp_corr_bf | case_incurred | 240 | 0.189 | 20.4% | 35.4% | 0.536 | 0.199 | 6.7% |
+| odp_bf | case_incurred | 240 | 0.185 | 20.4% | 33.8% | 0.541 | 0.193 | 6.7% |
+
+**Winners**: `odp_corr` (paid, KS=0.100) and `odp` (case_incurred, KS=0.085) — same winners as v4.
+
+See `cache/clrd2025_final_calibration.csv` for the full table.
+
+### Per-line KS for the best two methods per loss type
+
+Best two paid methods: `odp_corr` (overall KS=0.100) and `odp_param` (overall KS=0.121). Best two case_incurred methods: `odp` (overall KS=0.085) and `mack` (overall KS=0.137).
+
+| LOB | N | odp_corr KS (paid) | odp_param KS (paid) | odp KS (case_inc) | mack KS (case_inc) |
+|-----|:-:|:-------------------:|:--------------------:|:-------------------:|:--------------------:|
+| Comm Auto | 75 | 0.229 | 0.232 | 0.121 | 0.162 |
+| PP Auto | 80 | 0.128 | 0.108 | 0.119 | 0.200 |
+| Workers Comp | 12 | 0.161 | 0.166 | 0.242 | 0.234 |
+| Other Liab | 64 | 0.258 | 0.288 | 0.081 | 0.106 |
+| Products Liab | 9 | 0.411 | 0.436 | 0.281 | 0.258 |
+| Med Mal | 0 | — | — | — | — (excluded by premium-stability filter) |
+
+### Comparison with Meyers 1988-1997 (v4)
+
+KS statistic by method, v4 (Meyers 1988-1997, 200 triangles/method) vs v5 (clrd2025 1998-2007, up to 240 triangles/method):
+
+| Method | Meyers KS (paid) | Meyers KS (case) | clrd2025 KS (paid) | clrd2025 KS (case) |
+|--------|:-----------------:|:------------------:|:--------------------:|:--------------------:|
+| mack | 0.266 | 0.175 | 0.177 | 0.137 |
+| odp | 0.261 | 0.066 | 0.144 | 0.085 |
+| odp_param | 0.176 | 0.200 | 0.121 | 0.194 |
+| odp_corr | 0.151 | 0.208 | 0.100 | 0.178 |
+| odp_bf | 0.467 | 0.522 | 0.318 | 0.541 |
+| odp_cc | 0.476 | 0.545 | 0.219 | 0.528 |
+| odp_corr_bf | 0.438 | 0.490 | 0.311 | 0.536 |
+| odp_corr_cc | 0.341 | 0.453 | 0.155 | 0.455 |
+| bz (new in v5) | — | — | 0.392 (N=31) | 0.391 (N=9) |
+
+**Findings**:
+
+1. **The winners don't change across eras.** `odp_corr` is still the best-calibrated paid method (KS improves from 0.151 in Meyers 1988-1997 to 0.100 in clrd2025 1998-2007) and `odp` is still the best-calibrated case_incurred method (KS moves slightly the other way, 0.066 -> 0.085, but remains the top case_incurred method by a wide margin over the next-best `mack`, KS=0.137).
+
+2. **BF/CC over-reserving with a fixed apriori=0.65 persists in the 1998-2007 era, and is now the worst-calibrated group on both loss types.** Mean percentiles for `odp_bf`/`odp_cc`/`odp_corr_bf`/`odp_corr_cc` sit at 0.19-0.54 (still skewed away from the ideal 0.50) and these four methods occupy the four worst KS values on case_incurred (0.455-0.541) and the two worst on paid other than `bz`. Paid-side BF/CC calibration did improve relative to Meyers (`odp_bf` KS 0.467->0.318, `odp_corr_bf` 0.438->0.311), but case_incurred BF/CC calibration got slightly worse (`odp_bf` 0.522->0.541, `odp_cc` 0.545->0.528, `odp_corr_bf` 0.490->0.536). The fixed apriori of 0.65 remains too low for this book on case_incurred data specifically.
+
+3. **`bz` is markedly worse than `odp_corr`/`odp` on both loss types, but the comparison is not apples-to-apples.** `bz`'s KS of 0.392 (paid) and 0.391 (case_incurred) are far above `odp_corr`'s 0.100 and `odp`'s 0.085. However `bz` only produced results for 31/240 paid triangles and 9/240 case_incurred triangles (the rest were skipped for having a non-positive incremental cell), so its sample is small and self-selected toward the subset of triangles that happen to be strictly positive throughout — likely the larger, more mature comauto/ppauto books. Its paid-side C80% of 74.2% is in fact the best of any method in the whole table, which — combined with the small N — suggests the headline KS for `bz` should be read with caution rather than as a like-for-like ranking against the other 8 methods (which all ran on all 240 triangles).
+
+4. **The two smallest lines behave differently.** Products Liab (N=9) has the worst or near-worst KS for nearly every method (e.g. `odp_param` paid KS=0.436, `odp_bf` case_incurred KS=0.768 — see per-line detail in `cache/clrd2025_final_analysis.txt`), consistent with a KS statistic that is simply noisy at N=9 rather than necessarily indicating worse model fit. Workers Comp (N=12) shows a similar small-sample pattern for BF/CC (KS 0.5-0.7) even though its `odp_corr`/`odp_param` paid KS (0.161/0.166) is competitive with the larger lines. Med Mal contributes **zero** groups at the default filter (see Setup), so none of the numbers above reflect that line at all.
+
+5. **`odp_corr_cc` improved the most of any method vs v4.** Its paid KS dropped from 0.341 (v4, mid-pack) to 0.155 (v5, 6th of 18 rows), moving it from a middling BF/CC variant into a genuinely competitive alternative to `odp_corr`/`odp_param` on paid data for the 1998-2007 era.
+
+### Figures (v5)
+
+- `figures/clrd2025_final_calibration_grid.png` — 9x2 histogram grid (9 methods x 2 loss types)
+- `figures/clrd2025_final_pp_chart.png` — PP chart (all 9 methods x 2 loss types overlaid)
+
