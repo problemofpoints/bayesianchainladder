@@ -1,10 +1,9 @@
 """Tests for utility functions."""
 
+import chainladder as cl
 import numpy as np
 import pandas as pd
 import pytest
-
-import chainladder as cl
 
 from bayesianchainladder.utils import (
     add_categorical_columns,
@@ -60,17 +59,20 @@ class TestTriangleToDataframe:
         # All observed cells should have values
         assert not df["incremental"].isna().any()
 
-    def test_calendar_period_calculation(self, sample_triangle):
-        """Test calendar period is correctly calculated."""
+    def test_calendar_is_valuation_year_for_annual_triangle(self, sample_triangle):
+        """Cells on one diagonal share a calendar label; RAA has 10 diagonals."""
         df = triangle_to_dataframe(sample_triangle)
 
-        # Calendar = origin + dev - 1
-        expected_calendar = df["origin"] + df["dev"] - 1
+        assert sorted(df["calendar"].unique()) == list(range(1981, 1991))
+        # Annual origin and annual development: calendar = origin + dev/12 - 1
+        expected = df["origin"] + df["dev"] // 12 - 1
         pd.testing.assert_series_equal(
-            df["calendar"].astype(int),
-            expected_calendar.astype(int),
-            check_names=False,
+            df["calendar"].astype(int), expected.astype(int), check_names=False
         )
+        # Same diagonal, different cells
+        c1 = df.loc[(df["origin"] == 1981) & (df["dev"] == 24), "calendar"].iloc[0]
+        c2 = df.loc[(df["origin"] == 1982) & (df["dev"] == 12), "calendar"].iloc[0]
+        assert c1 == c2 == 1982
 
     def test_custom_value_column_name(self, sample_triangle):
         """Test custom value column name."""
@@ -131,12 +133,14 @@ class TestAddCategoricalColumns:
 
     def test_default_columns(self):
         """Test default categorical column conversion."""
-        df = pd.DataFrame({
-            "origin": [1, 1, 2],
-            "dev": [1, 2, 1],
-            "calendar": [1, 2, 2],
-            "value": [100, 80, 110],
-        })
+        df = pd.DataFrame(
+            {
+                "origin": [1, 1, 2],
+                "dev": [1, 2, 1],
+                "calendar": [1, 2, 2],
+                "value": [100, 80, 110],
+            }
+        )
 
         result = add_categorical_columns(df)
 
@@ -146,11 +150,13 @@ class TestAddCategoricalColumns:
 
     def test_custom_columns(self):
         """Test custom column specification."""
-        df = pd.DataFrame({
-            "origin": [1, 1, 2],
-            "dev": [1, 2, 1],
-            "value": [100, 80, 110],
-        })
+        df = pd.DataFrame(
+            {
+                "origin": [1, 1, 2],
+                "dev": [1, 2, 1],
+                "value": [100, 80, 110],
+            }
+        )
 
         result = add_categorical_columns(df, columns=["origin"])
 
@@ -167,9 +173,7 @@ class TestComputeLogExposureOffset:
 
         result = compute_log_exposure_offset(df, "exposure")
 
-        np.testing.assert_array_almost_equal(
-            result.values, np.log([100, 200, 300])
-        )
+        np.testing.assert_array_almost_equal(result.values, np.log([100, 200, 300]))
 
     def test_missing_column_raises(self):
         """Test that missing column raises error."""
@@ -191,11 +195,13 @@ class TestCreateDesignInfo:
 
     def test_parses_formula(self):
         """Test formula parsing."""
-        df = pd.DataFrame({
-            "y": [1, 2, 3],
-            "origin": [1, 1, 2],
-            "dev": [1, 2, 1],
-        })
+        df = pd.DataFrame(
+            {
+                "y": [1, 2, 3],
+                "origin": [1, 1, 2],
+                "dev": [1, 2, 1],
+            }
+        )
 
         info = create_design_info(df, "y ~ origin + dev")
 
@@ -312,3 +318,98 @@ class TestPrepareCSRData:
         # All included values should be positive (for valid log transform)
         if len(observed) > 0:
             assert (observed["cumulative"] > 0).all()
+
+
+class TestPeriodEncoding:
+    """Origin and calendar encodings across grains."""
+
+    def test_future_calendar_labels_follow_observed_ones(self):
+        tri = cl.load_sample("raa")
+        observed, future = prepare_model_data(tri)
+
+        assert not future["calendar"].isin(observed["calendar"]).any()
+        assert future["calendar"].min() == observed["calendar"].max() + 1
+        assert len(observed) + len(future) == 100
+
+    def test_annual_origin_quarterly_development(self):
+        tri = cl.load_sample("quarterly")["paid"]
+        df = triangle_to_dataframe(tri)
+
+        assert df["dev"].min() == 3
+        assert df["origin"].min() == 1995  # annual origins stay as years
+        assert df["calendar"].min() == 199503  # sub-annual valuation -> YYYYMM
+        c1 = df.loc[(df["origin"] == 1995) & (df["dev"] == 15), "calendar"].iloc[0]
+        c2 = df.loc[(df["origin"] == 1996) & (df["dev"] == 3), "calendar"].iloc[0]
+        assert c1 == c2 == 199603
+        vd = tri.valuation_date
+        assert df["calendar"].max() == vd.year * 100 + vd.month
+
+    def test_calendar_matches_chainladder_valuation(self):
+        tri = cl.load_sample("quarterly")["paid"]
+        df = triangle_to_dataframe(tri)
+        frame = tri.to_frame(
+            keepdims=True, implicit_axis=True, origin_as_datetime=False
+        ).reset_index(drop=True)
+        val = pd.to_datetime(frame["valuation"])
+        frame = pd.DataFrame(
+            {
+                "origin": frame["origin"].dt.year.astype(int),
+                "dev": frame["development"].astype(int),
+                "expected": (val.dt.year * 100 + val.dt.month).astype(int),
+            }
+        )
+        merged = df.merge(frame, on=["origin", "dev"], how="inner")
+        assert len(merged) == len(df) == len(frame)
+        assert (merged["calendar"] == merged["expected"]).all()
+
+    def test_quarterly_origin_grain_gets_unique_origin_labels(self):
+        data = pd.DataFrame(
+            {
+                "origin": [
+                    "2020-01-01",
+                    "2020-01-01",
+                    "2020-04-01",
+                    "2020-04-01",
+                    "2020-07-01",
+                ],
+                "valuation": [
+                    "2020-03-31",
+                    "2020-06-30",
+                    "2020-06-30",
+                    "2020-09-30",
+                    "2020-09-30",
+                ],
+                "paid": [10.0, 15.0, 12.0, 18.0, 11.0],
+            }
+        )
+        tri = cl.Triangle(
+            data,
+            origin="origin",
+            development="valuation",
+            columns="paid",
+            cumulative=True,
+        )
+        assert tri.origin_grain == "Q"
+        df = (
+            triangle_to_dataframe(tri)
+            .sort_values(["origin", "dev"])
+            .reset_index(drop=True)
+        )
+
+        assert df["origin"].tolist() == [202003, 202003, 202006, 202006, 202009]
+        assert df["dev"].tolist() == [3, 6, 3, 6, 3]
+        assert df["calendar"].tolist() == [202003, 202006, 202006, 202009, 202009]
+
+    def test_csr_data_shares_encoding(self):
+        tri = cl.load_sample("genins")
+        observed, future = prepare_csr_data(tri, premium_value=1.0)
+        glm_observed, glm_future = prepare_model_data(tri)
+
+        pd.testing.assert_frame_equal(
+            observed[["origin", "dev"]].reset_index(drop=True),
+            glm_observed[["origin", "dev"]].reset_index(drop=True),
+        )
+        pd.testing.assert_frame_equal(
+            future[["origin", "dev"]].reset_index(drop=True),
+            glm_future[["origin", "dev"]].reset_index(drop=True),
+        )

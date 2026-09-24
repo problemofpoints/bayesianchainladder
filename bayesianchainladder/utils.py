@@ -16,37 +16,105 @@ if TYPE_CHECKING:
     import chainladder as cl
 
 
+def _encode_period_end(ts: pd.Timestamp, annual: bool) -> int:
+    """Integer label for a period ending at ``ts``: the year, or ``YYYYMM``."""
+    if annual:
+        return int(ts.year)
+    return int(ts.year) * 100 + int(ts.month)
+
+
+def _triangle_cells(triangle: cl.Triangle) -> pd.DataFrame:
+    """
+    Long-format view of every origin x development cell of a single triangle.
+
+    Labels come from chainladder itself rather than being recomputed:
+
+    - ``origin``: the origin period's year when ``origin_grain == "Y"``,
+      otherwise ``YYYYMM`` of the origin period's end month.
+    - ``dev``: development age in months (``triangle.development``).
+    - ``calendar``: the cell's valuation date from ``Triangle.valuation``,
+      encoded as the year when both grains are annual, otherwise ``YYYYMM``.
+      Cells on one diagonal share a label; future cells get later labels.
+    - ``value``: the cell value (NaN for unobserved / future cells).
+    - ``observed``: ``True`` where ``value`` is finite.
+
+    Rows are in row-major (origin, development) order. The caller decides
+    which triangle (cumulative or incremental) to pass in, and that choice
+    is what defines the observation mask returned here.
+
+    Raises
+    ------
+    ValueError
+        If the triangle has more than one index or column.
+    """
+    tri = triangle.copy()
+    if tri.shape[0] != 1 or tri.shape[1] != 1:
+        raise ValueError(
+            "Triangle must have a single index and a single column "
+            f"(got shape {tri.shape}); slice it first, e.g. tri['paid'] or tri.sum()."
+        )
+
+    n_origin, n_dev = len(tri.origin), len(tri.development)
+    origin_annual = tri.origin_grain == "Y"
+    calendar_annual = origin_annual and tri.development_grain == "Y"
+
+    # Triangle.valuation covers the full grid (future cells included) and is
+    # stored column-major, hence order="F".
+    valuation = np.asarray(tri.valuation).reshape((n_origin, n_dev), order="F")
+    values = np.asarray(tri.values, dtype=float)[0, 0]
+
+    origin_codes = np.array(
+        [
+            int(p.year) if origin_annual else int(p.year) * 100 + int(p.month)
+            for p in tri.origin
+        ],
+        dtype=int,
+    )
+    dev_ages = np.asarray(tri.development, dtype=int)
+
+    df = pd.DataFrame(
+        {
+            "origin": np.repeat(origin_codes, n_dev),
+            "dev": np.tile(dev_ages, n_origin),
+            "calendar": [
+                _encode_period_end(pd.Timestamp(v), calendar_annual)
+                for v in valuation.ravel()
+            ],
+            "value": values.ravel(),
+        }
+    )
+    df["observed"] = df["value"].notna()
+    return df
+
+
 def triangle_to_dataframe(
     triangle: cl.Triangle,
     value_column: str = "incremental",
     include_cumulative: bool = False,
 ) -> pd.DataFrame:
     """
-    Convert a chainladder Triangle to a long-format DataFrame.
-
-    This function converts a chainladder.Triangle object into a long-format
-    pandas DataFrame suitable for use with Bambi/PyMC GLM models.
+    Convert a chainladder Triangle to a long-format DataFrame of observed cells.
 
     Parameters
     ----------
     triangle : chainladder.Triangle
-        A chainladder Triangle object. Can be cumulative or incremental.
+        A single-index, single-column Triangle. Can be cumulative or incremental.
     value_column : str, optional
-        Name for the value column in the output DataFrame.
-        Default is "incremental".
+        Name for the incremental value column. Default is "incremental".
     include_cumulative : bool, optional
-        If True, include a "cumulative" column in addition to incremental.
-        Default is False.
+        If True, include a "cumulative" column as well. Default is False.
 
     Returns
     -------
     pd.DataFrame
-        A DataFrame with columns:
-        - origin: Origin period (accident year)
-        - dev: Development period
-        - calendar: Calendar period (origin + dev - 1)
-        - incremental (or value_column): The cell values
-        - cumulative (optional): Cumulative values if include_cumulative=True
+        One row per observed cell with columns:
+
+        - origin: origin period (year for annual grain, else ``YYYYMM``)
+        - dev: development age in months
+        - calendar: valuation period of the cell (year when both grains are
+          annual, else ``YYYYMM``); cells on one diagonal share a label
+        - incremental (or ``value_column``): the incremental value
+        - cumulative (optional)
 
     Examples
     --------
@@ -56,97 +124,75 @@ def triangle_to_dataframe(
     >>> df = triangle_to_dataframe(tri)
     >>> df.head()
     """
-    # Ensure we have a single triangle (squeeze any singleton dimensions)
     tri = triangle.copy()
+    # The observation mask always comes from the triangle as supplied: for a
+    # cumulative triangle that's its own NaN pattern, not cum_to_incr()'s.
+    cells = _triangle_cells(tri)
+    observed = cells["observed"].to_numpy()
 
-    # Get the triangle as a pandas DataFrame in long format
-    # First, convert to incremental if cumulative
     if tri.is_cumulative:
-        tri_incr = tri.incr_to_cum().cum_to_incr()  # Ensure incremental
+        # chainladder's cum_to_incr() stores a zero increment as NaN, and for
+        # some triangle shapes it can emit a non-NaN value for a cell that is
+        # NaN (unobserved) in the cumulative triangle above — so its output
+        # is a value payload, not a mask. Treat NaN inside the observed
+        # region as a zero increment, and drop anything outside it.
+        incr = _triangle_cells(tri.cum_to_incr())["value"].to_numpy()
+        incremental = np.where(observed, np.nan_to_num(incr, nan=0.0), np.nan)
+        cumulative = cells["value"].to_numpy()
     else:
-        tri_incr = tri
+        incremental = cells["value"].to_numpy()
+        cumulative = (
+            _triangle_cells(tri.incr_to_cum())["value"].to_numpy()
+            if include_cumulative
+            else None
+        )
 
-    # Get origin and development indices
-    origins = tri_incr.origin
-    developments = tri_incr.development
+    df = (
+        cells.loc[observed, ["origin", "dev", "calendar"]]
+        .assign(**{value_column: incremental[observed]})
+        .reset_index(drop=True)
+    )
 
-    # Build the long-format DataFrame
-    rows = []
-
-    # Get the values - handle multi-index and single triangle cases
-    values = tri_incr.values
-
-    # Squeeze singleton dimensions
-    while values.ndim > 2:
-        if values.shape[0] == 1:
-            values = values[0]
-        else:
-            break
-
-    for i, origin in enumerate(origins):
-        for j, dev in enumerate(developments):
-            val = values[i, j]
-
-            # Skip NaN values (future/unobserved cells)
-            if np.isnan(val):
-                continue
-
-            # Extract origin year as integer
-            origin_val = _extract_period_value(origin)
-            dev_val = _extract_period_value(dev)
-
-            # Calendar period = origin + dev - 1 (for annual data)
-            calendar = origin_val + dev_val - 1
-
-            row = {
-                "origin": origin_val,
-                "dev": dev_val,
-                "calendar": calendar,
-                value_column: val,
-            }
-
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-
-    # Add cumulative if requested
-    if include_cumulative and len(df) > 0:
-        # Get cumulative triangle
-        if tri.is_cumulative:
-            tri_cum = tri
-        else:
-            tri_cum = tri.incr_to_cum()
-
-        cum_values = tri_cum.values
-        while cum_values.ndim > 2:
-            if cum_values.shape[0] == 1:
-                cum_values = cum_values[0]
-            else:
-                break
-
-        # Match cumulative values to the DataFrame
-        cumulative = []
-        for _, row in df.iterrows():
-            origin_idx = list(origins).index(
-                _find_matching_period(origins, row["origin"])
-            )
-            dev_idx = list(developments).index(
-                _find_matching_period(developments, row["dev"])
-            )
-            cumulative.append(cum_values[origin_idx, dev_idx])
-
-        df["cumulative"] = cumulative
-
-    # Ensure proper dtypes
-    df["origin"] = df["origin"].astype(int)
-    df["dev"] = df["dev"].astype(int)
-    df["calendar"] = df["calendar"].astype(int)
+    if include_cumulative:
+        df["cumulative"] = cumulative[observed]
 
     return df
 
 
+def get_future_dataframe(
+    triangle: cl.Triangle,
+    value_column: str = "incremental",
+) -> pd.DataFrame:
+    """
+    Create a DataFrame of the future (unobserved) cells of a triangle.
+
+    Parameters
+    ----------
+    triangle : chainladder.Triangle
+        A single-index, single-column Triangle.
+    value_column : str, optional
+        Name for the value column (NaN for every row). Default is "incremental".
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ``origin``, ``dev``, ``calendar`` (same encoding as
+        :func:`triangle_to_dataframe`) and ``value_column`` (all NaN).
+    """
+    cells = _triangle_cells(triangle)
+    df = cells.loc[~cells["observed"], ["origin", "dev", "calendar"]].reset_index(
+        drop=True
+    )
+    df[value_column] = np.nan
+    return df
+
+
 def _extract_period_value(period) -> int:
-    """Extract integer value from a period (Timestamp, int, etc.)."""
+    """Extract integer value from a period (Timestamp, int, etc.).
+
+    Kept as an internal helper for :mod:`bayesianchainladder.bootstrap`, which
+    uses it independently of the ``_triangle_cells``-based converters above.
+    """
     if hasattr(period, "year"):
         return period.year
     elif hasattr(period, "days"):
@@ -156,82 +202,6 @@ def _extract_period_value(period) -> int:
         return max(1, round(days / 365))
     else:
         return int(period)
-
-
-def _find_matching_period(periods, value):
-    """Find the matching period in a list of periods."""
-    for p in periods:
-        if _extract_period_value(p) == value:
-            return p
-    return None
-
-
-def get_future_dataframe(
-    triangle: cl.Triangle,
-    value_column: str = "incremental",
-) -> pd.DataFrame:
-    """
-    Create a DataFrame for future (unobserved) cells in a triangle.
-
-    This function creates a DataFrame containing the cells that need to be
-    predicted (the lower-right portion of the triangle that is unobserved).
-
-    Parameters
-    ----------
-    triangle : chainladder.Triangle
-        A chainladder Triangle object.
-    value_column : str, optional
-        Name for the value column (will be NaN for future cells).
-        Default is "incremental".
-
-    Returns
-    -------
-    pd.DataFrame
-        A DataFrame with columns: origin, dev, calendar, and value_column (NaN).
-    """
-    tri = triangle.copy()
-
-    origins = tri.origin
-    developments = tri.development
-
-    values = tri.values
-    while values.ndim > 2:
-        if values.shape[0] == 1:
-            values = values[0]
-        else:
-            break
-
-    rows = []
-
-    for i, origin in enumerate(origins):
-        for j, dev in enumerate(developments):
-            val = values[i, j]
-
-            # Only include NaN values (future/unobserved cells)
-            if not np.isnan(val):
-                continue
-
-            origin_val = _extract_period_value(origin)
-            dev_val = _extract_period_value(dev)
-            calendar = origin_val + dev_val - 1
-
-            row = {
-                "origin": origin_val,
-                "dev": dev_val,
-                "calendar": calendar,
-                value_column: np.nan,
-            }
-
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-
-    if len(df) > 0:
-        df["origin"] = df["origin"].astype(int)
-        df["dev"] = df["dev"].astype(int)
-        df["calendar"] = df["calendar"].astype(int)
-
-    return df
 
 
 def prepare_model_data(
@@ -264,9 +234,7 @@ def prepare_model_data(
 
     if exposure_triangle is not None:
         # Add exposure to observed data
-        exp_df = triangle_to_dataframe(
-            exposure_triangle, value_column=exposure_column
-        )
+        exp_df = triangle_to_dataframe(exposure_triangle, value_column=exposure_column)
         # Merge on origin (exposure typically only varies by origin)
         if "dev" in exp_df.columns:
             # Take first development period's exposure
@@ -323,42 +291,43 @@ def add_categorical_columns(
 
     if formula is not None:
         import re
+
         # Match bs(...) or cr(...) - spline terms
-        spline_pattern = r'\b(?:bs|cr)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        spline_pattern = r"\b(?:bs|cr)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)"
         numeric_columns.update(re.findall(spline_pattern, formula))
 
         # Match column**N or pow(column, N) - polynomial terms
-        power_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\*\*\s*\d'
+        power_pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\*\*\s*\d"
         numeric_columns.update(re.findall(power_pattern, formula))
-        pow_pattern = r'\bpow\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)'
+        pow_pattern = r"\bpow\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)"
         numeric_columns.update(re.findall(pow_pattern, formula))
 
         # Match np.log(), np.sqrt(), np.maximum(), etc. - numpy transforms
         # Handles both np.func(col) and np.func(val, col) patterns
-        np_pattern = r'\bnp\.\w+\s*\([^)]*\b([a-zA-Z_][a-zA-Z0-9_]*_idx)\b'
+        np_pattern = r"\bnp\.\w+\s*\([^)]*\b([a-zA-Z_][a-zA-Z0-9_]*_idx)\b"
         numeric_columns.update(re.findall(np_pattern, formula))
-        np_pattern_simple = r'\bnp\.\w+\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[,)]'
+        np_pattern_simple = r"\bnp\.\w+\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*[,)]"
         numeric_columns.update(re.findall(np_pattern_simple, formula))
 
         # Match {expr} syntax with column names inside (e.g., {origin**2})
-        brace_pattern = r'\{[^}]*\b([a-zA-Z_][a-zA-Z0-9_]*)\b[^}]*\}'
+        brace_pattern = r"\{[^}]*\b([a-zA-Z_][a-zA-Z0-9_]*)\b[^}]*\}"
         numeric_columns.update(re.findall(brace_pattern, formula))
 
         # Match bare column name (not wrapped in C()) used directly in formula
         # This catches "origin + ..." but not "C(origin) + ..."
         # Split by common operators and check each term
-        terms = re.split(r'[~+\-*/(),\s]+', formula)
+        terms = re.split(r"[~+\-*/(),\s]+", formula)
         for term in terms:
             # If a column appears as a bare term (not empty, not a number, not a function)
-            if term and term in columns and not re.match(r'^\d+\.?\d*$', term):
+            if term and term in columns and not re.match(r"^\d+\.?\d*$", term):
                 # Check if this column is NOT wrapped in C() in the formula
-                c_wrapped = re.search(rf'\bC\s*\(\s*{re.escape(term)}\s*\)', formula)
+                c_wrapped = re.search(rf"\bC\s*\(\s*{re.escape(term)}\s*\)", formula)
                 if not c_wrapped:
                     numeric_columns.add(term)
 
         # Check for _idx suffix usage - these need indexed versions
         # Match origin_idx, dev_idx, calendar_idx anywhere in formula
-        idx_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)_idx\b'
+        idx_pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)_idx\b"
         indexed_columns.update(re.findall(idx_pattern, formula))
 
         # Also add _idx columns to numeric_columns so they stay numeric
@@ -455,7 +424,9 @@ def create_design_info(
         "response": response,
         "terms": terms,
         "n_observations": len(df),
-        "origin_levels": sorted(df["origin"].unique()) if "origin" in df.columns else [],
+        "origin_levels": (
+            sorted(df["origin"].unique()) if "origin" in df.columns else []
+        ),
         "dev_levels": sorted(df["dev"].unique()) if "dev" in df.columns else [],
         "calendar_levels": (
             sorted(df["calendar"].unique()) if "calendar" in df.columns else []
@@ -520,48 +491,20 @@ def prepare_csr_data(
     if not tri.is_cumulative:
         tri = tri.incr_to_cum()
 
-    # Get observed data
-    origins = tri.origin
-    developments = tri.development
-    values = tri.values
+    cells = _triangle_cells(tri)
 
-    # Squeeze singleton dimensions
-    while values.ndim > 2:
-        if values.shape[0] == 1:
-            values = values[0]
-        else:
-            break
+    # Observed cells: only positive values can be log-transformed
+    observed_mask = cells["observed"] & (cells["value"] > 0)
+    observed_df = (
+        cells.loc[observed_mask, ["origin", "dev", "value"]]
+        .rename(columns={"value": "cumulative"})
+        .reset_index(drop=True)
+    )
+    observed_df["logloss"] = np.log(observed_df["cumulative"])
 
-    # Build observed DataFrame
-    observed_rows = []
-    future_rows = []
-
-    for i, origin in enumerate(origins):
-        origin_val = _extract_period_value(origin)
-
-        for j, dev in enumerate(developments):
-            dev_val = _extract_period_value(dev)
-            val = values[i, j]
-
-            row = {
-                "origin": origin_val,
-                "dev": dev_val,
-            }
-
-            if np.isnan(val):
-                # Future cell
-                row["cumulative"] = np.nan
-                row["logloss"] = np.nan
-                future_rows.append(row)
-            else:
-                # Observed cell - only include if positive (for log transform)
-                if val > 0:
-                    row["cumulative"] = val
-                    row["logloss"] = np.log(val)
-                    observed_rows.append(row)
-
-    observed_df = pd.DataFrame(observed_rows)
-    future_df = pd.DataFrame(future_rows)
+    future_df = cells.loc[~cells["observed"], ["origin", "dev"]].reset_index(drop=True)
+    future_df["cumulative"] = np.nan
+    future_df["logloss"] = np.nan
 
     # Add premium
     if premium_triangle is not None:
