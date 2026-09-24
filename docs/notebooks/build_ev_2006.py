@@ -122,6 +122,7 @@ def compare(ours, england, labels=None):
 
 
 COMPARE_FMT = {"ours": "{:,.0f}", "England": "{:,.0f}", "diff %": "{:+.1f}%"}
+DECIMAL_FMT = {"ours": "{:,.3f}", "England": "{:,.3f}", "diff %": "{:+.1f}%"}
 """)
 
 md("## 2. Maximum likelihood: ODP with constant scale")
@@ -144,7 +145,7 @@ display(compare(list(odp.reserves) + [odp.total_reserve], t_ml["reserves"] + [t_
 display(compare(list(odp.reserve_sd) + [odp.total_sd], t_ml["reserve_sd"] + [t_ml["total_sd"]], labels).style.format(COMPARE_FMT))
 
 params = ref["ml_parameters"]
-display(compare(odp.coefficients, params["estimate"], params["labels"]).style.format(COMPARE_FMT))
+display(compare(odp.coefficients, params["estimate"], params["labels"]).style.format(DECIMAL_FMT))
 print(f"sqrt(scale) = {np.sqrt(odp.scale[0]):.2f} (England: {t_ml['sqrt_scale']})")
 """)
 md("""
@@ -170,7 +171,7 @@ phi_obs = odp.scale[j_all[obs_mask]]
 X_obs = X[obs_mask]
 parameter_se = np.sqrt(np.diag(np.linalg.inv((X_obs.T * (mu_obs / phi_obs)) @ X_obs)))
 
-display(compare(parameter_se, params["standard_error"], params["labels"]).style.format(COMPARE_FMT))
+display(compare(parameter_se, params["standard_error"], params["labels"]).style.format(DECIMAL_FMT))
 """)
 md("""
 **Commentary.** These standard errors mirror what `odp_analytic_rmsep` does
@@ -231,12 +232,8 @@ qp_table = pd.DataFrame(
     index=params["labels"],
 )
 display(qp_table.style.format("{:.3f}"))
-display(compare(posterior_mean, mcmc_params["posterior_mean"], params["labels"]).style.format(
-    {"ours": "{:.3f}", "England": "{:.3f}", "diff %": "{:+.1f}%"}
-))
-display(compare(posterior_sd, mcmc_params["posterior_sd"], params["labels"]).style.format(
-    {"ours": "{:.3f}", "England": "{:.3f}", "diff %": "{:+.1f}%"}
-))
+display(compare(posterior_mean, mcmc_params["posterior_mean"], params["labels"]).style.format(DECIMAL_FMT))
+display(compare(posterior_sd, mcmc_params["posterior_sd"], params["labels"]).style.format(DECIMAL_FMT))
 """)
 md("""
 **Commentary.** `build_quasi_poisson_model` implements the same
@@ -290,8 +287,19 @@ code("""
 mack_mcmc = BayesianMackChainLadder(**MCMC_KWARGS).fit(tri)
 mack_negbin_mcmc = BayesianMackChainLadder(model=\"negbin\", **MCMC_KWARGS).fit(tri)
 
-print(\"Posterior mean factors (mack):  \", np.round(mack_mcmc.factors_, 4))
-print(\"Posterior mean factors (negbin):\", np.round(mack_negbin_mcmc.factors_, 4))
+devs = list(tri.development)
+dev_ratio_labels = [f\"{devs[i]}\\u2192{devs[i + 1]}\" for i in range(len(devs) - 1)]
+factor_table = pd.DataFrame(
+    {
+        \"chain ladder\": mack_mcmc.factors_,
+        \"posterior mean (mack)\": mack_mcmc.factor_draws_.mean(axis=0),
+        \"posterior sd (mack)\": mack_mcmc.factor_draws_.std(axis=0),
+        \"posterior mean (negbin)\": mack_negbin_mcmc.factor_draws_.mean(axis=0),
+        \"posterior sd (negbin)\": mack_negbin_mcmc.factor_draws_.std(axis=0),
+    },
+    index=dev_ratio_labels,
+)
+display(factor_table.style.format(\"{:.4f}\"))
 
 t4_evw = ref_evw[\"table4_bootstrap_and_one_year_cdr\"]
 mack_summary = mack_mcmc.total_summary()
@@ -308,12 +316,22 @@ display(
 """)
 md("""
 **Commentary.** England's EV 2006 notebook does not show Mack MCMC output,
-so `BayesianMackChainLadder` (the exact Bayesian analogue of his Mack Stan
-model from England & Verrall 2006, Section 6) is compared instead to his
-EVW 2019 Mack *bootstrap* Table 4 totals — the paper states these two should
-agree closely, which is what we check here. Both the Mack-variance and
-negative-binomial-variance MCMC posteriors are shown; the paper does not
-separately publish a negative-binomial-variance Mack MCMC comparison.
+so `BayesianMackChainLadder(model="mack")` (the exact Bayesian analogue of
+his Mack Stan model from England & Verrall 2006, Section 6) is compared
+instead to his EVW 2019 Mack *bootstrap* Table 4 totals — the paper states
+these two should agree closely, which is what we check here, and it lands
+within ordinary Monte Carlo error. The posterior mean factors track the
+chain-ladder point estimates closely, as expected.
+
+`BayesianMackChainLadder(model="negbin")` is the analogue of England's
+Negative Binomial MCMC model, whose output his EV 2006 notebook also does
+not show, so there is no published figure to compare its own posterior to
+directly. Its total mean comes out about 6% below the Mack bootstrap
+benchmark; this is a genuine model difference, not a discrepancy to
+reconcile — the negbin variant uses a log-log link and an `f(f-1)` variance
+weighting that pull the early development factors down (posterior mean
+about 3.453 on the first ratio versus the chain ladder's 3.491), which
+compounds into a lower total reserve.
 """)
 
 md("## 8. Closing comparison")

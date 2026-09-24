@@ -137,6 +137,7 @@ def compare(ours, england, labels=None):
 
 
 COMPARE_FMT = {"ours": "{:,.0f}", "England": "{:,.0f}", "diff %": "{:+.1f}%"}
+DECIMAL_FMT = {"ours": "{:,.3f}", "England": "{:,.3f}", "diff %": "{:+.1f}%"}
 
 dev = cl.Development().fit_transform(tri)
 print("Volume-weighted factors:", np.round(dev.ldf_.values.flatten(), 3))
@@ -458,7 +459,7 @@ display(
         [var_level * 100, tvar_level * 100, pht_level],
         [64.5, 21.1, 1.432],
         ["VaR level %", "TVaR level %", "PHT parameter"],
-    ).style.format(COMPARE_FMT)
+    ).style.format(DECIMAL_FMT)
 )
 """)
 md("""
