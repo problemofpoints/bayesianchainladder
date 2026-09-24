@@ -225,7 +225,12 @@ scaled = boot.scale_to_target(target_ultimates, method="multiplicative")
 | Scaling / incurred-to-paid | `scale_to_target`, `incurred_to_paid` | England, *Modus Operandi* |
 | Sample data | `load_england_sample("taylor_ashe")` / `load_england_sample("liability")` | England's repository |
 
-A worked 15-step example is in `docs/notebooks/modus_operandi.ipynb`. These
+A worked 15-step example is in `docs/notebooks/modus_operandi.ipynb`; the
+one-year view (England, Verrall & Wüthrich 2019) and the ODP/MCMC predictive
+distributions comparison (England & Verrall 2006) are in
+`docs/notebooks/evw_2019_one_year_view.ipynb` and
+`docs/notebooks/ev_2006_predictive_distributions.ipynb`, each comparing this
+package's output cell by cell against England's own published figures. These
 features are adapted from Peter England's
 [StochasticReserving](https://github.com/DrPeterEngland/StochasticReserving)
 repository (MIT licence).
