@@ -83,7 +83,7 @@ class _StubReserve(BaseStochasticReserve):
     """Minimal subclass for exercising the base helpers without a real fit."""
 
     def fit(self, triangle, samples=None, random_seed=None):
-        from bayesianchainladder.utils import _extract_period_value, validate_triangle
+        from bayesianchainladder.utils import origin_labels, validate_triangle
 
         validate_triangle(triangle)
         self.triangle_ = triangle.copy()
@@ -91,7 +91,7 @@ class _StubReserve(BaseStochasticReserve):
         if samples is None:
             # Default: 100 samples per origin, drawn from a fixed normal so
             # the tests are deterministic.
-            origins = sorted({_extract_period_value(o) for o in triangle.origin})
+            origins = origin_labels(triangle)
             rng = np.random.default_rng(random_seed if random_seed is not None else 42)
             arr = rng.normal(loc=1000.0, scale=100.0, size=(len(origins), 100))
             self.reserves_posterior_ = xr.DataArray(

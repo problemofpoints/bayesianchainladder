@@ -632,3 +632,28 @@ class TestCorrelatedBootstrapODPCapeCod:
             high.total_summary().total_reserve_stddev
             > low.total_summary().total_reserve_stddev
         )
+
+
+class TestOriginEncoding:
+    """Bootstrap estimators label origins the same way the GLM data does."""
+
+    def test_mack_origin_coords_match_glm_encoding(self, quarterly_origin_triangle):
+        from bayesianchainladder.bootstrap import MackChainLadder
+        from bayesianchainladder.utils import origin_labels
+
+        model = MackChainLadder(n_samples=50, random_seed=1).fit(quarterly_origin_triangle)
+
+        coords = model.reserves_posterior_.coords["origin"].values.tolist()
+        assert coords == origin_labels(quarterly_origin_triangle)
+        assert len(set(coords)) == 8
+
+    def test_odp_origin_coords_match_glm_encoding(self, quarterly_origin_triangle):
+        from bayesianchainladder.bootstrap import BootstrapODPChainLadder
+        from bayesianchainladder.utils import origin_labels
+
+        model = BootstrapODPChainLadder(n_sims=50, random_seed=1).fit(
+            quarterly_origin_triangle
+        )
+
+        coords = model.reserves_posterior_.coords["origin"].values.tolist()
+        assert coords == origin_labels(quarterly_origin_triangle)

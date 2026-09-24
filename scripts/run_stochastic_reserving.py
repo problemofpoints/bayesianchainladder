@@ -3,8 +3,8 @@ Stochastic Reserving Benchmark Script
 ======================================
 
 Self-contained script that runs Mack Chain Ladder, ODP Bootstrap,
-Correlated ODP Bootstrap, Bornhuetter-Ferguson Bootstrap, and Cape Cod
-Bootstrap on a long-format triangle dataset.
+Correlated ODP Bootstrap, Bornhuetter-Ferguson Bootstrap, Cape Cod
+Bootstrap, and Barnett-Zehnwirth on a long-format triangle dataset.
 
 Dependencies: chainladder, pandas, numpy, scipy. NO custom packages.
 
@@ -12,7 +12,8 @@ Usage: see argparse or `python run_stochastic_reserving.py --help`
 
 Methods
 -------
-mack      : Mack Chain Ladder (normal approximation per Mack 1993)
+mack      : Mack Chain Ladder (normal approximation per Mack 1993). Tail sigma via
+              --mack-sigma-interpolation (default 'mack' = Mack 1994 rule).
 odp       : ODP Bootstrap (chainladder.BootstrapODPSample + Chainladder)
               Non-parametric residual bootstrap — resamples empirical Pearson residuals.
               Can generate wild IBNR distributions when triangles have negative or near-zero
@@ -42,6 +43,11 @@ odp_corr_bf : Parametric correlated bootstrap (rho>0) + Bornhuetter-Ferguson (re
               Adds calendar-year correlation (controlled by --rho) on top of odp_bf.
 odp_corr_cc : Parametric correlated bootstrap (rho>0) + Cape Cod (requires premium)
               Adds calendar-year correlation (controlled by --rho) on top of odp_cc.
+bz        : Barnett-Zehnwirth probabilistic trend family (cl.BarnettZehnwirth).
+              OLS on log incrementals with --bz-formula (default C(origin)+C(development));
+              IBNR simulated from the coefficient normal approximation plus lognormal
+              process noise. Requires strictly positive incrementals — triangles with
+              negative development are skipped with an error log line.
 
 Residual distribution options (--residual-dist)
 -----------------------------------------------
@@ -721,12 +727,10 @@ def _get_hat_diagonal(triangle, exp_incr_triangle, design_matrix):
 def df_to_triangle(df, value_col="paid", origin_col="origin", dev_col="dev"):
     """Convert a long-format DataFrame into a chainladder Triangle.
 
-    Development is expected as elapsed months (12, 24, 36, …). It is
-    converted to calendar end-of-year dates so that chainladder can infer
-    the development lags correctly:
-
-        eval_year = origin_year + dev_months // 12 - 1
-        dev_date  = "{eval_year}-12-31"
+    Development is expected as elapsed months (12, 24, 36, ...). chainladder
+    (>= 0.10.1) accepts an integer development column as an age in months
+    measured from the start of each origin period, so no date conversion is
+    needed.
 
     Parameters
     ----------
@@ -747,16 +751,10 @@ def df_to_triangle(df, value_col="paid", origin_col="origin", dev_col="dev"):
     work["origin"] = work["origin"].astype(int)
     work["dev"] = work["dev"].astype(int)
 
-    # Convert dev (elapsed months) to calendar end-of-year evaluation date.
-    eval_year = work["origin"] + work["dev"] // 12 - 1
-    work["dev_date"] = pd.to_datetime(
-        eval_year.astype(str) + "-12-31", format="%Y-%m-%d"
-    )
-
     tri = cl.Triangle(
         data=work,
         origin="origin",
-        development="dev_date",
+        development="dev",
         columns=[value_col],
         cumulative=True,
         origin_format="%Y",
@@ -837,9 +835,15 @@ def _premium_as_exposure(loss_tri, prem_series):
 # Per-triangle method runners
 # ---------------------------------------------------------------------------
 
-def _run_mack(loss_tri, n_samples=5000, random_seed=None):
-    """Run Mack Chain Ladder. Returns per-origin IBNR samples (n_origin, n_sims)."""
-    dev = cl.Development(n_periods=-1).fit_transform(loss_tri)
+def _run_mack(loss_tri, n_samples=5000, random_seed=None, sigma_interpolation="mack"):
+    """Run Mack Chain Ladder. Returns per-origin IBNR samples (n_origin, n_sims).
+
+    ``sigma_interpolation="mack"`` reproduces the tail-sigma rule of Mack (1994);
+    ``"log-linear"`` is chainladder's historical default.
+    """
+    dev = cl.Development(
+        n_periods=-1, sigma_interpolation=sigma_interpolation
+    ).fit_transform(loss_tri)
     mack = cl.MackChainladder().fit(dev)
 
     ibnr_tri = mack.ibnr_.sum("development")
@@ -855,6 +859,89 @@ def _run_mack(loss_tri, n_samples=5000, random_seed=None):
         samples[i] = rng.normal(loc=mean, scale=std, size=n_samples)
 
     return samples, ibnr_per_origin
+
+
+def _run_bz(loss_tri, n_sims=5000, random_seed=None, formula="C(origin)+C(development)"):
+    """Barnett-Zehnwirth probabilistic trend family forecast.
+
+    Fits ``cl.BarnettZehnwirth`` — ordinary least squares on log incremental
+    losses with a patsy ``formula`` over ``origin`` (period code) and
+    ``development`` (age in months) — then simulates IBNR by drawing the
+    regression coefficients from their large-sample normal approximation
+    ``N(beta, sigma^2 (X'X)^-1)`` and adding lognormal process noise with the
+    residual variance ``sigma^2``.  This is the frequentist analogue of the
+    cross-classified log-link GLM.
+
+    Returns per-origin IBNR samples, shape (n_origin, n_sims).  Origins with no
+    future cells get zeros.
+
+    Raises
+    ------
+    ValueError
+        If any observed incremental is non-positive (the log-linear model is
+        undefined there; chainladder itself fails on such triangles), or if
+        an observed cumulative cell has no finite incremental (chainladder
+        stores a zero increment as NaN, which the log-linear model also
+        cannot represent).
+    """
+    # The observation mask comes from the cumulative triangle, not from
+    # cum_to_incr(): chainladder's cum_to_incr() stores a zero increment as
+    # NaN, so deriving "observed" from its output would silently treat a
+    # true zero increment as an unobserved (future) cell.
+    observed = np.isfinite(np.asarray(loss_tri.values, dtype=float)[0, 0])
+    incr = np.asarray(loss_tri.cum_to_incr().values, dtype=float)[0, 0]
+    # Per-cell check: an observed cell whose incremental is NaN is a zero
+    # increment. A count comparison would not do — cum_to_incr() can also
+    # emit a finite value at a cell that is NaN in the cumulative triangle
+    # (a hole on the latest diagonal), and the two miscounts cancel.
+    zero_incr = observed & ~np.isfinite(incr)
+    if zero_incr.any():
+        raise ValueError(
+            "bz requires strictly positive incremental losses (log-linear model); "
+            f"found {int(zero_incr.sum())} observed cell(s) with no finite "
+            "incremental — chainladder stores a zero increment as NaN, and a "
+            "zero increment cannot be log-transformed"
+        )
+    if (incr[observed] <= 0).any():
+        raise ValueError(
+            "bz requires strictly positive incremental losses (log-linear model); "
+            f"found {int((incr[observed] <= 0).sum())} non-positive cell(s)"
+        )
+
+    model = cl.BarnettZehnwirth(formula=formula).fit(loss_tri)
+    pipeline = model.model_.estimator_ml
+    design = pipeline.named_steps["design_matrix"]
+    ols = pipeline.named_steps["model"]
+    beta = np.asarray(ols.coef_, dtype=float)
+    sigma2 = float(np.asarray(model.mse_resid_, dtype=float).ravel()[0])
+
+    # Observed-cell design matrix -> coefficient covariance sigma^2 (X'X)^-1
+    x_obs = model.model_._prep_X_ml(loss_tri.cum_to_incr().log())
+    d_obs = np.asarray(design.transform(x_obs), dtype=float)
+    cov = sigma2 * np.linalg.pinv(d_obs.T @ d_obs)
+
+    # Future-cell design matrix using the same origin codes as the fit
+    # (origin_encoder_ assigns 0..n-1 to the sorted origin start dates).
+    origin_codes = np.array(
+        [code for _, code in sorted(model.model_.origin_encoder_.items())], dtype=float
+    )
+    dev_ages = np.asarray(loss_tri.development, dtype=int)
+    n_origin = incr.shape[0]
+    oi, di = np.where(~observed)
+    if len(oi) == 0:
+        return np.zeros((n_origin, n_sims))
+    x_fut = pd.DataFrame({"origin": origin_codes[oi], "development": dev_ages[di]})
+    d_fut = np.asarray(design.transform(x_fut), dtype=float)
+
+    rng = np.random.default_rng(random_seed)
+    beta_draws = rng.multivariate_normal(beta, cov, size=n_sims, method="svd")  # (n_sims, p)
+    log_mu = d_fut @ beta_draws.T  # (n_future, n_sims)
+    log_mu = log_mu + rng.normal(0.0, np.sqrt(sigma2), size=log_mu.shape)
+    future_incr = np.exp(log_mu)
+
+    per_origin = np.zeros((n_origin, n_sims))
+    np.add.at(per_origin, oi, future_incr)
+    return per_origin
 
 
 def _run_odp_bootstrap(loss_tri, n_sims=1000, random_seed=None):
@@ -927,11 +1014,12 @@ def _parametric_bootstrap_and_aggregate(
         A-priori expected loss ratio (only used when aggregator='bf').
     apriori_sigma : float
         Standard deviation of the a-priori loss ratio.  When > 0, each
-        bootstrap sample draws its own apriori from Normal(apriori,
-        apriori_sigma) (BF) or Normal(cc_apriori, apriori_sigma) (CC),
-        propagating apriori uncertainty into the reserve distribution.
-        Default 0.15.  Set to 0 to recover the old deterministic-apriori
-        behaviour (variance collapse).
+        bootstrap sample draws its own apriori.  chainladder >= 0.10.1 draws
+        from a lognormal matched by method of moments to mean ``apriori``
+        (BF) or the Cape Cod estimate (CC) and sd ``apriori_sigma``, so draws
+        are strictly positive; earlier versions used a Normal, which could
+        produce negative expected ultimates.  Default 0.15.  Set to 0 to
+        recover the deterministic-apriori behaviour (variance collapse).
     random_seed : int or None
     aggregator : {'chainladder', 'bf', 'cc'}
         Final aggregation method applied to each resampled triangle.
@@ -1298,6 +1386,8 @@ def run_methods_on_triangle(
     collect_samples=False,
     residual_dist="normal",
     process_variance="odp",
+    mack_sigma_interpolation="mack",
+    bz_formula="C(origin)+C(development)",
 ):
     """Run all requested methods on a single (loss, premium) triangle pair.
 
@@ -1308,7 +1398,7 @@ def run_methods_on_triangle(
         Premium per origin year (int index). Required for odp_bf and odp_cc.
     methods : list[str]
         Any subset of {"mack", "odp", "odp_param", "odp_corr",
-        "odp_bf", "odp_cc", "odp_corr_bf", "odp_corr_cc"}.
+        "odp_bf", "odp_cc", "odp_corr_bf", "odp_corr_cc", "bz"}.
     paid_per_origin : pd.Series
         Latest-diagonal paid values per origin.  Always used as the offset for
         IBNR computation (``mean_ibnr = mean_ultimate - paid_to_date``),
@@ -1333,6 +1423,10 @@ def run_methods_on_triangle(
     process_variance : {'odp', 'gamma', 'lognormal', 'negbin'}
         Process variance model for odp_corr and odp_param.  See module
         docstring for details.
+    mack_sigma_interpolation : {'mack', 'log-linear'}
+        Tail sigma rule for Mack (see _run_mack).
+    bz_formula : str
+        patsy formula for the bz method over origin/development.
 
     Returns
     -------
@@ -1357,7 +1451,10 @@ def run_methods_on_triangle(
     for method in methods:
         try:
             if method == "mack":
-                per_origin_sim, _ = _run_mack(loss_tri, n_samples=n_sims, random_seed=random_seed)
+                per_origin_sim, _ = _run_mack(
+                    loss_tri, n_samples=n_sims, random_seed=random_seed,
+                    sigma_interpolation=mack_sigma_interpolation,
+                )
             elif method == "odp":
                 per_origin_sim = _run_odp_bootstrap(loss_tri, n_sims=n_sims, random_seed=random_seed)
             elif method == "odp_param":
@@ -1418,6 +1515,19 @@ def run_methods_on_triangle(
                     random_seed=random_seed, residual_dist=residual_dist,
                     process_variance=process_variance, apriori_sigma=apriori_sigma,
                 )
+            elif method == "bz":
+                try:
+                    per_origin_sim = _run_bz(
+                        loss_tri, n_sims=n_sims, random_seed=random_seed, formula=bz_formula
+                    )
+                except ValueError as exc:
+                    if "positive incremental" in str(exc):
+                        log.warning(
+                            "lob=%s group_id=%s loss_type=%s: skipping bz (%s)",
+                            lob, group_id, loss_type, exc,
+                        )
+                        continue
+                    raise
             else:
                 log.warning("Unknown method: %s — skipped", method)
                 continue
@@ -1461,6 +1571,8 @@ def iterate_triangles(
     collect_samples=False,
     residual_dist="normal",
     process_variance="odp",
+    mack_sigma_interpolation="mack",
+    bz_formula="C(origin)+C(development)",
 ):
     """Iterate over all (lob, group_id, loss_col) combinations and run all methods.
 
@@ -1571,6 +1683,8 @@ def iterate_triangles(
                     collect_samples=collect_samples,
                     residual_dist=residual_dist,
                     process_variance=process_variance,
+                    mack_sigma_interpolation=mack_sigma_interpolation,
+                    bz_formula=bz_formula,
                 )
                 all_rows.extend(rows)
                 if collect_samples:
@@ -1599,7 +1713,7 @@ def iterate_triangles(
 
 def _run_single_group(args):
     """Worker function for multiprocessing pool."""
-    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, apriori_sigma, random_seed, collect_samples, residual_dist, process_variance = args
+    (lob, group_id), sub_df, methods, loss_cols, n_sims, rho, apriori, apriori_sigma, random_seed, collect_samples, residual_dist, process_variance, mack_sigma_interpolation, bz_formula = args
     all_rows = []
     all_sample_chunks = []
 
@@ -1638,6 +1752,8 @@ def _run_single_group(args):
                 random_seed=random_seed, lob=lob, group_id=group_id,
                 loss_type=loss_col, collect_samples=collect_samples,
                 residual_dist=residual_dist, process_variance=process_variance,
+                mack_sigma_interpolation=mack_sigma_interpolation,
+                bz_formula=bz_formula,
             )
             all_rows.extend(rows)
             if collect_samples:
@@ -1651,6 +1767,7 @@ def iterate_triangles_parallel(
     df, methods, loss_cols, n_sims=5000, rho=0.1, apriori=0.65, apriori_sigma=0.15,
     random_seed=None, n_jobs=1,
     collect_samples=False, residual_dist="normal", process_variance="odp",
+    mack_sigma_interpolation="mack", bz_formula="C(origin)+C(development)",
 ):
     """Parallel version of iterate_triangles using multiprocessing.Pool."""
     import multiprocessing
@@ -1673,7 +1790,7 @@ def iterate_triangles_parallel(
 
     groups = list(df.groupby(["lob", "group_id"]))
     tasks = [
-        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, apriori_sigma, random_seed, collect_samples, residual_dist, process_variance)
+        ((lob, gid), sub, methods, loss_cols, n_sims, rho, apriori, apriori_sigma, random_seed, collect_samples, residual_dist, process_variance, mack_sigma_interpolation, bz_formula)
         for (lob, gid), sub in groups
     ]
 
@@ -1727,17 +1844,19 @@ def parse_args(argv=None):
     p.add_argument(
         "--methods",
         nargs="+",
-        default=["mack", "odp", "odp_corr", "odp_bf", "odp_cc", "odp_corr_bf", "odp_corr_cc"],
+        default=["mack", "odp", "odp_corr", "odp_bf", "odp_cc", "odp_corr_bf", "odp_corr_cc", "bz"],
         choices=["mack", "odp", "odp_param", "odp_corr", "odp_bf", "odp_cc",
-                 "odp_corr_bf", "odp_corr_cc"],
+                 "odp_corr_bf", "odp_corr_cc", "bz"],
         metavar="METHOD",
         help=(
             "Methods to run. Choices: mack odp odp_param odp_corr odp_bf odp_cc "
-            "odp_corr_bf odp_corr_cc. "
+            "odp_corr_bf odp_corr_cc bz. "
             "odp_param is parametric Normal with rho=0 (no residual-resampling artifacts). "
             "odp_bf and odp_cc are parametric independent bootstrap + BF/CC. "
             "odp_corr_bf and odp_corr_cc are parametric correlated bootstrap + BF/CC. "
-            "All BF/CC variants require a 'premium' column."
+            "All BF/CC variants require a 'premium' column. "
+            "bz is the Barnett-Zehnwirth log-linear trend model (parameter + lognormal "
+            "process uncertainty; skips triangles with non-positive incrementals)."
         ),
     )
     p.add_argument(
@@ -1824,6 +1943,27 @@ def parse_args(argv=None):
         ),
     )
     p.add_argument(
+        "--mack-sigma-interpolation",
+        default="mack",
+        choices=["mack", "log-linear"],
+        dest="mack_sigma_interpolation",
+        help=(
+            "Tail sigma extrapolation for the mack method. 'mack' (default) uses the "
+            "Mack (1994) rule via chainladder's Development(sigma_interpolation='mack'); "
+            "'log-linear' is chainladder's historical default and the pre-0.10 behaviour."
+        ),
+    )
+    p.add_argument(
+        "--bz-formula",
+        default="C(origin)+C(development)",
+        dest="bz_formula",
+        help=(
+            "patsy formula for the bz method. Columns available: origin (integer "
+            "period code) and development (age in months). Default is the "
+            "cross-classified model C(origin)+C(development)."
+        ),
+    )
+    p.add_argument(
         "--origin-col", default="origin", help="Name of the origin column"
     )
     p.add_argument(
@@ -1886,9 +2026,9 @@ def main(argv=None):
         list(df["lob"].unique()) if "lob" in df.columns else ["all"],
     )
     log.info(
-        "Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f | apriori_sigma=%.3f | residual_dist=%s | process_variance=%s",
+        "Methods: %s | n_sims=%d | rho=%.2f | apriori=%.3f | apriori_sigma=%.3f | residual_dist=%s | process_variance=%s | mack_sigma_interpolation=%s",
         args.methods, args.n_sims, args.rho, args.apriori, args.apriori_sigma,
-        args.residual_dist, args.process_variance,
+        args.residual_dist, args.process_variance, args.mack_sigma_interpolation,
     )
 
     collect_samples = args.save_samples is not None
@@ -1910,6 +2050,8 @@ def main(argv=None):
             collect_samples=collect_samples,
             residual_dist=args.residual_dist,
             process_variance=args.process_variance,
+            mack_sigma_interpolation=args.mack_sigma_interpolation,
+            bz_formula=args.bz_formula,
         )
     else:
         results, samples_df = iterate_triangles(
@@ -1924,6 +2066,8 @@ def main(argv=None):
             collect_samples=collect_samples,
             residual_dist=args.residual_dist,
             process_variance=args.process_variance,
+            mack_sigma_interpolation=args.mack_sigma_interpolation,
+            bz_formula=args.bz_formula,
         )
 
     if results.empty:

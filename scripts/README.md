@@ -1,6 +1,6 @@
 # Stochastic Reserving Benchmark Script
 
-Self-contained Python script that runs eight stochastic reserving methods on a
+Self-contained Python script that runs nine stochastic reserving methods on a
 long-format triangle dataset. Requires only `chainladder`, `pandas`, `numpy`,
 and `scipy` — no `bayesianchainladder` package needed.
 
@@ -8,7 +8,7 @@ and `scipy` — no `bayesianchainladder` package needed.
 
 | Key | Description | Requires premium |
 |-----|-------------|:---:|
-| `mack` | Mack Chain Ladder (Mack 1993) — normal approximation | |
+| `mack` | Mack Chain Ladder (Mack 1993) — normal approximation; tail sigma per Mack (1994) by default (`--mack-sigma-interpolation`) | |
 | `odp` | ODP Bootstrap + Chain Ladder (Shapland; non-parametric residual bootstrap via `cl.BootstrapODPSample`) | |
 | `odp_param` | Parametric ODP, rho=0 — Normal(mu, sqrt(phi\*mu)) sampling, no residual-resampling artefacts | |
 | `odp_corr` | Correlated ODP Bootstrap (Clark/Ding/Zhou 2022) — Gaussian copula, rho=0.3 by default | |
@@ -16,6 +16,7 @@ and `scipy` — no `bayesianchainladder` package needed.
 | `odp_cc` | Parametric independent bootstrap (rho=0) + Cape Cod — lognormal process variance | yes |
 | `odp_corr_bf` | Parametric correlated bootstrap (rho=0.3) + Bornhuetter-Ferguson — lognormal process variance | yes |
 | `odp_corr_cc` | Parametric correlated bootstrap (rho=0.3) + Cape Cod — lognormal process variance | yes |
+| `bz` | Barnett-Zehnwirth probabilistic trend family (`cl.BarnettZehnwirth`) — OLS on log incrementals, coefficient-normal + lognormal process simulation; needs strictly positive incrementals | |
 
 ### When to use each method
 
@@ -29,33 +30,44 @@ and `scipy` — no `bayesianchainladder` package needed.
 | `odp_cc` | Premium is reliable; want Cape Cod ELR from the data itself; well-developed triangles |
 | `odp_corr_bf` | BF credibility plus calendar-year correlation (recommended when both apply) |
 | `odp_corr_cc` | Cape Cod plus calendar-year correlation (recommended when both apply) |
+| `bz` | Frequentist analogue of the Bayesian log-link GLM; positive-incremental paid triangles; want a regression-based benchmark with explicit origin/development structure (`--bz-formula`) |
 
-### Calibration results (Meyers 2015, 200 triangles, lognormal PV, rho=0.3, n=5000)
+### Calibration results (Meyers 2015, 200 triangles, chainladder 0.10.1, lognormal PV, rho=0.3, n=5000, apriori_sigma=0.15)
 
 KS statistic against uniform — lower is better calibrated (ideal = 0, uniform CDF).
-v1 = old code (apriori_sigma=0, deterministic apriori — variance collapse).
-v2 = current code (apriori_sigma=0.15 — default).
+Values below are the v5 refresh on chainladder 0.10.1 (`cache/meyers_v5_calibration.csv`);
+see `references/meyers-backtest/STANDALONE_BACKTEST_README.md` for the full v1-v5 history,
+including the v4-vs-v5 comparison and the seed-sensitivity check used to separate real
+code/library changes from Monte Carlo noise.
 
-| Method | Paid KS (v1) | Paid KS (v2) | Case KS (v1) | Case KS (v2) | Notes |
-|--------|:-----------:|:------------:|:------------:|:------------:|-------|
-| `mack` | 0.266 | 0.266 | 0.175 | 0.175 | Under-dispersed |
-| `odp` | 0.261 | 0.261 | **0.066** | **0.066** | Best for case_incurred |
-| `odp_param` | 0.176 | 0.176 | 0.200 | 0.200 | |
-| `odp_corr` | **0.151** | **0.151** | 0.208 | 0.208 | Best for paid |
-| `odp_bf` | 0.467 | 0.240 | 0.522 | 0.449 | Large improvement from apriori_sigma fix |
-| `odp_cc` | 0.476 | 0.336 | 0.545 | 0.506 | |
-| `odp_corr_bf` | 0.438 | 0.230 | 0.490 | 0.412 | Best BF/CC paid after fix |
-| `odp_corr_cc` | 0.341 | 0.268 | 0.453 | 0.421 | |
+| Method | Paid KS | Case KS | Notes |
+|--------|:-------:|:-------:|-------|
+| `mack` | 0.256 | 0.189 | Tail-sigma now uses Mack (1994) interpolation (chainladder 0.10.1 default) |
+| `odp` | 0.262 | **0.068** | Best for case_incurred; unchanged vs v4 within Monte Carlo noise |
+| `odp_param` | 0.179 | 0.193 | Unchanged vs v4 within Monte Carlo noise |
+| `odp_corr` | **0.151** | 0.200 | Best for paid; unchanged vs v4 within Monte Carlo noise |
+| `odp_bf` | 0.246 | 0.454 | Large paid improvement from lognormal apriori draws |
+| `odp_cc` | 0.337 | 0.506 | Paid improvement from lognormal apriori draws |
+| `odp_corr_bf` | 0.240 | 0.434 | Best BF/CC paid; lognormal apriori draws |
+| `odp_corr_cc` | 0.270 | 0.430 | Paid improvement from lognormal apriori draws |
+| `bz` | 0.342 (N=54/200) | 0.348 (N=3/200) | New method; requires strictly positive incrementals — fails on 343/400 (triangle, loss type) combos |
+
+KS values above carry roughly ±0.005 to ±0.01 Monte Carlo uncertainty at 5,000 sims (bounded
+by a seed-sensitivity check on `odp`/`odp_corr` — see `references/meyers-backtest/STANDALONE_BACKTEST_README.md`
+for the full derivation); treat differences within that range as noise, not a confirmed
+calibration change.
 
 **Note on `--apriori-sigma`**: Prior to the fix, `cl.BornhuetterFerguson` was called with
 `apriori_sigma=0` (the chainladder default), treating the a-priori as deterministic.
 This causes near-zero BF/CC variance because IBNR = (1 − 1/CDF) × apriori × premium is
 essentially deterministic when apriori is fixed — only the tiny bootstrap noise on the
 latest diagonal varies across simulations.  The fix passes `apriori_sigma=0.15` so each
-simulation samples its own apriori from Normal(apriori, 0.15) (BF) or
-Normal(cc_apriori, 0.15) (CC), propagating apriori uncertainty into the reserve
-distribution.  Empirical cross-triangle loss-ratio std across Meyers lines is ~0.15,
-making this a reasonable default.  Set `--apriori-sigma 0` to recover the old behaviour.
+simulation samples its own apriori from a lognormal with mean apriori (BF) or the
+Cape Cod estimate (CC) and standard deviation 0.15 (chainladder >= 0.10.1; earlier
+versions drew from a Normal and could produce negative aprioris), propagating apriori
+uncertainty into the reserve distribution.  Empirical cross-triangle loss-ratio std
+across Meyers lines is ~0.15, making this a reasonable default.  Set `--apriori-sigma 0`
+to recover the old behaviour.
 
 ## Defaults
 
@@ -66,6 +78,7 @@ making this a reasonable default.  Set `--apriori-sigma 0` to recover the old be
 | `--n-sims` | `5000` | Reduces Monte Carlo noise at tail percentiles (p95) |
 | `--apriori` | `0.65` | Expected loss ratio for BF; override with your own estimate |
 | `--apriori-sigma` | `0.15` | Std dev of the a-priori LR for BF/CC; prevents variance collapse (see note above) |
+| `--mack-sigma-interpolation` | `mack` | Mack (1994) tail-sigma rule; `log-linear` restores the pre-0.10 chainladder default |
 
 ## Process variance options (`--process-variance`)
 
@@ -87,7 +100,7 @@ CSV file with one row per (origin, dev) observation:
 | Column | Type | Required | Description |
 |--------|------|----------|-------------|
 | `origin` | int | yes | Accident year (e.g. 2001) |
-| `dev` | int | yes | Development age in months (12, 24, 36, …) |
+| `dev` | int | yes | Development age in months (12, 24, 36, …); passed to chainladder directly as an age from the origin period start |
 | `paid` | numeric | **yes** | Cumulative paid losses — always required, even when modelling `case_incurred` |
 | `case_incurred` | numeric | no* | Cumulative case-incurred losses |
 | `lob` | string | no | Line of business (default: `all`) |
@@ -108,7 +121,7 @@ One row per `(lob, group_id, loss_type, method, accident_year)` plus a `"Total"`
 | `lob` | Line of business |
 | `group_id` | Entity identifier |
 | `loss_type` | Loss column that was modelled (e.g. `paid`, `case_incurred`) |
-| `method` | `mack / odp / odp_param / odp_corr / odp_bf / odp_cc / odp_corr_bf / odp_corr_cc` |
+| `method` | `mack / odp / odp_param / odp_corr / odp_bf / odp_cc / odp_corr_bf / odp_corr_cc / bz` |
 | `accident_year` | Origin year or `"Total"` |
 | `loss_to_date` | Latest-diagonal value of the *modelled* loss column — informational |
 | `paid_to_date` | Latest-diagonal value of `paid` — the offset used for IBNR |
@@ -137,7 +150,7 @@ One row per `(lob, group_id, loss_type, method, accident_year)` plus a `"Total"`
 python run_stochastic_reserving.py \
   --input data.csv \
   --output results.csv \
-  --methods mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc \
+  --methods mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc bz \
   --loss-col both \
   --n-sims 5000 \
   --rho 0.3 \
@@ -153,8 +166,8 @@ python run_stochastic_reserving.py \
 --input FILE          Input CSV path (required)
 --output FILE         Output CSV path (default: results.csv)
 --methods ...         Space-separated list of methods to run.
-                        Default: mack odp odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc
-                        All 8: mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc
+                        Default: mack odp odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc bz
+                        All 9: mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc bz
 --loss-col VALUE      Loss column(s) to model (default: paid).
                         Single column:    --loss-col paid
                                           --loss-col case_incurred
@@ -171,6 +184,8 @@ python run_stochastic_reserving.py \
                         Choices: lognormal (default), odp, gamma, negbin
 --residual-dist DIST  Residual distribution for ODP path only (default: normal)
                         Choices: normal (default), t, skewt
+--bz-formula FORMULA  Patsy formula for bz over origin/development
+                        (default: C(origin)+C(development))
 --n-jobs INT          Parallel workers; >1 uses multiprocessing.Pool (default: 1)
 --random-seed INT     Random seed for reproducibility
 --save-samples PATH   Write parquet of total-IBNR samples per simulation (for

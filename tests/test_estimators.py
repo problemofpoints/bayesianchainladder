@@ -1291,6 +1291,28 @@ class TestInitPriorsFromChainladder:
             f"Expected {n_devs - 1} dev contrasts, got {len(dev_mus)}"
         )
 
+    def test_quarterly_origin_priors_are_informed(self, quarterly_origin_triangle):
+        """Sub-annual origin labels must resolve to chain-ladder ultimates.
+
+        Before origin encoding was unified, the lookup keyed origins by bare
+        year, so every YYYYMM label missed and all C(origin) prior means fell
+        back to 0.
+        """
+        tri = quarterly_origin_triangle
+        model = self._make_fitted_model(
+            formula="incremental ~ 1 + C(origin) + C(dev)",
+            family="gamma",
+            link="log",
+            tri=tri,
+        )
+        cl_priors = model._build_cl_informed_priors()
+
+        origin_mus = np.asarray(cl_priors["C(origin)"].args["mu"], dtype=float)
+        assert len(origin_mus) == len(tri.origin) - 1
+        assert np.all(np.isfinite(origin_mus))
+        # Ultimates grow 5% per origin, so the log-contrasts are all positive.
+        assert np.all(origin_mus > 0), origin_mus
+
     def test_categorical_prior_values_sensible(self):
         """C(origin) and C(dev) prior means are finite and not all-zero."""
         import chainladder as cl

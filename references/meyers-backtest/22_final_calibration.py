@@ -1,24 +1,26 @@
 """22_final_calibration.py
 ==========================
-Final calibration analysis for the 8-method stochastic reserving comparison.
+Final calibration analysis for the 9-method stochastic reserving comparison.
 
-Loads meyers_final.csv and meyers_final_samples.parquet, joins with actual
-ultimates, and computes full calibration metrics for all 8 methods × 2 loss
-types = 16 (method, loss_type) combinations.
+Loads cache/<prefix>.csv and cache/<prefix>_samples.parquet, joins with actual
+ultimates, and computes full calibration metrics for all methods × 2 loss
+types (method, loss_type) combinations.
 
 Outputs
 -------
-  figures/final_calibration_grid.png  — 8×2 histogram grid of implied percentiles
-  figures/final_pp_chart.png          — PP chart, 8 methods × 2 loss types overlaid
+  figures/<prefix>_calibration_grid.png  — histogram grid of implied percentiles
+  figures/<prefix>_pp_chart.png          — PP chart, methods × 2 loss types overlaid
   (printed calibration table, per-line breakdown, and verdict)
 
 Usage
 -----
   cd /Users/atroyer/Projects/bayesianchainladder
-  uv run python references/meyers-backtest/22_final_calibration.py
+  uv run python references/meyers-backtest/22_final_calibration.py --dataset meyers
+  uv run python references/meyers-backtest/22_final_calibration.py --dataset clrd2025 --prefix clrd2025_final
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -34,8 +36,18 @@ from _common import CACHE_DIR, FIGURES_DIR, ANALYSIS_DIR
 # Config
 # ---------------------------------------------------------------------------
 
-RESULTS_CSV = CACHE_DIR / "meyers_final.csv"
-SAMPLES_PARQUET = CACHE_DIR / "meyers_final_samples.parquet"
+DATASETS = {
+    "meyers": {
+        "prefix": "meyers_final",
+        "lobs": ["comauto", "ppauto", "wkcomp", "othliab"],
+        "title": "Meyers (2015) 200 triangles, origins 1988-1997",
+    },
+    "clrd2025": {
+        "prefix": "clrd2025_final",
+        "lobs": ["comauto", "ppauto", "wkcomp", "othliab", "prodliab", "medmal"],
+        "title": "clrd2025 Meyers-style window, origins 1998-2007",
+    },
+}
 
 ALL_METHODS = [
     "mack",
@@ -46,6 +58,7 @@ ALL_METHODS = [
     "odp_cc",
     "odp_corr_bf",
     "odp_corr_cc",
+    "bz",
 ]
 METHOD_LABELS = {
     "mack": "Mack",
@@ -56,15 +69,17 @@ METHOD_LABELS = {
     "odp_cc": "CC param (rho=0)",
     "odp_corr_bf": "BF corr (rho=0.3)",
     "odp_corr_cc": "CC corr (rho=0.3)",
+    "bz": "Barnett-Zehnwirth PTF",
 }
 LOSS_TYPES = ["paid", "case_incurred"]
 LOSS_LABELS = {"paid": "Paid", "case_incurred": "Case Incurred"}
-LOBS = ["comauto", "ppauto", "wkcomp", "othliab"]
 LOB_LABELS = {
     "comauto": "Comm Auto",
     "ppauto": "PP Auto",
     "wkcomp": "Workers Comp",
     "othliab": "Other Liab",
+    "prodliab": "Products Liab",
+    "medmal": "Med Mal",
 }
 
 
@@ -72,25 +87,33 @@ LOB_LABELS = {
 # Load actual ultimates
 # ---------------------------------------------------------------------------
 
-def load_actual_ultimates() -> pd.DataFrame:
-    """Return DataFrame with actual ultimate totals per (lob, group_id, loss_type)."""
-    import reservetestr as rt
+def load_actual_ultimates(dataset: str) -> pd.DataFrame:
+    """DataFrame with lob, group_id, loss_type, actual_ultimate_total."""
+    if dataset == "clrd2025":
+        path = CACHE_DIR / "clrd2025_actuals.csv"
+        if not path.exists():
+            sys.exit(f"ERROR: {path} not found. Run 24_build_clrd2025_long.py first.")
+        return pd.read_csv(path)
+
+    try:
+        import reservetestr as rt
+    except ImportError:
+        path = CACHE_DIR / "meyers_actuals_source.csv"
+        if not path.exists():
+            sys.exit(
+                "ERROR: reservetestr is not installed and "
+                f"{path} (a previous *_cal_detail.csv) is missing."
+            )
+        df = pd.read_csv(path)[["lob", "group_id", "loss_type", "actual_ultimate"]]
+        return df.drop_duplicates().rename(columns={"actual_ultimate": "actual_ultimate_total"})
 
     records = rt.build_triangle_records()
     rows = []
     for rec in records:
-        rows.append({
-            "lob": rec.line,
-            "group_id": rec.group_id,
-            "loss_type": "paid",
-            "actual_ultimate_total": rec.actual_ultimates.get("paid", np.nan),
-        })
-        rows.append({
-            "lob": rec.line,
-            "group_id": rec.group_id,
-            "loss_type": "case_incurred",
-            "actual_ultimate_total": rec.actual_ultimates.get("case", np.nan),
-        })
+        rows.append({"lob": rec.line, "group_id": rec.group_id, "loss_type": "paid",
+                     "actual_ultimate_total": rec.actual_ultimates.get("paid", np.nan)})
+        rows.append({"lob": rec.line, "group_id": rec.group_id, "loss_type": "case_incurred",
+                     "actual_ultimate_total": rec.actual_ultimates.get("case", np.nan)})
     return pd.DataFrame(rows)
 
 
@@ -153,24 +176,30 @@ def calibration_metrics(
 # Main analysis
 # ---------------------------------------------------------------------------
 
-def run_analysis():
+def run_analysis(dataset: str = "meyers", prefix: str | None = None):
+    cfg = DATASETS[dataset]
+    prefix = prefix or cfg["prefix"]
+    lobs = cfg["lobs"]
+    results_csv = CACHE_DIR / f"{prefix}.csv"
+    samples_parquet = CACHE_DIR / f"{prefix}_samples.parquet"
+
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # 1. Load data
     # ------------------------------------------------------------------
-    print(f"Loading results from {RESULTS_CSV}...")
-    if not RESULTS_CSV.exists():
-        print(f"ERROR: {RESULTS_CSV} not found. Run the Meyers sweep first.")
+    print(f"Loading results from {results_csv}...")
+    if not results_csv.exists():
+        print(f"ERROR: {results_csv} not found. Run the Meyers sweep first.")
         sys.exit(1)
-    results = pd.read_csv(RESULTS_CSV)
+    results = pd.read_csv(results_csv)
     print(f"  results: {len(results):,} rows")
 
-    print(f"Loading samples from {SAMPLES_PARQUET}...")
-    if not SAMPLES_PARQUET.exists():
-        print(f"ERROR: {SAMPLES_PARQUET} not found. Run the Meyers sweep first.")
+    print(f"Loading samples from {samples_parquet}...")
+    if not samples_parquet.exists():
+        print(f"ERROR: {samples_parquet} not found. Run the Meyers sweep first.")
         sys.exit(1)
-    samples_df = pd.read_parquet(SAMPLES_PARQUET)
+    samples_df = pd.read_parquet(samples_parquet)
     samples_df["group_id"] = samples_df["group_id"].astype(int)
     n_combos = samples_df.groupby(["lob", "group_id", "loss_type", "method"]).ngroups
     print(f"  samples: {len(samples_df):,} rows, {n_combos} (lob,group,loss_type,method) combos")
@@ -178,8 +207,9 @@ def run_analysis():
     # ------------------------------------------------------------------
     # 2. Load actual ultimates
     # ------------------------------------------------------------------
-    print("\nLoading actual ultimates from reservetestr...")
-    actuals = load_actual_ultimates()
+    print("\nLoading actual ultimates...")
+    actuals = load_actual_ultimates(dataset)
+    actuals["group_id"] = actuals["group_id"].astype(int)
     print(f"  {len(actuals)} rows")
 
     # Build paid-to-date lookup from total rows
@@ -255,10 +285,10 @@ def run_analysis():
     print(f"  {len(cal_df):,} calibration rows computed")
 
     # ------------------------------------------------------------------
-    # 4. Summary calibration table (8 methods × 2 loss types)
+    # 4. Summary calibration table (all methods × 2 loss types)
     # ------------------------------------------------------------------
     print("\n" + "=" * 130)
-    print("FINAL CALIBRATION TABLE: 8 methods × 2 loss types")
+    print(f"CALIBRATION TABLE [{dataset}]: {len(ALL_METHODS)} methods × 2 loss types")
     print("Lognormal process variance, rho=0.3 for correlated methods, apriori=0.65 for BF")
     print("=" * 130)
 
@@ -302,7 +332,7 @@ def run_analysis():
     print("PER-LINE KS STATISTICS (all methods)")
     print("=" * 130)
 
-    for lob in LOBS:
+    for lob in lobs:
         print(f"\n--- {LOB_LABELS.get(lob, lob)} ---")
         lob_header = f"{'Method':<18} {'LossType':<14} {'N':>4} {'KS':>6} {'MeanPctl':>9} {'C80%':>7}"
         print(lob_header)
@@ -323,7 +353,7 @@ def run_analysis():
                 )
 
     # ------------------------------------------------------------------
-    # 6. Histogram grid: 8 methods × 2 loss types
+    # 6. Histogram grid: all methods × 2 loss types
     # ------------------------------------------------------------------
     print("\nGenerating calibration histogram grid...")
     methods_to_plot = [m for m in ALL_METHODS if m in cal_df["method"].unique()]
@@ -369,13 +399,13 @@ def run_analysis():
                 ax.legend(fontsize=7)
 
     fig.suptitle(
-        "Final Back-Test: Implied Percentile Histograms\n"
-        "8 Methods × 2 Loss Types (lognormal PV, rho=0.3, n=5000 sims)",
+        f"{cfg['title']}\n"
+        f"{len(methods_to_plot)} Methods × 2 Loss Types (lognormal PV, rho=0.3, n=5000 sims)",
         fontsize=11,
         y=1.01,
     )
     fig.tight_layout()
-    out_path = FIGURES_DIR / "final_calibration_grid.png"
+    out_path = FIGURES_DIR / f"{prefix}_calibration_grid.png"
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out_path}")
@@ -413,12 +443,12 @@ def run_analysis():
         ax.grid(alpha=0.3)
 
     fig2.suptitle(
-        "Final Back-Test: PP Charts\n"
+        f"{cfg['title']}\n"
         "Lognormal PV, rho=0.3 for correlated methods",
         fontsize=11,
     )
     fig2.tight_layout()
-    out_pp = FIGURES_DIR / "final_pp_chart.png"
+    out_pp = FIGURES_DIR / f"{prefix}_pp_chart.png"
     fig2.savefig(out_pp, dpi=150, bbox_inches="tight")
     plt.close(fig2)
     print(f"  Saved: {out_pp}")
@@ -449,11 +479,11 @@ def run_analysis():
     # ------------------------------------------------------------------
     # 9. Save calibration table to CSV
     # ------------------------------------------------------------------
-    cal_out = CACHE_DIR / "meyers_final_calibration.csv"
+    cal_out = CACHE_DIR / f"{prefix}_calibration.csv"
     summary_df.to_csv(cal_out, index=False)
     print(f"\nCalibration summary saved to {cal_out}")
 
-    cal_detail_out = CACHE_DIR / "meyers_final_cal_detail.csv"
+    cal_detail_out = CACHE_DIR / f"{prefix}_cal_detail.csv"
     cal_df.to_csv(cal_detail_out, index=False)
     print(f"Per-triangle detail saved to {cal_detail_out}")
 
@@ -461,4 +491,9 @@ def run_analysis():
 
 
 if __name__ == "__main__":
-    run_analysis()
+    ap = argparse.ArgumentParser(description="Calibration analysis for the standalone reserving back-test.")
+    ap.add_argument("--dataset", choices=sorted(DATASETS), default="meyers")
+    ap.add_argument("--prefix", default=None,
+                    help="Results file prefix in cache/ (default per dataset: meyers_final / clrd2025_final)")
+    a = ap.parse_args()
+    run_analysis(a.dataset, a.prefix)

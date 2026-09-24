@@ -41,7 +41,7 @@ from scipy import stats
 from scipy.linalg import cholesky
 
 from .base import BaseStochasticReserve, MethodSummary
-from .utils import _extract_period_value, validate_triangle
+from .utils import origin_labels, validate_triangle
 
 
 class MackChainLadder(BaseStochasticReserve):
@@ -110,8 +110,9 @@ class MackChainLadder(BaseStochasticReserve):
             np.asarray(mack.total_mack_std_err_).flatten()[0]
         )
 
-        # Origins as integers, aligned with the per-origin arrays
-        origins = [_extract_period_value(o) for o in ibnr_tri.origin]
+        # Origin labels aligned with the per-origin arrays (same encoding as
+        # the GLM data: year for annual grain, YYYYMM otherwise)
+        origins = origin_labels(ibnr_tri)
 
         # Draw independent Normal samples per origin to populate
         # reserves_posterior_. These give correct per-origin marginals.
@@ -252,7 +253,7 @@ class BootstrapODPChainLadder(BaseStochasticReserve):
         per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
         per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
 
-        origins = [_extract_period_value(o) for o in triangle.origin]
+        origins = origin_labels(triangle)
 
         self.reserves_posterior_ = xr.DataArray(
             per_origin_per_sim,
@@ -296,7 +297,7 @@ def _extract_ibnr_from_bf_or_cc(model_fitted, triangle) -> xr.DataArray:
     per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
     per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
 
-    origins = [_extract_period_value(o) for o in triangle.origin]
+    origins = origin_labels(triangle)
     return xr.DataArray(
         per_origin_per_sim,
         dims=["origin", "sample"],
@@ -1040,7 +1041,7 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
         per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
         per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
 
-        origins = [_extract_period_value(o) for o in triangle.origin]
+        origins = origin_labels(triangle)
 
         self.reserves_posterior_ = xr.DataArray(
             per_origin_per_sim,
