@@ -487,34 +487,40 @@ def _var_minus_mean(profile, level):
     )
 
 
-var_at_solved = _var_minus_mean(frp_disc, var_level)
+## England solves a *new* confidence level here (distinct from Table 11's):
+## the level at which VaR(level) minus the mean of the discounted total
+## reserve equals the opening capital itself (his Table 12 cell computes
+## `target = CDR_Result["TotalCDR_VAR"][0]` and solves against
+## `Disc_Res["TotalReserve"]`), not our Table 8 CoC margin. His column is
+## headed "64.5%" only because that cell reuses the Table 11 `VAR_level`
+## variable as a label; the values in the column are computed at this new,
+## higher level (~96.9%).
+var_level_res = equivalent_risk_tolerance(disc_total_samples, opening_capital, measure="var")
+print(f"Solved confidence level for Table 12's VaR column = {var_level_res * 100:.1f}% (England's header reads 64.5%, a label carried over from Table 11; his code solves against the opening capital).")
+
+var_at_solved = _var_minus_mean(frp_disc, var_level_res)
 var_at_995 = _var_minus_mean(frp_disc, 0.995)
 
 t12 = ref["table12_coc_risk_margin_reserve_bases"]
 display(compare(avg_disc, t12["avg_disc_reserves"], np.arange(n_periods)).style.format(COMPARE_FMT))
 display(compare(sd_disc, t12["sd_disc_reserves"], np.arange(n_periods)).style.format(COMPARE_FMT))
 display(compare(sd_undisc, t12["sd_undisc_reserves"], np.arange(n_periods)).style.format(COMPARE_FMT))
-
-# England's "at 64.5%" column is itself already a capital amount (its period-0
-# value sits close to the CDR-derived opening capital), so we compare it to
-# our VaR-minus-mean basis after rescaling to the same opening capital, the
-# same anchoring used for Table 8's best-estimate profile. His "at 99.5%"
-# column is instead a raw, un-rescaled VaR-minus-mean amount, so it is
-# compared directly to our raw basis.
-var_64_5_capital = capital_profile(var_at_solved) * opening_capital
-display(compare(var_64_5_capital, t12["var_disc_reserves_at_64_5pct"], np.arange(n_periods)).style.format(COMPARE_FMT))
+display(compare(var_at_solved, t12["var_disc_reserves_at_64_5pct"], np.arange(n_periods)).style.format(COMPARE_FMT))
 display(compare(var_at_995, t12["var_disc_reserves_at_99_5pct"], np.arange(n_periods)).style.format(COMPARE_FMT))
 
-# Margins: the avg/sd/solved-VaR bases are capital profiles rescaled to the
-# same opening capital as Tables 8-9; the fixed 99.5% VaR basis is already an
-# absolute capital amount at each period, so it anchors itself (its own
-# period-0 value is the "opening capital" for that basis) rather than being
-# rescaled to the CDR-derived opening capital.
+# England anchors every Table 12 margin except the fixed-99.5% one on the
+# VaR-solved basis's own period-0 value (his
+# `RM_Initial_Capital_T12 = Disc_Fut_Res_VAR_root[0]`) rather than on a
+# separately computed opening capital -- the two coincide by construction,
+# since var_level_res was solved so that var_at_solved[0] equals
+# opening_capital. The fixed-99.5% column anchors on its own period-0 value
+# (`Disc_Fut_Res_VAR_995[0]`) instead.
+initial_capital_t12 = var_at_solved[0]
 margins = {
-    "avg": cost_of_capital_risk_margin(opening_capital, capital_profile(avg_disc), 0.06, 0.03, offset=1.0),
-    "sd_disc": cost_of_capital_risk_margin(opening_capital, capital_profile(sd_disc), 0.06, 0.03, offset=1.0),
-    "sd_undisc": cost_of_capital_risk_margin(opening_capital, capital_profile(sd_undisc), 0.06, 0.03, offset=1.0),
-    "var_64_5": cost_of_capital_risk_margin(opening_capital, capital_profile(var_at_solved), 0.06, 0.03, offset=1.0),
+    "avg": cost_of_capital_risk_margin(initial_capital_t12, capital_profile(avg_disc), 0.06, 0.03, offset=1.0),
+    "sd_disc": cost_of_capital_risk_margin(initial_capital_t12, capital_profile(sd_disc), 0.06, 0.03, offset=1.0),
+    "sd_undisc": cost_of_capital_risk_margin(initial_capital_t12, capital_profile(sd_undisc), 0.06, 0.03, offset=1.0),
+    "var_64_5": cost_of_capital_risk_margin(initial_capital_t12, capital_profile(var_at_solved), 0.06, 0.03, offset=1.0),
     "var_99_5": cost_of_capital_risk_margin(var_at_995[0], capital_profile(var_at_995), 0.06, 0.03, offset=1.0),
 }
 ref_margins = t12["risk_margin"]
@@ -527,21 +533,15 @@ display(
 )
 """)
 md("""
-**Commentary.** This table is reconstructed from England's rendered output
-rather than his source code (not in the reference JSON), so the exact
-per-period VaR-minus-mean formula and the choice of anchor for each basis
-were inferred by matching his own published basis arrays to his own
-published margins (both anchoring conventions reproduce his stated margins
-almost exactly when fed his own numbers). The average- and SD-based bases,
-and the raw 99.5% VaR basis, compare directly; the "at 64.5%" column is
-England's own solved-level capital measure already rescaled to the opening
-capital, so it is compared to ours after the same rescaling (otherwise the
-two are on different absolute scales by construction — our raw
-VaR-minus-mean value at that level equals our own CoC margin, about 828,000,
-while England's published column starts near his 4.8m opening capital).
-Once rescaled, every column here is within Monte Carlo error of England's
-(a few percent, up to about 14% for the last period or two of the
-64.5%-level column, where the underlying tail quantile is noisiest).
+**Commentary.** England's Table 12 solves its own confidence level, targeting
+the opening capital (the one-year CDR VaR 99.5%) rather than the Table 8 CoC
+margin — the "64.5%" in his column header is a labelling slip (that cell of
+his notebook reuses the Table 11 `VAR_level` variable to print the header,
+but the column itself is computed at the level solved above, around 96.9%).
+Once solved against the right target, `var_at_solved` compares directly to
+England's published array with no rescaling needed, and all five margins —
+each anchored on that basis's own period-0 value, which by construction
+equals the opening capital — are within Monte Carlo error of his.
 """)
 
 md("## 14. Table 13: cost-of-capital margin from the reverse-cumulative CDR")
@@ -549,8 +549,16 @@ code("""
 rev = cdr.reverse_cumulative().sum("origin")
 sd_rev = rev.std("sample", ddof=1).values
 
+## England's Table 13 cell solves yet another confidence level, again
+## targeting the opening capital, this time on the period-0 (full lifetime)
+## reverse-cumulative total CDR: `target = CDR_Result["TotalCDR_VAR"][0]`,
+## solved against `RevSum_CDR[0]`. The adverse tail of the CDR is the *low*
+## quantile, so we solve on the negated series -- VAR(-x, p) - mean(-x) =
+## target is algebraically the same as mean(x) - VAR(x, 1-p) = target, the
+## capital convention used throughout this notebook's CDR-based tables.
 x0 = rev.isel(future_period=0).values
-solved_level = equivalent_risk_tolerance(-x0, target, measure="var")
+solved_level = equivalent_risk_tolerance(-x0, opening_capital, measure="var")
+print(f"Solved confidence level for Table 13 = {solved_level * 100:.1f}% (England labels this column 96.9%).")
 
 
 def _cdr_capital(x, level):
@@ -566,16 +574,17 @@ var_rev_995 = np.array(
 
 t13 = ref["table13_coc_risk_margin_reverse_cdr"]
 display(compare(sd_rev, t13["sd_simulated"], periods).style.format(COMPARE_FMT))
-# As in Table 12, England's solved-level column is already a rescaled capital
-# amount; compare it after the same opening-capital rescaling. The 99.5%
-# column is raw and compared directly.
-var_solved_capital = capital_profile(var_rev_solved) * opening_capital
-display(compare(var_solved_capital, t13["var_at_96_9pct"], periods).style.format(COMPARE_FMT))
+display(compare(var_rev_solved, t13["var_at_96_9pct"], periods).style.format(COMPARE_FMT))
 display(compare(var_rev_995, t13["var_at_99_5pct"], periods).style.format(COMPARE_FMT))
 
+# England anchors the sd and solved-VaR margins on var_rev_solved's own
+# period-0 value (his `RM_Initial_Capital_T13`), which by construction
+# equals the opening capital; the fixed-99.5% margin anchors on its own
+# period-0 value instead.
+initial_capital_t13 = var_rev_solved[0]
 margins13 = {
-    "sd": cost_of_capital_risk_margin(opening_capital, capital_profile(sd_rev), 0.06, 0.03, offset=1.0),
-    "var_solved": cost_of_capital_risk_margin(opening_capital, capital_profile(var_rev_solved), 0.06, 0.03, offset=1.0),
+    "sd": cost_of_capital_risk_margin(initial_capital_t13, capital_profile(sd_rev), 0.06, 0.03, offset=1.0),
+    "var_solved": cost_of_capital_risk_margin(initial_capital_t13, capital_profile(var_rev_solved), 0.06, 0.03, offset=1.0),
     "var_99_5": cost_of_capital_risk_margin(var_rev_995[0], capital_profile(var_rev_995), 0.06, 0.03, offset=1.0),
 }
 ref13m = t13["risk_margin"]
@@ -586,23 +595,17 @@ display(
         ["sd", "var_solved", "var_99_5"],
     ).style.format(COMPARE_FMT)
 )
-print(f"Our solved confidence level = {solved_level * 100:.1f}% (England labels his column 96.9%).")
 """)
 md("""
 **Commentary.** `cdr.reverse_cumulative()` sums each simulated CDR from a
 future period to run-off, so its period-1 value is the full lifetime
-reserve outcome (its SD here, 2,429,489, is the same undiscounted total
-bootstrap SD as Table 4). As in Table 12, England's solved-level column is
-already rescaled to the opening capital, so we compare it after applying the
-same rescaling; the SD and fixed-99.5%-level columns compare directly. The
-confidence level we solve for (around 65%) does not match the level
-England's column is labelled with (96.9%) — the reference JSON carries only
-his resulting numbers, not his confidence-level solver, so which distribution
-his 96.9% was solved against is a formula-reconstruction gap rather than
-simulation noise. Despite the different level, the rescaled capital columns
-and the final risk margins still land within Monte Carlo error of his
-figures (England's own MW RMSEP column is blank too — Merz-Wuthrich is not
-implemented on either side).
+reserve outcome (its SD here is the same undiscounted total bootstrap SD as
+Table 4). As in Table 12, the confidence level solved above targets the
+opening capital directly, matching England's own `RM_Initial_Capital_T13`
+logic; the resulting level lands close to his stated 96.9%, and every column
+— SD, solved-level VaR, fixed 99.5% VaR, and all three margins — compares
+within ordinary Monte Carlo error (England's own MW RMSEP column is blank
+too — Merz-Wuthrich is not implemented on either side).
 """)
 
 md("## 15. Figure 1: capital run-off profiles")
