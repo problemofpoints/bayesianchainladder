@@ -117,7 +117,7 @@ def build_bambi_model(
     return model
 
 
-def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
+def _get_family(family: str, link: str | None = None) -> str | bmb.Family:
     """Return a Bambi family spec — either a name string (default link) or a custom Family object.
 
     When ``link`` matches the family default (or is None), a plain string is returned so that
@@ -187,7 +187,11 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
             "default_priors": {"alpha": "HalfCauchy"},
         },
         "negativebinomial": {
-            "likelihood": {"name": "NegativeBinomial", "params": ["mu", "alpha"], "parent": "mu"},
+            "likelihood": {
+                "name": "NegativeBinomial",
+                "params": ["mu", "alpha"],
+                "parent": "mu",
+            },
             "link": {"mu": link, "alpha": "log"},
             "family_cls_name": "NegativeBinomial",
             "default_priors": {"alpha": "HalfCauchy"},
@@ -211,7 +215,11 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
             "default_priors": {"lam": "HalfCauchy"},
         },
         "t": {
-            "likelihood": {"name": "StudentT", "params": ["mu", "sigma", "nu"], "parent": "mu"},
+            "likelihood": {
+                "name": "StudentT",
+                "params": ["mu", "sigma", "nu"],
+                "parent": "mu",
+            },
             "link": {"mu": link, "sigma": "log", "nu": "log"},
             "family_cls_name": "StudentT",
             "default_priors": {"sigma": "HalfNormal", "nu": "Gamma"},
@@ -221,6 +229,7 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
     if bambi_name not in _family_specs:
         # Fallback for any future family additions — warn and return the string.
         import warnings
+
         warnings.warn(
             f"Custom link '{link}' for family '{bambi_name}' is not supported; "
             "using the default link instead.",
@@ -232,6 +241,7 @@ def _get_family(family: str, link: str | None = None) -> "str | bmb.Family":
 
     # Dynamically import the Bambi family class by name.
     from bambi.families import univariate as _bmb_univariate
+
     family_cls = getattr(_bmb_univariate, spec["family_cls_name"])
 
     return _bmb_gen_family(
@@ -538,9 +548,9 @@ def predict_posterior(
         )
 
         if kind == "mean":
-            return idata.posterior[f"{model.response_component.response.name}_mean"] # type: ignore
+            return idata.posterior[f"{model.response_component.response.name}_mean"]  # type: ignore
         else:
-            return idata.posterior_predictive[model.response_component.response.name] # type: ignore
+            return idata.posterior_predictive[model.response_component.response.name]  # type: ignore
 
     else:
         # PyMC model - use sample_posterior_predictive with updated data
@@ -597,8 +607,8 @@ def _predict_pymc(
         DataArray with posterior predictions.
     """
     # Get the original coords to map new data to indices
-    origin_levels = list(model.coords["origin"]) # type: ignore
-    dev_levels = list(model.coords["dev"]) # type: ignore
+    origin_levels = list(model.coords["origin"])  # type: ignore
+    dev_levels = list(model.coords["dev"])  # type: ignore
 
     # Encode new data using the same levels
     def encode_column(values: pd.Series, levels: list) -> np.ndarray:
@@ -619,7 +629,7 @@ def _predict_pymc(
         raise ValueError(f"Unknown dev levels in prediction data: {unknown}")
 
     # Extract posterior samples
-    posterior = idata.posterior # type: ignore
+    posterior = idata.posterior  # type: ignore
 
     # Get parameter arrays - stack chains and draws
     alpha_origin = posterior["alpha_origin"].values  # shape: (chains, draws, n_origin)
@@ -647,7 +657,7 @@ def _predict_pymc(
 
     # Add calendar effects if present
     if calendar_col is not None and "alpha_calendar" in posterior:
-        calendar_levels = list(model.coords["calendar"]) # type: ignore
+        calendar_levels = list(model.coords["calendar"])  # type: ignore
         calendar_codes = encode_column(data[calendar_col], calendar_levels)
         if (calendar_codes == -1).any():
             unknown = data[calendar_col][calendar_codes == -1].unique()
@@ -951,7 +961,7 @@ def extract_parameter_summary(
     pd.DataFrame
         Summary statistics for parameters.
     """
-    return az.summary(idata, var_names=var_names, filter_vars=filter_vars, hdi_prob=hdi_prob) # type: ignore
+    return az.summary(idata, var_names=var_names, filter_vars=filter_vars, hdi_prob=hdi_prob)  # type: ignore
 
 
 def sample_prior_predictive(
@@ -1090,7 +1100,9 @@ def build_quasi_poisson_model(
     if phi.ndim == 0:
         phi = np.full(n_dev, float(phi))
     elif phi.shape != (n_dev,):
-        raise ValueError(f"scale must be a scalar or have shape ({n_dev},), got {phi.shape}")
+        raise ValueError(
+            f"scale must be a scalar or have shape ({n_dev},), got {phi.shape}"
+        )
     phi_obs = np.maximum(phi[dev_codes], 1e-12)
 
     coords = {
@@ -1099,7 +1111,9 @@ def build_quasi_poisson_model(
         "obs": np.arange(len(y)),
     }
     with pm.Model(coords=coords) as model:
-        intercept = pm.Normal("intercept", mu=np.log(max(y.mean(), 1e-8)), sigma=coef_sigma)
+        intercept = pm.Normal(
+            "intercept", mu=np.log(max(y.mean(), 1e-8)), sigma=coef_sigma
+        )
         alpha_raw = pm.Normal("alpha_raw", mu=0.0, sigma=coef_sigma, dims="origin_raw")
         beta_raw = pm.Normal("beta_raw", mu=0.0, sigma=coef_sigma, dims="dev_raw")
         alpha = pt.concatenate([pt.zeros(1), alpha_raw])
@@ -1148,7 +1162,9 @@ def build_link_ratio_model(
     sd_obs = np.maximum(sigma[cols] * np.sqrt(vf[cols]) / np.sqrt(np.abs(w_obs)), 1e-9)
 
     coords = {"dev_ratio": [int(d) for d in devs[:-1]], "obs": np.arange(len(f_obs))}
-    start = np.log(f0) if model == "mack" else np.log(np.log(np.maximum(f0, 1.0 + 1e-6)))
+    start = (
+        np.log(f0) if model == "mack" else np.log(np.log(np.maximum(f0, 1.0 + 1e-6)))
+    )
     with pm.Model(coords=coords) as pymc_model:
         coefs = pm.Normal("coefs", mu=start, sigma=coef_sigma, dims="dev_ratio")
         lam = pt.exp(coefs) if model == "mack" else pt.exp(pt.exp(coefs))

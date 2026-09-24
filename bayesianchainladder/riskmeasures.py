@@ -66,7 +66,10 @@ def _future_cash_flows(model: BaseStochasticReserve):
 
 
 def discounted_reserves(
-    model: BaseStochasticReserve, rate: float, offset: float = 0.5, as_of_period: int = 0
+    model: BaseStochasticReserve,
+    rate: float,
+    offset: float = 0.5,
+    as_of_period: int = 0,
 ) -> xr.DataArray:
     """Per-origin discounted outstanding reserves as at ``as_of_period``
     (0 = valuation date), discounted back to that date only."""
@@ -126,17 +129,29 @@ def cost_of_capital_risk_margin(
     }
 
 
-def equivalent_risk_tolerance(samples, target_margin: float, measure: str = "var") -> float:
+def equivalent_risk_tolerance(
+    samples, target_margin: float, measure: str = "var"
+) -> float:
     """Solve for the confidence level (VaR/TVaR) or PHT parameter whose risk
     measure minus the mean equals ``target_margin``."""
     x = np.asarray(samples, dtype=float)
     mean = x.mean()
     if measure == "var":
-        return float(brentq(lambda p: value_at_risk(x, p) - mean - target_margin, 0.01, 0.9999))
+        return float(
+            brentq(lambda p: value_at_risk(x, p) - mean - target_margin, 0.01, 0.9999)
+        )
     if measure == "tvar":
-        return float(brentq(lambda p: tail_value_at_risk(x, p) - mean - target_margin, 0.01, 0.999))
+        return float(
+            brentq(
+                lambda p: tail_value_at_risk(x, p) - mean - target_margin, 0.01, 0.999
+            )
+        )
     if measure == "pht":
         return float(
-            brentq(lambda q: proportional_hazards_transform(x, q) - mean - target_margin, 1.0, 1000.0)
+            brentq(
+                lambda q: proportional_hazards_transform(x, q) - mean - target_margin,
+                1.0,
+                1000.0,
+            )
         )
     raise ValueError("measure must be 'var', 'tvar' or 'pht'")

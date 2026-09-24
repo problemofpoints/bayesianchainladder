@@ -38,7 +38,9 @@ DISTRIBUTIONS = ("nonparametric", "gamma", "lognormal")
 _TOL = 1e-12
 
 
-def draw_with_moments(mean, sd, dist: str, rng: np.random.Generator, resid=None) -> np.ndarray:
+def draw_with_moments(
+    mean, sd, dist: str, rng: np.random.Generator, resid=None
+) -> np.ndarray:
     """Draw values with the given mean and sd from ``dist``.
 
     ``gamma`` / ``lognormal`` match the first two moments where ``mean > 0``
@@ -78,7 +80,9 @@ def sample_pseudo_factors(
         sd_cell = sigma * np.sqrt(variance_factor) / np.sqrt(np.where(w > 0, w, np.nan))
     sd_cell = np.where(mask > 0, np.nan_to_num(sd_cell, nan=0.0), 0.0)
     sd = np.broadcast_to(sd_cell, mean.shape)
-    resid = rng.choice(residual_pool, size=mean.shape) if dist == "nonparametric" else None
+    resid = (
+        rng.choice(residual_pool, size=mean.shape) if dist == "nonparametric" else None
+    )
     pseudo_ratios = draw_with_moments(mean, sd, dist, rng, resid)
     weights = w * mask
     den = weights.sum(axis=0)
@@ -109,7 +113,11 @@ def forecast_link_ratio_paths(
         f = factor_draws[:, j - 1][:, None]
         mean = prev * f
         sd = sigma[j - 1] * np.sqrt(variance_factor_fn(f) * np.abs(prev))
-        resid = rng.choice(residual_pool, size=mean.shape) if dist == "nonparametric" else None
+        resid = (
+            rng.choice(residual_pool, size=mean.shape)
+            if dist == "nonparametric"
+            else None
+        )
         draw = draw_with_moments(mean, sd, dist, rng, resid)
         full[:, need, j] = draw[:, need]
     return full
@@ -136,7 +144,9 @@ class _LinkRatioBootstrap(BaseStochasticReserve):
         self.bootstrap_dist = bootstrap_dist
         self.forecast_dist = forecast_dist
         self.drop = drop
-        self.process_sigma = None if process_sigma is None else np.asarray(process_sigma, float)
+        self.process_sigma = (
+            None if process_sigma is None else np.asarray(process_sigma, float)
+        )
         self.random_seed = random_seed
 
     @staticmethod
@@ -158,7 +168,11 @@ class _LinkRatioBootstrap(BaseStochasticReserve):
             scaled = resid / np.where(sigma > 0, sigma, np.nan) * bias
         pool = scaled[np.isfinite(scaled)]
         pool = pool - pool.mean()
-        scaled = np.where(np.isfinite(scaled), scaled - np.nanmean(scaled[np.isfinite(scaled)]), np.nan)
+        scaled = np.where(
+            np.isfinite(scaled),
+            scaled - np.nanmean(scaled[np.isfinite(scaled)]),
+            np.nan,
+        )
 
         if self.process_sigma is not None and self.process_sigma.shape != sigma.shape:
             raise ValueError(
@@ -171,8 +185,13 @@ class _LinkRatioBootstrap(BaseStochasticReserve):
             cum, mask, factors, sigma, vf, pool, self.bootstrap_dist, self.n_sims, rng
         )
         full = forecast_link_ratio_paths(
-            cum, pseudo_factors, forecast_sigma, self.variance_factor_fn,
-            self.forecast_dist, rng, residual_pool=pool,
+            cum,
+            pseudo_factors,
+            forecast_sigma,
+            self.variance_factor_fn,
+            self.forecast_dist,
+            rng,
+            residual_pool=pool,
         )
 
         self.factors_ = factors
@@ -240,12 +259,16 @@ class BayesianMackChainLadder(BaseStochasticReserve):
         if model not in ("mack", "negbin"):
             raise ValueError("model must be 'mack' or 'negbin'")
         if forecast_dist not in ("gamma", "lognormal"):
-            raise ValueError("forecast_dist must be 'gamma' or 'lognormal' for the MCMC estimator")
+            raise ValueError(
+                "forecast_dist must be 'gamma' or 'lognormal' for the MCMC estimator"
+            )
         self.model = model
         self.draws, self.tune, self.chains = draws, tune, chains
         self.forecast_dist = forecast_dist
         self.drop = drop
-        self.process_sigma = None if process_sigma is None else np.asarray(process_sigma, float)
+        self.process_sigma = (
+            None if process_sigma is None else np.asarray(process_sigma, float)
+        )
         self.random_seed = random_seed
         self.target_accept = target_accept
         self.idata = None
@@ -260,24 +283,42 @@ class BayesianMackChainLadder(BaseStochasticReserve):
         cum, origins, devs = cumulative_array(triangle)
         mask = link_ratio_mask(cum, self.drop, origins, devs)
         factors = volume_weighted_factors(cum, mask)
-        vf_fn = MackBootstrap.variance_factor_fn if self.model == "mack" else NegativeBinomialBootstrap.variance_factor_fn
+        vf_fn = (
+            MackBootstrap.variance_factor_fn
+            if self.model == "mack"
+            else NegativeBinomialBootstrap.variance_factor_fn
+        )
         sigma, _ = link_ratio_sigma(cum, mask, factors, vf_fn(factors))
         if self.process_sigma is not None and self.process_sigma.shape != sigma.shape:
             raise ValueError(f"process_sigma must have shape {sigma.shape}")
 
-        pymc_model = build_link_ratio_model(triangle, model=self.model, drop=self.drop, sigma=sigma)
+        pymc_model = build_link_ratio_model(
+            triangle, model=self.model, drop=self.drop, sigma=sigma
+        )
         with pymc_model:
             self.idata = pm.sample(
-                draws=self.draws, tune=self.tune, chains=self.chains,
-                target_accept=self.target_accept, random_seed=self.random_seed,
+                draws=self.draws,
+                tune=self.tune,
+                chains=self.chains,
+                target_accept=self.target_accept,
+                random_seed=self.random_seed,
                 progressbar=False,
             )
-        draws = self.idata.posterior["factors"].stack(sample=["chain", "draw"]).transpose("sample", "dev_ratio").values
+        draws = (
+            self.idata.posterior["factors"]
+            .stack(sample=["chain", "draw"])
+            .transpose("sample", "dev_ratio")
+            .values
+        )
 
         rng = np.random.default_rng(self.random_seed)
         full = forecast_link_ratio_paths(
-            cum, draws, sigma if self.process_sigma is None else self.process_sigma,
-            vf_fn, self.forecast_dist, rng,
+            cum,
+            draws,
+            sigma if self.process_sigma is None else self.process_sigma,
+            vf_fn,
+            self.forecast_dist,
+            rng,
         )
         self.factors_, self.sigma_, self.factor_draws_ = factors, sigma, draws
         self._set_full_cumulative_posterior(np.moveaxis(full, 0, -1), origins, devs)

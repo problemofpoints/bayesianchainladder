@@ -139,12 +139,25 @@ class TestBaseStochasticReserve:
 
     def test_ibnr_columns(self, stub_fitted):
         assert list(stub_fitted.ibnr_.columns) == [
-            "mean", "std", "median", "5%", "25%", "75%", "95%"
+            "mean",
+            "std",
+            "median",
+            "5%",
+            "25%",
+            "75%",
+            "95%",
         ]
 
     def test_ultimate_columns(self, stub_fitted):
         assert list(stub_fitted.ultimate_.columns) == [
-            "paid_to_date", "mean", "std", "median", "5%", "25%", "75%", "95%"
+            "paid_to_date",
+            "mean",
+            "std",
+            "median",
+            "5%",
+            "25%",
+            "75%",
+            "95%",
         ]
 
     def test_ultimate_mean_equals_paid_plus_ibnr(self, stub_fitted):
@@ -184,7 +197,9 @@ class TestBaseStochasticReserve:
         assert isinstance(result, MethodSummary)
         assert np.isfinite(result.total_reserve_mean)
         assert result.total_reserve_stddev > 0
-        assert result.total_reserve_95th_percentile > result.total_reserve_75th_percentile
+        assert (
+            result.total_reserve_95th_percentile > result.total_reserve_75th_percentile
+        )
 
     def test_total_summary_cv_is_positive(self, stub_fitted):
         result = stub_fitted.total_summary()
@@ -226,8 +241,12 @@ class TestFullCumulativePosterior:
         eval_year = df["origin"] + df["dev"] // 12 - 1
         df["dev_date"] = pd.to_datetime(eval_year.astype(str) + "-12-31")
         tri = cl.Triangle(
-            df, origin="origin", development="dev_date", columns=["value"],
-            cumulative=True, origin_format="%Y",
+            df,
+            origin="origin",
+            development="dev_date",
+            columns=["value"],
+            cumulative=True,
+            origin_format="%Y",
         )
         # (origin, dev, sample) cumulative; NaN-free, observed cells constant
         full = np.full((3, 3, 4), np.nan)
@@ -260,19 +279,30 @@ class TestFullCumulativePosterior:
         tri, full = toy
         rs = ReserveSamples(
             tri,
-            xr.DataArray(np.zeros((3, 4)), dims=["origin", "sample"],
-                         coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)}),
+            xr.DataArray(
+                np.zeros((3, 4)),
+                dims=["origin", "sample"],
+                coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)},
+            ),
         )
         rs._set_full_cumulative_posterior(full, [2001, 2002, 2003], [12, 24, 36])
         assert rs.full_cumulative_posterior_.dims == ("origin", "dev", "sample")
         derived = rs._reserves_from_full_posterior()
-        np.testing.assert_allclose(derived.sel(origin=2002).values, [10.0, 12.0, 14.0, 16.0])
-        np.testing.assert_allclose(derived.sel(origin=2003).values, [60.0, 70.0, 80.0, 90.0])
+        np.testing.assert_allclose(
+            derived.sel(origin=2002).values, [10.0, 12.0, 14.0, 16.0]
+        )
+        np.testing.assert_allclose(
+            derived.sel(origin=2003).values, [60.0, 70.0, 80.0, 90.0]
+        )
         incr = rs.incremental_posterior()
-        np.testing.assert_allclose(incr.sel(origin=2003, dev=24).values, [50.0, 55.0, 60.0, 65.0])
+        np.testing.assert_allclose(
+            incr.sel(origin=2003, dev=24).values, [50.0, 55.0, 60.0, 65.0]
+        )
         fut = rs.future_incremental_posterior()
         assert (fut.sel(origin=2001).values == 0).all()
-        np.testing.assert_allclose(fut.sel(origin=2003, dev=36).values, [10.0, 15.0, 20.0, 25.0])
+        np.testing.assert_allclose(
+            fut.sel(origin=2003, dev=36).values, [10.0, 15.0, 20.0, 25.0]
+        )
 
     def test_full_cumulative_posterior_dim_order_normalized(self, toy):
         tri, full = toy
@@ -281,12 +311,19 @@ class TestFullCumulativePosterior:
         reordered = xr.DataArray(
             np.transpose(full, (2, 0, 1)),
             dims=["sample", "origin", "dev"],
-            coords={"origin": [2001, 2002, 2003], "dev": [12, 24, 36], "sample": np.arange(4)},
+            coords={
+                "origin": [2001, 2002, 2003],
+                "dev": [12, 24, 36],
+                "sample": np.arange(4),
+            },
         )
         rs = ReserveSamples(
             tri,
-            xr.DataArray(np.zeros((3, 4)), dims=["origin", "sample"],
-                         coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)}),
+            xr.DataArray(
+                np.zeros((3, 4)),
+                dims=["origin", "sample"],
+                coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)},
+            ),
             full_cumulative_posterior=reordered,
         )
         assert rs.full_cumulative_posterior_.dims == ("origin", "dev", "sample")
@@ -298,7 +335,13 @@ class TestFullCumulativePosterior:
     def test_summary_statistics(self, toy):
         tri, full = toy
         reserves = xr.DataArray(
-            np.array([[0.0, 0.0, 0.0, 0.0], [10.0, 12.0, 14.0, 16.0], [60.0, 70.0, 80.0, 90.0]]),
+            np.array(
+                [
+                    [0.0, 0.0, 0.0, 0.0],
+                    [10.0, 12.0, 14.0, 16.0],
+                    [60.0, 70.0, 80.0, 90.0],
+                ]
+            ),
             dims=["origin", "sample"],
             coords={"origin": [2001, 2002, 2003], "sample": np.arange(4)},
         )
@@ -308,7 +351,9 @@ class TestFullCumulativePosterior:
         assert stats.loc["Total", "mean"] == pytest.approx(88.0)
         assert stats.loc[2003, "min"] == 60.0 and stats.loc[2003, "max"] == 90.0
         assert "99.5%" in stats.columns and "0.5%" in stats.columns
-        assert stats.loc[2002, "cov"] == pytest.approx(np.std([10, 12, 14, 16], ddof=1) / 13.0)
+        assert stats.loc[2002, "cov"] == pytest.approx(
+            np.std([10, 12, 14, 16], ddof=1) / 13.0
+        )
         ults = rs.summary_statistics(output="ultimates")
         assert ults.loc[2003, "mean"] == pytest.approx(120.0 + 75.0)
         with pytest.raises(ValueError):
@@ -330,7 +375,9 @@ class TestFullCumulativePosterior:
         s = ReserveSamples(tri, reserves).total_summary()
         assert s.total_reserve_min == pytest.approx(70.0)
         assert s.total_reserve_max == pytest.approx(106.0)
-        assert s.total_reserve_99_5th_percentile == pytest.approx(np.quantile([70, 82, 94, 106], 0.995))
+        assert s.total_reserve_99_5th_percentile == pytest.approx(
+            np.quantile([70, 82, 94, 106], 0.995)
+        )
 
 
 class TestScalingAndIncurredToPaid:
@@ -338,7 +385,9 @@ class TestScalingAndIncurredToPaid:
     def fitted(self):
         from bayesianchainladder.bootstrap import BootstrapODPChainLadder
 
-        return BootstrapODPChainLadder(n_sims=500, random_seed=4).fit(cl.load_sample("genins"))
+        return BootstrapODPChainLadder(n_sims=500, random_seed=4).fit(
+            cl.load_sample("genins")
+        )
 
     def test_additive_preserves_sd_and_hits_target(self, fitted):
         origins = list(fitted.reserves_posterior_.coords["origin"].values)
@@ -346,8 +395,12 @@ class TestScalingAndIncurredToPaid:
         target = paid + 1.1 * fitted.ibnr_["mean"]
         scaled = fitted.scale_to_target(target, method="additive")
         assert isinstance(scaled, ReserveSamples)
-        np.testing.assert_allclose(scaled.ibnr_["std"].values, fitted.ibnr_["std"].values, rtol=1e-9)
-        np.testing.assert_allclose(scaled.ultimate_["mean"].values, target.values, rtol=1e-9)
+        np.testing.assert_allclose(
+            scaled.ibnr_["std"].values, fitted.ibnr_["std"].values, rtol=1e-9
+        )
+        np.testing.assert_allclose(
+            scaled.ultimate_["mean"].values, target.values, rtol=1e-9
+        )
 
     def test_multiplicative_preserves_cov(self, fitted):
         origins = list(fitted.reserves_posterior_.coords["origin"].values)
@@ -357,15 +410,24 @@ class TestScalingAndIncurredToPaid:
         base_cov = (fitted.ibnr_["std"] / fitted.ibnr_["mean"]).values[1:]
         new_cov = (scaled.ibnr_["std"] / scaled.ibnr_["mean"]).values[1:]
         np.testing.assert_allclose(new_cov, base_cov, rtol=1e-9)
-        np.testing.assert_allclose(scaled.ibnr_["mean"].values[1:], 1.1 * fitted.ibnr_["mean"].values[1:], rtol=1e-9)
+        np.testing.assert_allclose(
+            scaled.ibnr_["mean"].values[1:],
+            1.1 * fitted.ibnr_["mean"].values[1:],
+            rtol=1e-9,
+        )
 
     def test_per_origin_method_dict_and_validation(self, fitted):
         origins = list(fitted.reserves_posterior_.coords["origin"].values)
         paid = fitted._paid_to_date().reindex(origins)
         target = paid + fitted.ibnr_["mean"]
-        methods = {o: ("additive" if k < 5 else "multiplicative") for k, o in enumerate(origins)}
+        methods = {
+            o: ("additive" if k < 5 else "multiplicative")
+            for k, o in enumerate(origins)
+        }
         scaled = fitted.scale_to_target(target, method=methods)
-        np.testing.assert_allclose(scaled.ibnr_["mean"].values, fitted.ibnr_["mean"].values, rtol=1e-9)
+        np.testing.assert_allclose(
+            scaled.ibnr_["mean"].values, fitted.ibnr_["mean"].values, rtol=1e-9
+        )
         with pytest.raises(ValueError, match="method"):
             fitted.scale_to_target(target, method="geometric")
         with pytest.raises(ValueError, match="origin"):
@@ -383,5 +445,9 @@ class TestScalingAndIncurredToPaid:
         latest_inc = model._paid_to_date().values
         latest_paid = converted._paid_to_date().values
         expected_mean = model.ibnr_["mean"].values + latest_inc - latest_paid
-        np.testing.assert_allclose(converted.ibnr_["mean"].values, expected_mean, rtol=1e-9)
-        np.testing.assert_allclose(converted.ibnr_["std"].values, model.ibnr_["std"].values, rtol=1e-9)
+        np.testing.assert_allclose(
+            converted.ibnr_["mean"].values, expected_mean, rtol=1e-9
+        )
+        np.testing.assert_allclose(
+            converted.ibnr_["std"].values, model.ibnr_["std"].values, rtol=1e-9
+        )

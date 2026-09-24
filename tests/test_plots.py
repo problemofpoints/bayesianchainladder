@@ -15,7 +15,6 @@ from bayesianchainladder.estimators import BayesianChainLadderGLM
 from bayesianchainladder.plots import (
     create_summary_table,
     plot_actual_vs_fitted,
-    plot_development_pattern,
     plot_energy,
     plot_forest,
     plot_heatmap_residuals,
@@ -288,9 +287,13 @@ class TestEnglandPlots:
     def test_scaled_residuals(self, mack_boot, by):
         from bayesianchainladder.plots import plot_scaled_residuals
 
-        fig, ax = plot_scaled_residuals(mack_boot.scaled_residuals_, by=by, sigma=mack_boot.sigma_)
+        fig, ax = plot_scaled_residuals(
+            mack_boot.scaled_residuals_, by=by, sigma=mack_boot.sigma_
+        )
         assert ax.get_xlabel().lower().startswith(by)
-        assert len(fig.axes) == (2 if by == "dev" else 1)  # twin axis only where sigma applies
+        assert len(fig.axes) == (
+            2 if by == "dev" else 1
+        )  # twin axis only where sigma applies
         plt.close(fig)
         with pytest.raises(ValueError):
             plot_scaled_residuals(mack_boot.scaled_residuals_, by="weird")
@@ -309,7 +312,12 @@ class TestEnglandPlots:
     def test_capital_profiles(self):
         from bayesianchainladder.plots import plot_capital_profiles
 
-        fig, ax = plot_capital_profiles({"best estimate": np.array([1.0, 0.6, 0.3]), "sd": np.array([1.0, 0.5, 0.2])})
+        fig, ax = plot_capital_profiles(
+            {
+                "best estimate": np.array([1.0, 0.6, 0.3]),
+                "sd": np.array([1.0, 0.5, 0.2]),
+            }
+        )
         assert len(ax.lines) == 2
         assert ax.get_ylabel().startswith("Percent")
         plt.close(fig)

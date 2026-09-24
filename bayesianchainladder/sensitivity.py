@@ -29,7 +29,9 @@ def link_ratio_sensitivity(triangle, drop: DropList = None) -> pd.DataFrame:
         for j in range(cum.shape[1] - 1):
             if mask[i, j] == 0 or n_j[j] <= 1:
                 continue  # excluding the only ratio in a column leaves no factor estimate
-            res = mack_analytic_rmsep(triangle, drop=base_drop + [(str(origins[i]), devs[j])])
+            res = mack_analytic_rmsep(
+                triangle, drop=base_drop + [(str(origins[i]), devs[j])]
+            )
             rows.append(
                 {
                     "origin": origins[i],
@@ -52,10 +54,14 @@ def link_ratio_sensitivity(triangle, drop: DropList = None) -> pd.DataFrame:
     return df.sort_values("sd_rank").reset_index(drop=True)
 
 
-def top_influential(result: pd.DataFrame, n: int = 3, by: str = "sd") -> list[tuple[str, int]]:
+def top_influential(
+    result: pd.DataFrame, n: int = 3, by: str = "sd"
+) -> list[tuple[str, int]]:
     """The ``n`` ratios with the largest reduction in ``by`` ∈ {reserve, sd, cov},
     as chainladder-style ``(origin_label, dev_months)`` drop tuples."""
     if by not in _RANK_COLUMNS:
         raise ValueError(f"by must be one of {sorted(_RANK_COLUMNS)}")
     top = result.nsmallest(n, _RANK_COLUMNS[by])
-    return [(str(int(o)), int(d)) for o, d in zip(top["origin"], top["dev"], strict=True)]
+    return [
+        (str(int(o)), int(d)) for o, d in zip(top["origin"], top["dev"], strict=True)
+    ]

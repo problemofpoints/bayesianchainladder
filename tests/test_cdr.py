@@ -16,7 +16,9 @@ from bayesianchainladder.cdr import CDRResult, claims_development_result
 
 @pytest.fixture(scope="module")
 def odp():
-    return BootstrapODPChainLadder(n_sims=400, random_seed=11).fit(cl.load_sample("genins"))
+    return BootstrapODPChainLadder(n_sims=400, random_seed=11).fit(
+        cl.load_sample("genins")
+    )
 
 
 def test_cdr_shapes_and_coords(odp):
@@ -34,15 +36,21 @@ def test_cdr_sums_to_lifetime_deviation(odp):
     cum, origins, devs = cumulative_array(odp.triangle_)
     f0 = volume_weighted_factors(cum, link_ratio_mask(cum, None, origins, devs))
     cl_ultimate = project_cumulative(cum, f0)[:, -1]
-    sim_ultimate = odp.full_cumulative_posterior_.isel(dev=-1).values  # (origin, sample)
+    sim_ultimate = odp.full_cumulative_posterior_.isel(
+        dev=-1
+    ).values  # (origin, sample)
     lifetime = cl_ultimate[:, None] - sim_ultimate
     np.testing.assert_allclose(
-        res.cdr.sum("future_period").transpose("origin", "sample").values, lifetime,
-        rtol=1e-8, atol=1e-6,
+        res.cdr.sum("future_period").transpose("origin", "sample").values,
+        lifetime,
+        rtol=1e-8,
+        atol=1e-6,
     )
     np.testing.assert_allclose(
         res.cumulative().isel(future_period=-1).transpose("origin", "sample").values,
-        lifetime, rtol=1e-8, atol=1e-6,
+        lifetime,
+        rtol=1e-8,
+        atol=1e-6,
     )
 
 
@@ -65,7 +73,9 @@ def test_summary_and_reverse_cumulative(odp):
     table = res.summary()
     assert set(table.columns) == {"future_period", "origin", "mean", "sd", "var"}
     assert "Total" in set(table["origin"].astype(str))
-    total_row = table[(table["origin"].astype(str) == "Total") & (table["future_period"] == 1)]
+    total_row = table[
+        (table["origin"].astype(str) == "Total") & (table["future_period"] == 1)
+    ]
     assert total_row["var"].iloc[0] >= total_row["mean"].iloc[0]
     rev = res.reverse_cumulative()
     np.testing.assert_allclose(

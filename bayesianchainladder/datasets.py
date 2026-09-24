@@ -35,6 +35,10 @@ def load_england_sample(
             if np.isnan(v):
                 break
             rows.append(
-                {"origin": first_origin + int(label) - 1, "dev": 12 * (j + 1), "value": cum[j]}
+                {
+                    "origin": first_origin + int(label) - 1,
+                    "dev": 12 * (j + 1),
+                    "value": cum[j],
+                }
             )
     return long_to_triangle(pd.DataFrame(rows), "value")

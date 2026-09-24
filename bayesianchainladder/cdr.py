@@ -60,7 +60,13 @@ class CDRResult:
                 sd = float(np.std(x, ddof=1)) if x.size > 1 else 0.0
                 var = mean - value_at_risk(x, 1.0 - self.var_level)
                 rows.append(
-                    {"future_period": int(t), "origin": origin, "mean": mean, "sd": sd, "var": var}
+                    {
+                        "future_period": int(t),
+                        "origin": origin,
+                        "mean": mean,
+                        "sd": sd,
+                        "var": var,
+                    }
                 )
         return pd.DataFrame(rows)
 
@@ -82,7 +88,9 @@ def claims_development_result(
 
     excl = drop_mask(n_o, n_d, drop, origins, devs)
     max_periods = n_d - 1
-    n_periods = max_periods if future_periods is None else min(int(future_periods), max_periods)
+    n_periods = (
+        max_periods if future_periods is None else min(int(future_periods), max_periods)
+    )
     if n_periods < 1:
         raise ValueError("future_periods must be >= 1")
 

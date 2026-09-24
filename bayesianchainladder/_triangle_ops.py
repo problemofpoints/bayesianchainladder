@@ -24,7 +24,9 @@ def cumulative_array(triangle) -> tuple[np.ndarray, list[int], list[int]]:
     """Return ``(cum, origins, devs)`` for a single-index chainladder Triangle."""
     vals = np.asarray(triangle.values, dtype=float)
     if vals.shape[0] != 1 or vals.shape[1] != 1:
-        raise ValueError("cumulative_array expects a single-index, single-column triangle")
+        raise ValueError(
+            "cumulative_array expects a single-index, single-column triangle"
+        )
     origins = [_extract_period_value(o) for o in triangle.origin]
     devs = [int(d) for d in triangle.development]
     return vals[0, 0].copy(), origins, devs
@@ -104,11 +106,17 @@ def link_ratio_sigma(
     (n_j - 1); carry forward when n_j <= 1; last column = min of the previous
     two; zero where the cumulative factor is exactly 1.
     """
-    vf = np.ones_like(factors) if variance_factor is None else np.asarray(variance_factor, float)
+    vf = (
+        np.ones_like(factors)
+        if variance_factor is None
+        else np.asarray(variance_factor, float)
+    )
     with np.errstate(divide="ignore", invalid="ignore"):
         ratios = cum[:, 1:] / cum[:, :-1]
     w = cum[:, :-1]
-    resid = np.sqrt(np.abs(w)) * (ratios - factors) / np.sqrt(np.where(vf > 0, vf, np.nan))
+    resid = (
+        np.sqrt(np.abs(w)) * (ratios - factors) / np.sqrt(np.where(vf > 0, vf, np.nan))
+    )
     resid = np.where(mask > 0, resid, np.nan)
     n_j = mask.sum(axis=0)
     ss = np.nansum(resid**2, axis=0)

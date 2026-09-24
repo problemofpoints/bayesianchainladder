@@ -100,9 +100,7 @@ class MackChainLadder(BaseStochasticReserve):
 
         # Per-origin Mack std error — use latest_diagonal to get one value per
         # origin (mack_std_err_ is a full triangle shape, not per-origin vector)
-        std_per_origin = np.asarray(
-            mack.mack_std_err_.latest_diagonal.values
-        ).flatten()
+        std_per_origin = np.asarray(mack.mack_std_err_.latest_diagonal.values).flatten()
 
         # Calibrated totals (used to override sample_reserves / total_summary)
         self.total_reserve_mean_ = float(np.nansum(ibnr_per_origin))
@@ -117,10 +115,14 @@ class MackChainLadder(BaseStochasticReserve):
         # reserves_posterior_. These give correct per-origin marginals.
         rng = np.random.default_rng(self.random_seed)
         samples = np.empty((len(origins), self.n_samples))
-        for i, (mean, std) in enumerate(zip(ibnr_per_origin, std_per_origin, strict=True)):
+        for i, (mean, std) in enumerate(
+            zip(ibnr_per_origin, std_per_origin, strict=True)
+        ):
             mean_clean = float(mean) if np.isfinite(mean) else 0.0
             std_clean = float(std) if np.isfinite(std) and std >= 0 else 0.0
-            samples[i] = rng.normal(loc=mean_clean, scale=std_clean, size=self.n_samples)
+            samples[i] = rng.normal(
+                loc=mean_clean, scale=std_clean, size=self.n_samples
+            )
 
         self.reserves_posterior_ = xr.DataArray(
             samples,
@@ -249,7 +251,9 @@ class BootstrapODPChainLadder(BaseStochasticReserve):
         # n_origin=1 or n_sims=1 cases.
         ibnr_vals = np.asarray(model.ibnr_.values)
         per_sim_per_origin = np.nansum(ibnr_vals, axis=-1)  # (n_sims, 1, n_origin)
-        per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
+        per_sim_per_origin = np.squeeze(
+            per_sim_per_origin, axis=1
+        )  # (n_sims, n_origin)
         per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
 
         origins = [_extract_period_value(o) for o in triangle.origin]
@@ -263,7 +267,9 @@ class BootstrapODPChainLadder(BaseStochasticReserve):
             },
         )
 
-        full, origins_full, devs_full = _full_posterior_from_chainladder(model, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(
+            model, triangle
+        )
         self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
@@ -383,11 +389,13 @@ def _full_posterior_from_chainladder(model_fitted, triangle):
         obj = full_pre + process_var
         full = np.asarray(obj.values, dtype=float)[:, 0, :, :n_dev]
     else:
-        full = np.asarray(model_fitted.full_triangle_.values, dtype=float)[:, 0, :, :n_dev]
+        full = np.asarray(model_fitted.full_triangle_.values, dtype=float)[
+            :, 0, :, :n_dev
+        ]
 
-    resampled_latest = np.asarray(
-        model_fitted.latest_diagonal.values, dtype=float
-    )[:, 0, :, 0]
+    resampled_latest = np.asarray(model_fitted.latest_diagonal.values, dtype=float)[
+        :, 0, :, 0
+    ]
 
     cum, origins, devs = cumulative_array(triangle)
     latest, last_idx = latest_diagonal(cum)
@@ -748,6 +756,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
     def fit(self, X, y=None, sample_weight=None):
         if X.shape[1] > 1:
             from chainladder.utils.utility_functions import concat
+
             out = [
                 CorrelatedBootstrapODPSample(**self.get_params()).fit(X.iloc[:, i])
                 for i in range(X.shape[1])
@@ -797,7 +806,10 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
             try:
                 self.hat_ = self._get_hat(X, exp_incr_triangle)
             except Exception:
-                warn("Could not compute hat matrix. Setting hat_adj to False", stacklevel=2)
+                warn(
+                    "Could not compute hat matrix. Setting hat_adj to False",
+                    stacklevel=2,
+                )
                 self.hat_adj = False
                 self.hat_ = None
         else:
@@ -808,9 +820,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
 
         if self.rho != 0:
             self.correlation_matrix_, self.valid_indices_ = (
-                self._build_full_correlation_matrix(
-                    n_origin, n_dev, nan_triangle, xp
-                )
+                self._build_full_correlation_matrix(n_origin, n_dev, nan_triangle, xp)
             )
         else:
             self.correlation_matrix_ = None
@@ -833,7 +843,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         w_expanded[:, 1:] = w_[:, :] * w_[:, :]
         unscaled_residuals = unscaled_residuals * w_expanded
 
-        pearson_chi_sq = xp.nansum(unscaled_residuals ** 2)
+        pearson_chi_sq = xp.nansum(unscaled_residuals**2)
         if self.hat_ is not None:
             standardized_residuals = self.hat_ * unscaled_residuals
         else:
@@ -849,7 +859,9 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
                 self.standardized_residuals_, np.asarray(nan_triangle)
             )
         else:
-            self.scale_by_dev_ = np.full(standardized_residuals.shape[1], float(scale_phi))
+            self.scale_by_dev_ = np.full(
+                standardized_residuals.shape[1], float(scale_phi)
+            )
 
         resids_flat = standardized_residuals.flatten()
         adj_resid_dist = resids_flat[np.isfinite(resids_flat)]
@@ -863,12 +875,21 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
 
         if self.rho != 0 and self.correlation_matrix_ is not None:
             resampled_triangles = self._generate_correlated_samples(
-                X, exp_incr_triangle, nan_triangle, adj_resid_dist,
-                scale_phi, random_state, xp,
+                X,
+                exp_incr_triangle,
+                nan_triangle,
+                adj_resid_dist,
+                scale_phi,
+                random_state,
+                xp,
             )
         else:
             resampled_triangles = self._generate_independent_samples(
-                X, exp_incr_triangle, adj_resid_dist, random_state, xp,
+                X,
+                exp_incr_triangle,
+                adj_resid_dist,
+                random_state,
+                xp,
             )
 
         obj = X.copy()
@@ -900,9 +921,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         resampled_triangles = resampled_incr.cumsum(axis=2)
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
-    def _generate_parametric_samples(
-        self, X, exp_incr_triangle, random_state, xp
-    ):
+    def _generate_parametric_samples(self, X, exp_incr_triangle, random_state, xp):
         n_params = self.design_matrix_.shape[1]
         nan_triangle = X.nan_triangle
         degree_freedom = xp.nansum(nan_triangle) - n_params
@@ -921,7 +940,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
             resampled_incr = exp_incr_triangle + std_dev * z
         else:
             cv = std_dev / fitted_safe
-            sigma_sq = xp.log(1 + cv ** 2)
+            sigma_sq = xp.log(1 + cv**2)
             mu = -sigma_sq / 2
             sigma = xp.sqrt(sigma_sq)
             z = random_state.standard_normal(
@@ -934,8 +953,14 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
     def _generate_correlated_samples(
-        self, X, exp_incr_triangle, nan_triangle, adj_resid_dist, scale_phi,
-        random_state, xp,
+        self,
+        X,
+        exp_incr_triangle,
+        nan_triangle,
+        adj_resid_dist,
+        scale_phi,
+        random_state,
+        xp,
     ):
         n_cells = len(self.valid_indices_)
         correlated_uniforms = self._generate_correlated_uniforms(
@@ -943,17 +968,33 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         )
         if self.parametric:
             return self._generate_correlated_parametric(
-                X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-                scale_phi, random_state, xp,
+                X,
+                exp_incr_triangle,
+                nan_triangle,
+                correlated_uniforms,
+                scale_phi,
+                random_state,
+                xp,
             )
         return self._generate_correlated_nonparametric(
-            X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-            adj_resid_dist, random_state, xp,
+            X,
+            exp_incr_triangle,
+            nan_triangle,
+            correlated_uniforms,
+            adj_resid_dist,
+            random_state,
+            xp,
         )
 
     def _generate_correlated_parametric(
-        self, X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-        scale_phi, random_state, xp,
+        self,
+        X,
+        exp_incr_triangle,
+        nan_triangle,
+        correlated_uniforms,
+        scale_phi,
+        random_state,
+        xp,
     ):
         n_origin, n_dev = exp_incr_triangle.shape
         n_params = self.design_matrix_.shape[1]
@@ -972,7 +1013,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
                 resampled_incr[:, i, j] = exp_incr_triangle[i, j] + std_dev * z
             else:
                 cv = std_dev / fitted_val
-                sigma_sq = xp.log(1 + cv ** 2)
+                sigma_sq = xp.log(1 + cv**2)
                 mu = -sigma_sq / 2
                 sigma = xp.sqrt(sigma_sq)
                 multiplier = xp.exp(mu + sigma * z)
@@ -987,8 +1028,14 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         return xp.swapaxes(resampled_triangles[None, ...], 0, 1)
 
     def _generate_correlated_nonparametric(
-        self, X, exp_incr_triangle, nan_triangle, correlated_uniforms,
-        adj_resid_dist, random_state, xp,
+        self,
+        X,
+        exp_incr_triangle,
+        nan_triangle,
+        correlated_uniforms,
+        adj_resid_dist,
+        random_state,
+        xp,
     ):
         n_origin, n_dev = exp_incr_triangle.shape
         sorted_resids = xp.sort(adj_resid_dist)
@@ -1081,9 +1128,7 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         if n_keys == 1:
             X_new.kdims = np.array([[str(i)] for i in range(self.n_sims)])
         else:
-            original_kdims = (
-                X.kdims[0] if len(X.kdims.shape) > 1 else X.kdims
-            )
+            original_kdims = X.kdims[0] if len(X.kdims.shape) > 1 else X.kdims
             X_new.kdims = np.array(
                 [
                     [
@@ -1207,7 +1252,9 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
 
         ibnr_vals = np.asarray(model.ibnr_.values)
         per_sim_per_origin = np.nansum(ibnr_vals, axis=-1)  # (n_sims, 1, n_origin)
-        per_sim_per_origin = np.squeeze(per_sim_per_origin, axis=1)  # (n_sims, n_origin)
+        per_sim_per_origin = np.squeeze(
+            per_sim_per_origin, axis=1
+        )  # (n_sims, n_origin)
         per_origin_per_sim = per_sim_per_origin.T  # (n_origin, n_sims)
 
         origins = [_extract_period_value(o) for o in triangle.origin]
@@ -1221,7 +1268,9 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
             },
         )
 
-        full, origins_full, devs_full = _full_posterior_from_chainladder(model, triangle)
+        full, origins_full, devs_full = _full_posterior_from_chainladder(
+            model, triangle
+        )
         self._set_full_cumulative_posterior(full, origins_full, devs_full)
         self._build_reserve_summaries()
         self._is_fitted = True
@@ -1460,14 +1509,20 @@ def _get_process_variance(self, full_triangle):
         None if not self.random_state else self.random_state + 1
     )
     scale_vec = np.asarray(
-        getattr(self, "scale_by_dev_", None)
-        if getattr(self, "scale_by_dev_", None) is not None
-        else np.full(lower_tri.values.shape[-1], float(np.asarray(self.scale_).flatten()[0])),
+        (
+            getattr(self, "scale_by_dev_", None)
+            if getattr(self, "scale_by_dev_", None) is not None
+            else np.full(
+                lower_tri.values.shape[-1], float(np.asarray(self.scale_).flatten()[0])
+            )
+        ),
         dtype=float,
     )
     n_full = lower_tri.values.shape[-1]
     if len(scale_vec) < n_full:  # placeholder tail and 9999 ultimate columns
-        scale_vec = np.concatenate([scale_vec, np.repeat(scale_vec[-1], n_full - len(scale_vec))])
+        scale_vec = np.concatenate(
+            [scale_vec, np.repeat(scale_vec[-1], n_full - len(scale_vec))]
+        )
     scale_b = np.maximum(scale_vec[:n_full], 1e-12)[None, None, None, :]
     lower_tri.values = random_state.gamma(
         shape=abs(lower_tri.values) / scale_b, scale=scale_b

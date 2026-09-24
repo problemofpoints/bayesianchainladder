@@ -1,10 +1,9 @@
 """Tests for estimator classes."""
 
+import chainladder as cl
 import numpy as np
 import pandas as pd
 import pytest
-
-import chainladder as cl
 
 from bayesianchainladder.estimators import BayesianChainLadderGLM, BayesianCSR
 
@@ -314,20 +313,35 @@ class TestBayesianChainLadderGLMValidation:
             random_seed=42,
         )
         # Manually prepare data to inspect shift without running MCMC
-        from bayesianchainladder.utils import add_categorical_columns, prepare_model_data
+        from bayesianchainladder.utils import (
+            add_categorical_columns,
+            prepare_model_data,
+        )
+
         model.triangle_ = tri.copy()
         model.data_, model.future_data_ = prepare_model_data(tri)
         model.data_ = add_categorical_columns(model.data_, formula=model.formula)
 
         # Apply the union-level alignment manually (as fit() does)
         import re
-        for col in re.findall(r'\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)', model.formula):
+
+        for col in re.findall(
+            r"\bC\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)", model.formula
+        ):
             if col in model.data_.columns and col in model.future_data_.columns:
-                train_vals = list(model.data_[col].cat.categories) if hasattr(model.data_[col], "cat") else list(model.data_[col].unique())
+                train_vals = (
+                    list(model.data_[col].cat.categories)
+                    if hasattr(model.data_[col], "cat")
+                    else list(model.data_[col].unique())
+                )
                 future_vals = list(model.future_data_[col].unique())
                 all_levels = sorted(set(train_vals) | set(future_vals))
-                model.data_[col] = pd.Categorical(model.data_[col], categories=all_levels)
-                model.future_data_[col] = pd.Categorical(model.future_data_[col], categories=all_levels)
+                model.data_[col] = pd.Categorical(
+                    model.data_[col], categories=all_levels
+                )
+                model.future_data_[col] = pd.Categorical(
+                    model.future_data_[col], categories=all_levels
+                )
 
         # Verify RAA has negative incrementals
         raa_min = float(model.data_["incremental"].min())
@@ -341,6 +355,7 @@ class TestBayesianChainLadderGLMValidation:
             min_val = float(np.nanmin(resp_vals))
             if min_val <= 0:
                 import warnings as _w
+
                 shift = abs(min_val) + 1.0
                 _w.warn(
                     f"BayesianChainLadderGLM: response column 'incremental' "
@@ -358,11 +373,13 @@ class TestBayesianChainLadderGLMValidation:
                 model.data_["incremental"] = resp_vals + shift
 
         # After shift, all response values should be positive
-        assert float(model.data_["incremental"].min()) > 0, \
-            "After shift, all response values should be positive"
+        assert (
+            float(model.data_["incremental"].min()) > 0
+        ), "After shift, all response values should be positive"
         # Shift should be |min_val| + 1.0
-        assert abs(model._response_shift - (abs(raa_min) + 1.0)) < 1e-9, \
-            f"Expected shift={abs(raa_min)+1.0:.4f}, got {model._response_shift:.4f}"
+        assert (
+            abs(model._response_shift - (abs(raa_min) + 1.0)) < 1e-9
+        ), f"Expected shift={abs(raa_min)+1.0:.4f}, got {model._response_shift:.4f}"
 
     def test_gamma_force_positive_false_still_raises(self, small_triangle):
         """gamma with force_positive_response=False still raises on negatives."""
@@ -420,16 +437,19 @@ class TestBayesianChainLadderGLMValidation:
             model.fit(tri2)
 
         # future_data_ MUST contain dev 108 and 120 (no rows dropped)
-        assert 108 in model.future_data_["dev"].values, \
-            "dev=108 should be present in future_data_ (no longer dropped)"
-        assert 120 in model.future_data_["dev"].values, \
-            "dev=120 should be present in future_data_ (no longer dropped)"
+        assert (
+            108 in model.future_data_["dev"].values
+        ), "dev=108 should be present in future_data_ (no longer dropped)"
+        assert (
+            120 in model.future_data_["dev"].values
+        ), "dev=120 should be present in future_data_ (no longer dropped)"
 
         # Both train and future data must have the same dev categorical levels
         train_cats = set(model.data_["dev"].cat.categories.tolist())
         future_cats = set(model.future_data_["dev"].cat.categories.tolist())
-        assert train_cats == future_cats, \
-            "Train and future data must share the same C(dev) categorical levels"
+        assert (
+            train_cats == future_cats
+        ), "Train and future data must share the same C(dev) categorical levels"
 
         # All 10 dev levels (12..120) must be in the level set
         assert len(train_cats) == 10, f"Expected 10 dev levels, got {len(train_cats)}"
@@ -509,6 +529,7 @@ class TestBayesianChainLadderGLMValidation:
         # youngest origins have fewer observed cells (upper-left triangle).
         # Ground truth: prepare_model_data gives the exact count before padding.
         from bayesianchainladder.utils import prepare_model_data as _pmd
+
         _data_unpadded, _ = _pmd(tri2)
         real_row_count = len(_data_unpadded)
         assert len(model.fitted_) == real_row_count, (
@@ -519,8 +540,12 @@ class TestBayesianChainLadderGLMValidation:
         # Reserve summaries must be present and finite
         assert model.ibnr_ is not None
         assert model.ultimate_ is not None
-        assert np.all(np.isfinite(model.ibnr_["mean"].values)), "ibnr_ mean contains non-finite values"
-        assert np.all(np.isfinite(model.ultimate_["mean"].values)), "ultimate_ mean contains non-finite values"
+        assert np.all(
+            np.isfinite(model.ibnr_["mean"].values)
+        ), "ibnr_ mean contains non-finite values"
+        assert np.all(
+            np.isfinite(model.ultimate_["mean"].values)
+        ), "ultimate_ mean contains non-finite values"
 
     @pytest.mark.slow
     def test_m1_cat_drops_zero_obs_origins_and_uses_tight_dummy_priors(self):
@@ -548,7 +573,9 @@ class TestBayesianChainLadderGLMValidation:
         """
         import warnings
 
-        tri = cl.load_sample("genins")  # 10×10 (origins 2001-2010), all positive incremental values
+        tri = cl.load_sample(
+            "genins"
+        )  # 10×10 (origins 2001-2010), all positive incremental values
 
         # Convert to incremental and blank out origin 2001 (first row, index 0) entirely.
         inc_tri = tri.cum_to_incr()
@@ -581,78 +608,78 @@ class TestBayesianChainLadderGLMValidation:
         # Origins are stored as int or Period — compare via string or int.
         data_origins = set(str(o) for o in model.data_["origin"].unique())
         future_origins = set(str(o) for o in model.future_data_["origin"].unique())
-        assert not any("2001" in str(o) for o in data_origins), (
-            f"Origin 2001 should be dropped from data_: got {sorted(data_origins)}"
-        )
-        assert not any("2001" in str(o) for o in future_origins), (
-            f"Origin 2001 should be dropped from future_data_: got {sorted(future_origins)}"
-        )
+        assert not any(
+            "2001" in str(o) for o in data_origins
+        ), f"Origin 2001 should be dropped from data_: got {sorted(data_origins)}"
+        assert not any(
+            "2001" in str(o) for o in future_origins
+        ), f"Origin 2001 should be dropped from future_data_: got {sorted(future_origins)}"
         # _dropped_zero_obs_origins should record it
         dropped_str = [str(o) for o in model._dropped_zero_obs_origins]
-        assert any("2001" in s for s in dropped_str), (
-            f"Expected 2001 in _dropped_zero_obs_origins, got {model._dropped_zero_obs_origins}"
-        )
+        assert any(
+            "2001" in s for s in dropped_str
+        ), f"Expected 2001 in _dropped_zero_obs_origins, got {model._dropped_zero_obs_origins}"
 
         # --- B. dev=120 in design matrix via dummy row ---
         train_devs = set(int(v) for v in model.data_["dev"].values)
-        assert 120 in train_devs, (
-            f"dev=120 should be in data_ via dummy row, got {sorted(train_devs)}"
-        )
+        assert (
+            120 in train_devs
+        ), f"dev=120 should be in data_ via dummy row, got {sorted(train_devs)}"
         future_devs = set(int(v) for v in model.future_data_["dev"].values)
-        assert 120 in future_devs, (
-            f"dev=120 should be in future_data_, got {sorted(future_devs)}"
-        )
+        assert (
+            120 in future_devs
+        ), f"dev=120 should be in future_data_, got {sorted(future_devs)}"
 
         # --- C. _dummy_dev_levels records dev=120 ---
-        assert 120 in model._dummy_dev_levels, (
-            f"Expected 120 in _dummy_dev_levels, got {model._dummy_dev_levels}"
-        )
+        assert (
+            120 in model._dummy_dev_levels
+        ), f"Expected 120 in _dummy_dev_levels, got {model._dummy_dev_levels}"
 
         # --- D. C(dev) prior sigma is tight (0.1) for dev=120 ---
         # _build_default_priors→_build_cl_informed_priors is called inside fit().
         # Re-call it here directly to inspect the prior dict without a full refit.
         prior_dict = model._build_cl_informed_priors()
-        assert "C(dev)" in prior_dict, (
-            "Expected 'C(dev)' key in CL-informed priors dict"
-        )
+        assert (
+            "C(dev)" in prior_dict
+        ), "Expected 'C(dev)' key in CL-informed priors dict"
         dev_prior = prior_dict["C(dev)"]
         dev_sigmas = np.asarray(dev_prior.args["sigma"], dtype=float)
         # dev=120 is a dummy level — its sigma should be 0.1
         # contrast_devs are obs_devs_sorted[1:]; we need to find index of 120.
         obs_devs_sorted = sorted(int(v) for v in model.data_["dev"].dropna().unique())
         contrast_devs = obs_devs_sorted[1:]  # exclude reference
-        assert 120 in contrast_devs, (
-            f"Expected 120 in contrast_devs {contrast_devs}"
-        )
+        assert 120 in contrast_devs, f"Expected 120 in contrast_devs {contrast_devs}"
         idx_120 = contrast_devs.index(120)
-        assert dev_sigmas[idx_120] == pytest.approx(0.1, abs=1e-9), (
-            f"Sigma for dummy dev=120 should be 0.1, got {dev_sigmas[idx_120]}"
-        )
+        assert dev_sigmas[idx_120] == pytest.approx(
+            0.1, abs=1e-9
+        ), f"Sigma for dummy dev=120 should be 0.1, got {dev_sigmas[idx_120]}"
 
         # --- E. A real-data dev level has sigma=0.5 ---
         real_devs = [d for d in contrast_devs if d not in model._dummy_dev_levels]
-        assert real_devs, "Expected at least one real (non-dummy) dev level in contrast_devs"
+        assert (
+            real_devs
+        ), "Expected at least one real (non-dummy) dev level in contrast_devs"
         idx_real = contrast_devs.index(real_devs[0])
-        assert dev_sigmas[idx_real] == pytest.approx(0.5, abs=1e-9), (
-            f"Sigma for real dev={real_devs[0]} should be 0.5, got {dev_sigmas[idx_real]}"
-        )
+        assert dev_sigmas[idx_real] == pytest.approx(
+            0.5, abs=1e-9
+        ), f"Sigma for real dev={real_devs[0]} should be 0.5, got {dev_sigmas[idx_real]}"
 
         # --- F. ibnr_ does not include origin 2001 ---
         if model.ibnr_ is not None:
             ibnr_origins = [str(o) for o in model.ibnr_.index.tolist()]
-            assert not any("2001" in s for s in ibnr_origins), (
-                f"Origin 2001 should not appear in ibnr_: got {ibnr_origins}"
-            )
+            assert not any(
+                "2001" in s for s in ibnr_origins
+            ), f"Origin 2001 should not appear in ibnr_: got {ibnr_origins}"
 
         # --- G. Summaries are finite ---
         assert model.ibnr_ is not None
         assert model.ultimate_ is not None
-        assert np.all(np.isfinite(model.ibnr_["mean"].values)), (
-            "ibnr_ mean contains non-finite values"
-        )
-        assert np.all(np.isfinite(model.ultimate_["mean"].values)), (
-            "ultimate_ mean contains non-finite values"
-        )
+        assert np.all(
+            np.isfinite(model.ibnr_["mean"].values)
+        ), "ibnr_ mean contains non-finite values"
+        assert np.all(
+            np.isfinite(model.ultimate_["mean"].values)
+        ), "ultimate_ mean contains non-finite values"
 
 
 @pytest.fixture
@@ -988,7 +1015,8 @@ def test_csr_full_posterior_paths_are_monotone_and_consistent():
     np.testing.assert_allclose(
         derived.transpose("origin", "sample").values,
         model.reserves_posterior_.transpose("origin", "sample").values,
-        rtol=1e-6, atol=1e-6,
+        rtol=1e-6,
+        atol=1e-6,
     )
     # future cumulative paths never contain NaN
     assert not np.isnan(full.values).any()
@@ -1020,6 +1048,7 @@ class TestResponsePerExposure:
     def test_t_family_response_per_exposure_fits(self, genins_with_premium):
         """t family with response_per_exposure=True completes and produces sensible LR."""
         import warnings
+
         paid_tri, prem_tri = genins_with_premium
 
         model = BayesianChainLadderGLM(
@@ -1043,9 +1072,9 @@ class TestResponsePerExposure:
         # The intercept should be on loss-ratio scale: well under 1.0
         # (genins has ~30-40% first-dev LR so intercept will be small positive)
         intercept_mean = float(model.idata.posterior["Intercept"].values.mean())
-        assert intercept_mean < 1.0, (
-            f"Intercept {intercept_mean:.4f} should be < 1.0 for a loss-ratio-scale fit"
-        )
+        assert (
+            intercept_mean < 1.0
+        ), f"Intercept {intercept_mean:.4f} should be < 1.0 for a loss-ratio-scale fit"
 
         # Exposure should be restored after fit
         assert model.exposure == "exposure"
@@ -1059,6 +1088,7 @@ class TestResponsePerExposure:
         ibnr_ and ultimate_ are in dollars, not fractions.
         """
         import warnings
+
         paid_tri, prem_tri = genins_with_premium
 
         model = BayesianChainLadderGLM(
@@ -1191,9 +1221,9 @@ class TestAdaptiveInterceptPriorOffset:
         intercept_sigma = 1.0
         expected_mu = np.log(mean_incremental) - intercept_sigma**2 / 2
 
-        assert abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6, (
-            "Without exposure, intercept prior should center on log(mean_incremental)."
-        )
+        assert (
+            abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6
+        ), "Without exposure, intercept prior should center on log(mean_incremental)."
 
     def test_intercept_prior_with_zero_exposure_is_safe(self):
         """If mean_ep == 0 the prior should silently fall back to no adjustment."""
@@ -1225,9 +1255,9 @@ class TestAdaptiveInterceptPriorOffset:
         intercept_sigma = 1.0
         expected_mu = np.log(mean_lr) - intercept_sigma**2 / 2
 
-        assert abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6, (
-            f"Expected mu={expected_mu:.4f}, got {priors['Intercept'].args['mu']:.4f}"
-        )
+        assert (
+            abs(priors["Intercept"].args["mu"] - expected_mu) < 1e-6
+        ), f"Expected mu={expected_mu:.4f}, got {priors['Intercept'].args['mu']:.4f}"
 
 
 # ============================================================================
@@ -1256,6 +1286,7 @@ class TestInitPriorsFromChainladder:
         """Return a model with data_ and triangle_ set (without MCMC) so we can
         call _build_cl_informed_priors() directly."""
         import chainladder as cl
+
         from bayesianchainladder.utils import (
             add_categorical_columns,
             prepare_model_data,
@@ -1283,7 +1314,9 @@ class TestInitPriorsFromChainladder:
             exposure_column=exposure if exposure else "exposure",
         )
         model.data_ = add_categorical_columns(model.data_, formula=formula)
-        model.future_data_ = add_categorical_columns(model.future_data_, formula=formula)
+        model.future_data_ = add_categorical_columns(
+            model.future_data_, formula=formula
+        )
         return model
 
     def test_categorical_origin_dev_prior_structure(self):
@@ -1307,17 +1340,17 @@ class TestInitPriorsFromChainladder:
         origin_prior = cl_priors["C(origin)"]
         assert hasattr(origin_prior, "args"), "Prior should be a bmb.Prior"
         origin_mus = origin_prior.args["mu"]
-        assert len(origin_mus) == n_origins - 1, (
-            f"Expected {n_origins - 1} origin contrasts, got {len(origin_mus)}"
-        )
+        assert (
+            len(origin_mus) == n_origins - 1
+        ), f"Expected {n_origins - 1} origin contrasts, got {len(origin_mus)}"
 
         # C(dev): n_devs - 1 contrasts
         assert "C(dev)" in cl_priors, "Expected C(dev) in CL priors"
         dev_prior = cl_priors["C(dev)"]
         dev_mus = dev_prior.args["mu"]
-        assert len(dev_mus) == n_devs - 1, (
-            f"Expected {n_devs - 1} dev contrasts, got {len(dev_mus)}"
-        )
+        assert (
+            len(dev_mus) == n_devs - 1
+        ), f"Expected {n_devs - 1} dev contrasts, got {len(dev_mus)}"
 
     def test_categorical_prior_values_sensible(self):
         """C(origin) and C(dev) prior means are finite and not all-zero."""
@@ -1337,7 +1370,9 @@ class TestInitPriorsFromChainladder:
         sd = cl_priors["C(origin)"].args["sigma"]
 
         # Means should be finite
-        assert np.all(np.isfinite(origin_mus)), "origin prior means contain non-finite values"
+        assert np.all(
+            np.isfinite(origin_mus)
+        ), "origin prior means contain non-finite values"
         assert np.all(np.isfinite(dev_mus)), "dev prior means contain non-finite values"
 
         # SDs should equal chainladder_prior_sd
@@ -1346,9 +1381,9 @@ class TestInitPriorsFromChainladder:
         # Dev effects should be negative (later periods have smaller fraction)
         # i.e., incr_pct[1:] < incr_pct[0] typically for a tail-heavy triangle
         # At minimum, some dev contrasts should be negative
-        assert not np.all(dev_mus >= 0), (
-            "All dev prior means are non-negative — expected decreasing pattern"
-        )
+        assert not np.all(
+            dev_mus >= 0
+        ), "All dev prior means are non-negative — expected decreasing pattern"
 
     def test_custom_prior_sd_respected(self):
         """chainladder_prior_sd parameter is used as the sigma for all effects."""
@@ -1366,9 +1401,7 @@ class TestInitPriorsFromChainladder:
             cl_priors = model._build_cl_informed_priors()
             if "C(origin)" in cl_priors:
                 sds = cl_priors["C(origin)"].args["sigma"]
-                assert np.allclose(sds, test_sd), (
-                    f"Expected sigma={test_sd}, got {sds}"
-                )
+                assert np.allclose(sds, test_sd), f"Expected sigma={test_sd}, got {sds}"
 
     def test_spline_dev_priors_constructed_or_skipped(self):
         """bs(dev_idx, df=4) formula: spline priors are either constructed or
@@ -1389,9 +1422,7 @@ class TestInitPriorsFromChainladder:
         if spline_key in cl_priors:
             spline_prior = cl_priors[spline_key]
             coefs = spline_prior.args["mu"]
-            assert len(coefs) == 4, (
-                f"Expected 4 spline coefficients, got {len(coefs)}"
-            )
+            assert len(coefs) == 4, f"Expected 4 spline coefficients, got {len(coefs)}"
             assert np.all(np.isfinite(coefs)), "Spline coefs contain non-finite values"
         # else: graceful fallback — acceptable
 
@@ -1412,9 +1443,9 @@ class TestInitPriorsFromChainladder:
         re_prior = cl_priors["1|origin"]
         # The RE prior should have a HalfNormal sigma hyperprior
         inner_sigma = re_prior.args["sigma"]
-        assert hasattr(inner_sigma, "name") or hasattr(inner_sigma, "args"), (
-            "Expected sigma to be a bmb.Prior (HalfNormal), not a scalar"
-        )
+        assert hasattr(inner_sigma, "name") or hasattr(
+            inner_sigma, "args"
+        ), "Expected sigma to be a bmb.Prior (HalfNormal), not a scalar"
 
     def test_init_priors_false_leaves_defaults(self):
         """When init_priors_from_chainladder=False, _build_cl_informed_priors returns {}."""
@@ -1441,17 +1472,21 @@ class TestInitPriorsFromChainladder:
             init_priors_from_chainladder=False,
         )
         model2.triangle_ = tri.copy()
-        model2.data_, _ = __import__("bayesianchainladder.utils", fromlist=["prepare_model_data"]).prepare_model_data(tri)
-        model2.data_ = __import__("bayesianchainladder.utils", fromlist=["add_categorical_columns"]).add_categorical_columns(model2.data_, formula=model2.formula)
+        model2.data_, _ = __import__(
+            "bayesianchainladder.utils", fromlist=["prepare_model_data"]
+        ).prepare_model_data(tri)
+        model2.data_ = __import__(
+            "bayesianchainladder.utils", fromlist=["add_categorical_columns"]
+        ).add_categorical_columns(model2.data_, formula=model2.formula)
         defaults = model2._build_default_priors()
 
         # When init_priors_from_chainladder=False, C(origin) prior should be
         # the generic Normal(0, 1) (scalar mu=0), not an array
         if "C(origin)" in defaults:
             mu = defaults["C(origin)"].args["mu"]
-            assert np.isscalar(mu) or (hasattr(mu, "__len__") and len(np.atleast_1d(mu)) == 1), (
-                "Without CL priors, C(origin) mu should be scalar 0.0"
-            )
+            assert np.isscalar(mu) or (
+                hasattr(mu, "__len__") and len(np.atleast_1d(mu)) == 1
+            ), "Without CL priors, C(origin) mu should be scalar 0.0"
 
     @pytest.mark.slow
     def test_fit_with_cl_priors_m1_cat(self, positive_triangle):
@@ -1534,7 +1569,10 @@ class TestInitPriorsFromChainladder:
         basis matrix B and the CL incremental target y_target are both built
         from the 8 observed dev_idx values rather than the full 10.
         """
-        from bayesianchainladder.utils import add_categorical_columns, prepare_model_data
+        from bayesianchainladder.utils import (
+            add_categorical_columns,
+            prepare_model_data,
+        )
 
         formula = "incremental ~ 1 + C(origin) + bs(dev_idx, df=4)"
         tri = cl.load_sample("genins")
@@ -1557,7 +1595,9 @@ class TestInitPriorsFromChainladder:
 
         # Restrict training data to first 8 dev periods (drop dev 108, 120)
         dev_sorted = sorted(data_full["dev"].unique())
-        data_partial = data_full[data_full["dev"] <= dev_sorted[7]].copy().reset_index(drop=True)
+        data_partial = (
+            data_full[data_full["dev"] <= dev_sorted[7]].copy().reset_index(drop=True)
+        )
         model.data_ = add_categorical_columns(data_partial, formula=formula)
         model.future_data_ = add_categorical_columns(future_full, formula=formula)
 
@@ -1585,8 +1625,10 @@ class TestInitPriorsFromChainladder:
             tri=tri,
         )
         # Compute the expected empirical SD of log(ultimates) from CL
-        import chainladder as _cl
         import warnings
+
+        import chainladder as _cl
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             cl_fit = _cl.Chainladder().fit(tri)
@@ -1623,11 +1665,13 @@ class TestInitPriorsFromChainladder:
         assert "1|calendar" in cl_priors, "Expected '1|calendar' in CL priors"
         cal_prior = cl_priors["1|calendar"]
         inner_sigma = cal_prior.args["sigma"]
-        assert hasattr(inner_sigma, "args"), "Expected HalfNormal bmb.Prior for calendar sigma"
+        assert hasattr(
+            inner_sigma, "args"
+        ), "Expected HalfNormal bmb.Prior for calendar sigma"
         hn_sigma = float(inner_sigma.args["sigma"])
-        assert abs(hn_sigma - 0.2) < 1e-9, (
-            f"Expected HalfNormal sigma=0.2 for calendar RE, got {hn_sigma}"
-        )
+        assert (
+            abs(hn_sigma - 0.2) < 1e-9
+        ), f"Expected HalfNormal sigma=0.2 for calendar RE, got {hn_sigma}"
 
     def test_init_priors_from_chainladder_handles_sparse_levels(self):
         """CL-informed priors handle categorical levels with zero training observations.
@@ -1645,8 +1689,12 @@ class TestInitPriorsFromChainladder:
         - C(origin) prior has len == n_observed_origins - 1 (not n_total - 1)
         - C(dev) prior length matches Bambi's actual design matrix columns
         """
-        from bayesianchainladder.utils import prepare_model_data, add_categorical_columns
         import bambi as bmb
+
+        from bayesianchainladder.utils import (
+            add_categorical_columns,
+            prepare_model_data,
+        )
 
         tri = cl.load_sample("raa")  # 10 origins: 1981-1990, 10 devs: 12-120
 
@@ -1655,11 +1703,15 @@ class TestInitPriorsFromChainladder:
         # Blank origins 1981 and 1982 from training data (simulate sparse back-test
         # triangle where these accident years have zero incremental observations).
         all_origins = sorted(data_full["origin"].unique())  # [1981..1990]
-        data_sparse = data_full[data_full["origin"] >= 1983].copy().reset_index(drop=True)
+        data_sparse = (
+            data_full[data_full["origin"] >= 1983].copy().reset_index(drop=True)
+        )
 
         # Force all 10 origins into the Categorical categories (as the union-level
         # alignment code in fit() does), even though only 8 appear in data_.
-        data_sparse["origin"] = pd.Categorical(data_sparse["origin"], categories=all_origins)
+        data_sparse["origin"] = pd.Categorical(
+            data_sparse["origin"], categories=all_origins
+        )
         future_full_cat = future_full.copy()
         future_full_cat["origin"] = pd.Categorical(
             future_full_cat["origin"], categories=all_origins
@@ -1698,22 +1750,24 @@ class TestInitPriorsFromChainladder:
         model_bambi = bmb.Model(formula, model.data_, family="gaussian")
         model_bambi.build()
         bambi_origin_cols = model_bambi.components["mu"].terms["C(origin)"].shape[1]
-        assert len(origin_mus) == bambi_origin_cols, (
-            f"Prior length {len(origin_mus)} != Bambi design matrix columns {bambi_origin_cols}"
-        )
+        assert (
+            len(origin_mus) == bambi_origin_cols
+        ), f"Prior length {len(origin_mus)} != Bambi design matrix columns {bambi_origin_cols}"
 
         # C(dev): verify prior length matches Bambi's design matrix as well.
         if "C(dev)" in cl_priors:
             dev_mus = cl_priors["C(dev)"].args["mu"]
             bambi_dev_cols = model_bambi.components["mu"].terms["C(dev)"].shape[1]
-            assert len(dev_mus) == bambi_dev_cols, (
-                f"C(dev) prior length {len(dev_mus)} != Bambi columns {bambi_dev_cols}"
-            )
+            assert (
+                len(dev_mus) == bambi_dev_cols
+            ), f"C(dev) prior length {len(dev_mus)} != Bambi columns {bambi_dev_cols}"
 
     @pytest.mark.slow
     def test_init_priors_sparse_levels_fit_succeeds(self):
         """Full MCMC fit succeeds with sparse levels (no dimension-mismatch error)."""
-        from bayesianchainladder.utils import prepare_model_data, add_categorical_columns
+        from bayesianchainladder.utils import (
+            prepare_model_data,
+        )
 
         tri = cl.load_sample("raa")
         data_full, _ = prepare_model_data(tri)
@@ -1777,9 +1831,12 @@ class TestGammaAutoShift:
             model.fit(tri)
             user_warnings = [x for x in w if issubclass(x.category, UserWarning)]
             # A UserWarning about shifting must have been emitted
-            shift_warnings = [x for x in user_warnings if "shifting" in str(x.message).lower()]
-            assert len(shift_warnings) >= 1, \
-                "Expected a UserWarning about auto-shifting response"
+            shift_warnings = [
+                x for x in user_warnings if "shifting" in str(x.message).lower()
+            ]
+            assert (
+                len(shift_warnings) >= 1
+            ), "Expected a UserWarning about auto-shifting response"
 
         assert model._is_fitted
         assert model.reserves_posterior_ is not None
@@ -1788,11 +1845,16 @@ class TestGammaAutoShift:
 
         # Reserve should be finite and positive (roughly chain-ladder magnitude)
         import chainladder as _cl
+
         cl_fit = _cl.Chainladder().fit(tri)
         cl_ibnr = float(np.nansum(np.asarray(cl_fit.ibnr_.values, dtype=float)))
-        model_ibnr = float(np.nanmedian(np.asarray(
-            model.reserves_posterior_.sum(dim="origin").values, dtype=float
-        )))
+        model_ibnr = float(
+            np.nanmedian(
+                np.asarray(
+                    model.reserves_posterior_.sum(dim="origin").values, dtype=float
+                )
+            )
+        )
         assert np.isfinite(model_ibnr), "Reserve estimate should be finite"
         # Within 3× of CL (very loose check — just ensure no magnitude blowup)
         if cl_ibnr > 0:
@@ -1839,5 +1901,6 @@ def test_glm_full_posterior_consistent_with_reserves():
     np.testing.assert_allclose(
         derived.sel(origin=common_origins).transpose("origin", "sample").values,
         model.reserves_posterior_.transpose("origin", "sample").values,
-        rtol=1e-6, atol=1e-6,
+        rtol=1e-6,
+        atol=1e-6,
     )

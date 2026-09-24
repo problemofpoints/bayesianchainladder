@@ -20,8 +20,17 @@ def result(liability):
 
 def test_columns_and_row_count(result):
     expected = {
-        "origin", "dev", "reserve", "reserve_sd", "reserve_cov",
-        "reserve_diff", "sd_diff", "cov_diff", "reserve_rank", "sd_rank", "cov_rank",
+        "origin",
+        "dev",
+        "reserve",
+        "reserve_sd",
+        "reserve_cov",
+        "reserve_diff",
+        "sd_diff",
+        "cov_diff",
+        "reserve_rank",
+        "sd_rank",
+        "cov_rank",
     }
     assert expected <= set(result.columns)
     # 45 available ratios minus the 9 columns... only ratios whose column keeps >= 1 other ratio
@@ -42,7 +51,9 @@ def test_most_influential_ratio_is_origin3_dev6(result):
 
 def test_top_n_returns_drop_list_usable_by_mack(result, liability):
     top3 = top_influential(result, n=3, by="sd")
-    assert len(top3) == 3 and all(isinstance(o, str) and isinstance(d, int) for o, d in top3)
+    assert len(top3) == 3 and all(
+        isinstance(o, str) and isinstance(d, int) for o, d in top3
+    )
     reduced = mack_analytic_rmsep(liability, drop=top3)
     base = mack_analytic_rmsep(liability)
     assert reduced.total_sd < 0.6 * base.total_sd

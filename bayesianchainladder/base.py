@@ -15,7 +15,17 @@ if TYPE_CHECKING:
 
 
 DEFAULT_QUANTILES: tuple[float, ...] = (
-    0.005, 0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 0.995,
+    0.005,
+    0.01,
+    0.05,
+    0.10,
+    0.25,
+    0.50,
+    0.75,
+    0.90,
+    0.95,
+    0.99,
+    0.995,
 )
 
 
@@ -123,38 +133,62 @@ class BaseStochasticReserve(ABC):
                 ibnr_q75 = float(np.percentile(samples, 75))
                 ibnr_q95 = float(np.percentile(samples, 95))
 
-            rows.append({
-                "origin": origin,
-                "paid_to_date": paid_origin,
-                "ibnr_mean": ibnr_mean,
-                "ibnr_std": ibnr_std,
-                "ibnr_median": ibnr_median,
-                "ibnr_5%": ibnr_q05,
-                "ibnr_25%": ibnr_q25,
-                "ibnr_75%": ibnr_q75,
-                "ibnr_95%": ibnr_q95,
-                "ultimate_mean": paid_origin + ibnr_mean,
-                "ultimate_std": ibnr_std,
-                "ultimate_median": paid_origin + ibnr_median,
-                "ultimate_5%": paid_origin + ibnr_q05,
-                "ultimate_25%": paid_origin + ibnr_q25,
-                "ultimate_75%": paid_origin + ibnr_q75,
-                "ultimate_95%": paid_origin + ibnr_q95,
-            })
+            rows.append(
+                {
+                    "origin": origin,
+                    "paid_to_date": paid_origin,
+                    "ibnr_mean": ibnr_mean,
+                    "ibnr_std": ibnr_std,
+                    "ibnr_median": ibnr_median,
+                    "ibnr_5%": ibnr_q05,
+                    "ibnr_25%": ibnr_q25,
+                    "ibnr_75%": ibnr_q75,
+                    "ibnr_95%": ibnr_q95,
+                    "ultimate_mean": paid_origin + ibnr_mean,
+                    "ultimate_std": ibnr_std,
+                    "ultimate_median": paid_origin + ibnr_median,
+                    "ultimate_5%": paid_origin + ibnr_q05,
+                    "ultimate_25%": paid_origin + ibnr_q25,
+                    "ultimate_75%": paid_origin + ibnr_q75,
+                    "ultimate_95%": paid_origin + ibnr_q95,
+                }
+            )
 
         df = pd.DataFrame(rows).set_index("origin")
         self.ibnr_ = df[
-            ["ibnr_mean", "ibnr_std", "ibnr_median",
-             "ibnr_5%", "ibnr_25%", "ibnr_75%", "ibnr_95%"]
+            [
+                "ibnr_mean",
+                "ibnr_std",
+                "ibnr_median",
+                "ibnr_5%",
+                "ibnr_25%",
+                "ibnr_75%",
+                "ibnr_95%",
+            ]
         ].copy()
         self.ibnr_.columns = ["mean", "std", "median", "5%", "25%", "75%", "95%"]
 
         self.ultimate_ = df[
-            ["paid_to_date", "ultimate_mean", "ultimate_std", "ultimate_median",
-             "ultimate_5%", "ultimate_25%", "ultimate_75%", "ultimate_95%"]
+            [
+                "paid_to_date",
+                "ultimate_mean",
+                "ultimate_std",
+                "ultimate_median",
+                "ultimate_5%",
+                "ultimate_25%",
+                "ultimate_75%",
+                "ultimate_95%",
+            ]
         ].copy()
         self.ultimate_.columns = [
-            "paid_to_date", "mean", "std", "median", "5%", "25%", "75%", "95%"
+            "paid_to_date",
+            "mean",
+            "std",
+            "median",
+            "5%",
+            "25%",
+            "75%",
+            "95%",
         ]
 
     # ------------------------------------------------------------------
@@ -232,7 +266,11 @@ class BaseStochasticReserve(ABC):
             raise ValueError("output must be 'reserves' or 'ultimates'")
         data = np.vstack([data, data.sum(axis=0, keepdims=True)])
         mean = np.nanmean(data, axis=1)
-        std = np.nanstd(data, axis=1, ddof=1) if data.shape[1] > 1 else np.zeros(len(mean))
+        std = (
+            np.nanstd(data, axis=1, ddof=1)
+            if data.shape[1] > 1
+            else np.zeros(len(mean))
+        )
         with np.errstate(divide="ignore", invalid="ignore"):
             cov = np.where(mean != 0, std / np.abs(mean), np.nan)
         table: dict[str, np.ndarray] = {
@@ -301,7 +339,9 @@ class BaseStochasticReserve(ABC):
         idx = rng.choice(total.size, size=n_samples, replace=replace)
         return total[idx]
 
-    def scale_to_target(self, target_ultimates, method="multiplicative") -> ReserveSamples:
+    def scale_to_target(
+        self, target_ultimates, method="multiplicative"
+    ) -> ReserveSamples:
         """Shift or scale each origin's reserve samples so their mean ultimate
         hits ``target_ultimates`` (England's ``Scaled_Results``).
 
@@ -329,7 +369,9 @@ class BaseStochasticReserve(ABC):
             methods = dict(method)
         bad = set(methods.values()) - {"additive", "multiplicative"}
         if bad or set(origins) - set(methods):
-            raise ValueError("method must be 'additive' or 'multiplicative' for every origin")
+            raise ValueError(
+                "method must be 'additive' or 'multiplicative' for every origin"
+            )
 
         res = self.reserves_posterior_.transpose("origin", "sample").values.copy()
         mean = res.mean(axis=1)
@@ -364,7 +406,9 @@ class BaseStochasticReserve(ABC):
             )
         return MethodSummary(
             total_reserve_mean=float(np.mean(total)),
-            total_reserve_stddev=float(np.std(total, ddof=1)) if total.size > 1 else 0.0,
+            total_reserve_stddev=(
+                float(np.std(total, ddof=1)) if total.size > 1 else 0.0
+            ),
             total_reserve_75th_percentile=float(np.quantile(total, 0.75)),
             total_reserve_90th_percentile=float(np.quantile(total, 0.90)),
             total_reserve_95th_percentile=float(np.quantile(total, 0.95)),
@@ -413,7 +457,11 @@ def incurred_to_paid(model: BaseStochasticReserve, paid_triangle) -> ReserveSamp
     latest_incurred = model._paid_to_date().reindex(origins).fillna(0.0).values
     paid_df = triangle_to_dataframe(paid_triangle)
     latest_paid = (
-        paid_df.groupby("origin", observed=True)["incremental"].sum().reindex(origins).fillna(0.0).values
+        paid_df.groupby("origin", observed=True)["incremental"]
+        .sum()
+        .reindex(origins)
+        .fillna(0.0)
+        .values
     )
     res = model.reserves_posterior_.transpose("origin", "sample").values
     reserves = res + (latest_incurred - latest_paid)[:, None]

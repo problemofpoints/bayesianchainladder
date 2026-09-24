@@ -39,7 +39,9 @@ def test_cumulative_to_incremental_roundtrip(genins):
 def test_latest_diagonal(genins):
     cum, _, _ = cumulative_array(genins)
     latest, idx = latest_diagonal(cum)
-    np.testing.assert_allclose(latest, np.asarray(genins.latest_diagonal.values)[0, 0, :, 0])
+    np.testing.assert_allclose(
+        latest, np.asarray(genins.latest_diagonal.values)[0, 0, :, 0]
+    )
     assert list(idx) == list(range(9, -1, -1))
 
 
@@ -74,7 +76,9 @@ def test_project_cumulative_matches_chainladder(genins):
     cum, origins, devs = cumulative_array(genins)
     f = volume_weighted_factors(cum, link_ratio_mask(cum, None, origins, devs))
     full = project_cumulative(cum, f)
-    expected = np.asarray(cl.Chainladder().fit(genins).full_triangle_.values)[0, 0, :, :10]
+    expected = np.asarray(cl.Chainladder().fit(genins).full_triangle_.values)[
+        0, 0, :, :10
+    ]
     np.testing.assert_allclose(full, expected, rtol=1e-10)
     assert not np.isnan(full).any()
 
@@ -94,7 +98,9 @@ def test_link_ratio_sigma_matches_mack_except_last(genins):
     mask = link_ratio_mask(cum, None, origins, devs)
     f = volume_weighted_factors(cum, mask)
     sigma, resid = link_ratio_sigma(cum, mask, f)
-    expected = np.asarray(cl.Development().fit_transform(genins).sigma_.values).flatten()
+    expected = np.asarray(
+        cl.Development().fit_transform(genins).sigma_.values
+    ).flatten()
     # chainladder extrapolates the last sigma log-linearly; England uses min of previous two
     np.testing.assert_allclose(sigma[:-1], expected[:-1], rtol=1e-8)
     assert sigma[-1] == pytest.approx(min(sigma[-2], sigma[-3]))

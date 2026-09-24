@@ -43,15 +43,21 @@ def test_odp_constant_scale_matches_chainladder_phi(genins):
     prepared = genins.copy()
     prepared.key_labels = ["triangle_id"]
     prepared.kdims = np.asarray([["resample"]], dtype=object)
-    sampler = cl.BootstrapODPSample(n_sims=5, hat_adj=False, random_state=1).fit(prepared)
+    sampler = cl.BootstrapODPSample(n_sims=5, hat_adj=False, random_state=1).fit(
+        prepared
+    )
     assert res.scale.shape == (10,)
-    np.testing.assert_allclose(res.scale, float(np.asarray(sampler.scale_).flatten()[0]), rtol=1e-6)
+    np.testing.assert_allclose(
+        res.scale, float(np.asarray(sampler.scale_).flatten()[0]), rtol=1e-6
+    )
 
 
 def test_odp_analytic_sd_close_to_bootstrap(genins):
     res = odp_analytic_rmsep(genins, scale="constant")
     boot = BootstrapODPChainLadder(n_sims=4000, random_seed=9).fit(genins)
-    assert res.total_sd == pytest.approx(boot.total_summary().total_reserve_stddev, rel=0.12)
+    assert res.total_sd == pytest.approx(
+        boot.total_summary().total_reserve_stddev, rel=0.12
+    )
     assert 0.10 < res.total_cov < 0.25
 
 

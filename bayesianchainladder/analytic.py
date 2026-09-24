@@ -36,19 +36,28 @@ class AnalyticResult:
 
     @property
     def total_cov(self) -> float:
-        return float(self.total_sd / self.total_reserve) if self.total_reserve else float("nan")
+        return (
+            float(self.total_sd / self.total_reserve)
+            if self.total_reserve
+            else float("nan")
+        )
 
     def to_frame(self) -> pd.DataFrame:
         with np.errstate(divide="ignore", invalid="ignore"):
-            cov = np.where(self.reserves != 0, self.reserve_sd / np.abs(self.reserves), np.nan)
+            cov = np.where(
+                self.reserves != 0, self.reserve_sd / np.abs(self.reserves), np.nan
+            )
         frame = pd.DataFrame(
-            {"reserve": self.reserves, "sd": self.reserve_sd, "cov": cov}, index=self.origins
+            {"reserve": self.reserves, "sd": self.reserve_sd, "cov": cov},
+            index=self.origins,
         )
         frame.loc["Total"] = [self.total_reserve, self.total_sd, self.total_cov]
         return frame
 
 
-def poisson_irls(X: np.ndarray, y: np.ndarray, max_iter: int = 50, tol: float = 1e-10) -> np.ndarray:
+def poisson_irls(
+    X: np.ndarray, y: np.ndarray, max_iter: int = 50, tol: float = 1e-10
+) -> np.ndarray:
     """Poisson log-link GLM coefficients by iteratively reweighted least squares."""
     X = np.asarray(X, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -67,7 +76,9 @@ def poisson_irls(X: np.ndarray, y: np.ndarray, max_iter: int = 50, tol: float = 
     return beta
 
 
-def _design_matrix(n_origin: int, n_dev: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _design_matrix(
+    n_origin: int, n_dev: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     i, j = np.indices((n_origin, n_dev))
     i, j = i.ravel(), j.ravel()
     X = np.zeros((n_origin * n_dev, 1 + (n_origin - 1) + (n_dev - 1)))

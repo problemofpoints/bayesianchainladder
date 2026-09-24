@@ -324,9 +324,17 @@ The one-year Claims Development Result re-reserves each simulated next diagonal 
 
 def build(out_dir: pathlib.Path) -> pathlib.Path:
     nb = nbf.v4.new_notebook()
-    nb.metadata["kernelspec"] = {"name": "python3", "display_name": "Python 3", "language": "python"}
+    nb.metadata["kernelspec"] = {
+        "name": "python3",
+        "display_name": "Python 3",
+        "language": "python",
+    }
     nb.cells = [
-        nbf.v4.new_markdown_cell(src) if kind == "markdown" else nbf.v4.new_code_cell(src)
+        (
+            nbf.v4.new_markdown_cell(src)
+            if kind == "markdown"
+            else nbf.v4.new_code_cell(src)
+        )
         for kind, src in CELLS
     ]
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -336,5 +344,9 @@ def build(out_dir: pathlib.Path) -> pathlib.Path:
 
 
 if __name__ == "__main__":
-    target = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(__file__).parent
+    target = (
+        pathlib.Path(sys.argv[1])
+        if len(sys.argv) > 1
+        else pathlib.Path(__file__).parent
+    )
     print(build(target))

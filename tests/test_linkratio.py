@@ -33,7 +33,13 @@ def test_draw_with_moments_matches_targets():
     assert neg.mean() == pytest.approx(-5.0, abs=0.2)  # Normal fallback
     zero_sd = draw_with_moments(np.array([3.0]), np.array([0.0]), "gamma", rng)
     assert zero_sd[0] == 3.0
-    np_draw = draw_with_moments(np.array([1.0, 2.0]), np.array([0.5, 0.5]), "nonparametric", rng, resid=np.array([2.0, -2.0]))
+    np_draw = draw_with_moments(
+        np.array([1.0, 2.0]),
+        np.array([0.5, 0.5]),
+        "nonparametric",
+        rng,
+        resid=np.array([2.0, -2.0]),
+    )
     np.testing.assert_allclose(np_draw, [2.0, 1.0])
 
 
@@ -62,9 +68,14 @@ def test_mack_bootstrap_matches_analytic(genins):
 @pytest.mark.parametrize("forecast_dist", ["nonparametric", "gamma", "lognormal"])
 def test_all_distribution_combinations_run(genins, bootstrap_dist, forecast_dist):
     model = MackBootstrap(
-        n_sims=300, bootstrap_dist=bootstrap_dist, forecast_dist=forecast_dist, random_seed=1
+        n_sims=300,
+        bootstrap_dist=bootstrap_dist,
+        forecast_dist=forecast_dist,
+        random_seed=1,
     ).fit(genins)
-    assert model.total_summary().total_reserve_mean == pytest.approx(CL_RESERVE, rel=0.08)
+    assert model.total_summary().total_reserve_mean == pytest.approx(
+        CL_RESERVE, rel=0.08
+    )
 
 
 def test_invalid_distribution_raises():
@@ -79,7 +90,10 @@ def test_drop_and_process_sigma(genins):
     no_process = MackBootstrap(
         n_sims=1500, random_seed=3, process_sigma=np.zeros(9)
     ).fit(genins)
-    assert no_process.total_summary().total_reserve_stddev < base.total_summary().total_reserve_stddev
+    assert (
+        no_process.total_summary().total_reserve_stddev
+        < base.total_summary().total_reserve_stddev
+    )
     assert no_process.total_summary().total_reserve_mean == pytest.approx(
         base.total_summary().total_reserve_mean, rel=0.03
     )
@@ -107,10 +121,14 @@ def test_mack_bootstrap_handles_negative_incrementals():
 def test_bayesian_mack_recovers_chain_ladder_factors(genins):
     from bayesianchainladder.linkratio import BayesianMackChainLadder
 
-    model = BayesianMackChainLadder(draws=300, tune=300, chains=1, random_seed=42).fit(genins)
+    model = BayesianMackChainLadder(draws=300, tune=300, chains=1, random_seed=42).fit(
+        genins
+    )
     assert model.idata is not None
     post_mean = model.factor_draws_.mean(axis=0)
     np.testing.assert_allclose(post_mean, model.factors_, rtol=0.02)
-    assert model.total_summary().total_reserve_mean == pytest.approx(CL_RESERVE, rel=0.05)
+    assert model.total_summary().total_reserve_mean == pytest.approx(
+        CL_RESERVE, rel=0.05
+    )
     assert model.full_cumulative_posterior_.shape[:2] == (10, 10)
     assert model.full_cumulative_posterior_.shape[2] == model.factor_draws_.shape[0]
