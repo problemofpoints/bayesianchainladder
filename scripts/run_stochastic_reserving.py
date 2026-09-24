@@ -890,12 +890,17 @@ def _run_bz(loss_tri, n_sims=5000, random_seed=None, formula="C(origin)+C(develo
     # true zero increment as an unobserved (future) cell.
     observed = np.isfinite(np.asarray(loss_tri.values, dtype=float)[0, 0])
     incr = np.asarray(loss_tri.cum_to_incr().values, dtype=float)[0, 0]
-    if np.isfinite(incr).sum() != observed.sum():
+    # Per-cell check: an observed cell whose incremental is NaN is a zero
+    # increment. A count comparison would not do — cum_to_incr() can also
+    # emit a finite value at a cell that is NaN in the cumulative triangle
+    # (a hole on the latest diagonal), and the two miscounts cancel.
+    zero_incr = observed & ~np.isfinite(incr)
+    if zero_incr.any():
         raise ValueError(
             "bz requires strictly positive incremental losses (log-linear model); "
-            "found an observed cell with no finite incremental — chainladder "
-            "stores a zero increment as NaN, and a zero increment cannot be "
-            "log-transformed"
+            f"found {int(zero_incr.sum())} observed cell(s) with no finite "
+            "incremental — chainladder stores a zero increment as NaN, and a "
+            "zero increment cannot be log-transformed"
         )
     if (incr[observed] <= 0).any():
         raise ValueError(

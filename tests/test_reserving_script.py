@@ -116,6 +116,49 @@ class TestBarnettZehnwirth:
         with pytest.raises(ValueError, match="positive incremental"):
             rs._run_bz(tri, n_sims=10, random_seed=0)
 
+    def test_zero_increment_caught_when_finite_counts_cancel(self, rs):
+        """The guard must be per-cell, not an aggregate count.
+
+        A hole on the latest diagonal makes chainladder's cum_to_incr() emit a
+        finite value at a cell whose cumulative is NaN, while a genuine zero
+        increment elsewhere becomes NaN. The finite counts then match, so an
+        aggregate comparison lets the zero increment through to the fit.
+        """
+        origins = pd.period_range("2020Q1", "2021Q4", freq="Q")
+        pattern = [0.30, 0.55, 0.72, 0.84, 0.91, 0.96, 0.99, 1.00]
+        rows = []
+        for i, origin in enumerate(origins):
+            for j, frac in enumerate(pattern):
+                valuation = (origin + j).end_time.normalize()
+                if valuation > pd.Timestamp("2021-12-31"):
+                    continue
+                if i == 0 and j == 7:
+                    continue  # hole on the latest diagonal
+                if i == 1 and j == 5:
+                    frac = pattern[4]  # genuine zero increment
+                rows.append(
+                    [
+                        origin.start_time.strftime("%Y-%m-%d"),
+                        valuation.strftime("%Y-%m-%d"),
+                        round(1000.0 * (1 + 0.05 * i) * frac, 2),
+                    ]
+                )
+        data = pd.DataFrame(rows, columns=["origin", "valuation", "paid"])
+        tri = cl.Triangle(
+            data,
+            origin="origin",
+            development="valuation",
+            columns="paid",
+            cumulative=True,
+        )
+        cum = np.asarray(tri.values, dtype=float)[0, 0]
+        incr = np.asarray(tri.cum_to_incr().values, dtype=float)[0, 0]
+        assert np.isfinite(incr).sum() == np.isfinite(cum).sum()  # counts cancel
+        assert (np.isfinite(cum) & ~np.isfinite(incr)).sum() == 1  # the zero cell
+
+        with pytest.raises(ValueError, match="positive incremental"):
+            rs._run_bz(tri, n_sims=10, random_seed=0)
+
     def test_cli_accepts_bz(self, rs):
         args = rs.parse_args(["--input", "x.csv", "--methods", "bz"])
         assert args.methods == ["bz"]
