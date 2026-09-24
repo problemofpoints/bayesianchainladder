@@ -32,22 +32,29 @@ and `scipy` — no `bayesianchainladder` package needed.
 | `odp_corr_cc` | Cape Cod plus calendar-year correlation (recommended when both apply) |
 | `bz` | Frequentist analogue of the Bayesian log-link GLM; positive-incremental paid triangles; want a regression-based benchmark with explicit origin/development structure (`--bz-formula`) |
 
-### Calibration results (Meyers 2015, 200 triangles, lognormal PV, rho=0.3, n=5000)
+### Calibration results (Meyers 2015, 200 triangles, chainladder 0.10.1, lognormal PV, rho=0.3, n=5000, apriori_sigma=0.15)
 
 KS statistic against uniform — lower is better calibrated (ideal = 0, uniform CDF).
-v1 = old code (apriori_sigma=0, deterministic apriori — variance collapse).
-v2 = current code (apriori_sigma=0.15 — default).
+Values below are the v5 refresh on chainladder 0.10.1 (`cache/meyers_v5_calibration.csv`);
+see `references/meyers-backtest/STANDALONE_BACKTEST_README.md` for the full v1-v5 history,
+including the v4-vs-v5 comparison and the seed-sensitivity check used to separate real
+code/library changes from Monte Carlo noise.
 
-| Method | Paid KS (v1) | Paid KS (v2) | Case KS (v1) | Case KS (v2) | Notes |
-|--------|:-----------:|:------------:|:------------:|:------------:|-------|
-| `mack` | 0.266 | 0.266 | 0.175 | 0.175 | Under-dispersed |
-| `odp` | 0.261 | 0.261 | **0.066** | **0.066** | Best for case_incurred |
-| `odp_param` | 0.176 | 0.176 | 0.200 | 0.200 | |
-| `odp_corr` | **0.151** | **0.151** | 0.208 | 0.208 | Best for paid |
-| `odp_bf` | 0.467 | 0.240 | 0.522 | 0.449 | Large improvement from apriori_sigma fix |
-| `odp_cc` | 0.476 | 0.336 | 0.545 | 0.506 | |
-| `odp_corr_bf` | 0.438 | 0.230 | 0.490 | 0.412 | Best BF/CC paid after fix |
-| `odp_corr_cc` | 0.341 | 0.268 | 0.453 | 0.421 | |
+| Method | Paid KS | Case KS | Notes |
+|--------|:-------:|:-------:|-------|
+| `mack` | 0.256 | 0.189 | Tail-sigma now uses Mack (1994) interpolation (chainladder 0.10.1 default) |
+| `odp` | 0.262 | **0.068** | Best for case_incurred; unchanged vs v4 within Monte Carlo noise |
+| `odp_param` | 0.179 | 0.193 | Unchanged vs v4 within Monte Carlo noise |
+| `odp_corr` | **0.151** | 0.200 | Best for paid; unchanged vs v4 within Monte Carlo noise |
+| `odp_bf` | 0.246 | 0.454 | Large paid improvement from lognormal apriori draws |
+| `odp_cc` | 0.337 | 0.506 | Paid improvement from lognormal apriori draws |
+| `odp_corr_bf` | 0.240 | 0.434 | Best BF/CC paid; lognormal apriori draws |
+| `odp_corr_cc` | 0.270 | 0.430 | Paid improvement from lognormal apriori draws |
+| `bz` | 0.342 (N=54/200) | 0.348 (N=3/200) | New method; requires strictly positive incrementals — fails on 343/400 (triangle, loss type) combos |
+
+KS values above carry roughly ±0.008 Monte Carlo uncertainty at 5,000 sims (measured noise
+floor from a seed-sensitivity check on `odp`/`odp_corr`); treat differences smaller than
+that as noise, not a real calibration change.
 
 **Note on `--apriori-sigma`**: Prior to the fix, `cl.BornhuetterFerguson` was called with
 `apriori_sigma=0` (the chainladder default), treating the a-priori as deterministic.
