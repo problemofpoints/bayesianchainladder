@@ -70,3 +70,32 @@ class TestMack:
     def test_cli_default_is_mack(self, rs):
         args = rs.parse_args(["--input", "x.csv"])
         assert args.mack_sigma_interpolation == "mack"
+
+
+class TestBarnettZehnwirth:
+    def test_returns_positive_ibnr_samples_close_to_chain_ladder(self, rs):
+        tri = cl.load_sample("genins")
+        samples = rs._run_bz(tri, n_sims=400, random_seed=7)
+
+        assert samples.shape == (10, 400)
+        assert np.isfinite(samples).all()
+        assert (samples >= 0).all()
+        assert (samples[0] == 0).all()  # first origin is fully developed
+        assert (samples[1:] > 0).all()
+
+        cl_ult = cl.Chainladder().fit(cl.Development().fit_transform(tri)).ultimate_
+        cl_ibnr = float(np.nansum(cl_ult.values)) - float(
+            np.nansum(tri.latest_diagonal.values)
+        )
+        bz_ibnr = float(samples.sum(axis=0).mean())
+        assert abs(bz_ibnr - cl_ibnr) / cl_ibnr < 0.25
+
+    def test_rejects_non_positive_incrementals(self, rs):
+        with pytest.raises(ValueError, match="positive incremental"):
+            rs._run_bz(cl.load_sample("raa"), n_sims=10, random_seed=0)
+
+    def test_cli_accepts_bz(self, rs):
+        args = rs.parse_args(["--input", "x.csv", "--methods", "bz"])
+        assert args.methods == ["bz"]
+        assert args.bz_formula == "C(origin)+C(development)"
+        assert "bz" in rs.parse_args(["--input", "x.csv"]).methods

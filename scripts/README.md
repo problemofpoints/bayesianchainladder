@@ -1,6 +1,6 @@
 # Stochastic Reserving Benchmark Script
 
-Self-contained Python script that runs eight stochastic reserving methods on a
+Self-contained Python script that runs nine stochastic reserving methods on a
 long-format triangle dataset. Requires only `chainladder`, `pandas`, `numpy`,
 and `scipy` — no `bayesianchainladder` package needed.
 
@@ -16,6 +16,7 @@ and `scipy` — no `bayesianchainladder` package needed.
 | `odp_cc` | Parametric independent bootstrap (rho=0) + Cape Cod — lognormal process variance | yes |
 | `odp_corr_bf` | Parametric correlated bootstrap (rho=0.3) + Bornhuetter-Ferguson — lognormal process variance | yes |
 | `odp_corr_cc` | Parametric correlated bootstrap (rho=0.3) + Cape Cod — lognormal process variance | yes |
+| `bz` | Barnett-Zehnwirth probabilistic trend family (`cl.BarnettZehnwirth`) — OLS on log incrementals, coefficient-normal + lognormal process simulation; needs strictly positive incrementals | |
 
 ### When to use each method
 
@@ -29,6 +30,7 @@ and `scipy` — no `bayesianchainladder` package needed.
 | `odp_cc` | Premium is reliable; want Cape Cod ELR from the data itself; well-developed triangles |
 | `odp_corr_bf` | BF credibility plus calendar-year correlation (recommended when both apply) |
 | `odp_corr_cc` | Cape Cod plus calendar-year correlation (recommended when both apply) |
+| `bz` | Frequentist analogue of the Bayesian log-link GLM; positive-incremental paid triangles; want a regression-based benchmark with explicit origin/development structure (`--bz-formula`) |
 
 ### Calibration results (Meyers 2015, 200 triangles, lognormal PV, rho=0.3, n=5000)
 
@@ -140,7 +142,7 @@ One row per `(lob, group_id, loss_type, method, accident_year)` plus a `"Total"`
 python run_stochastic_reserving.py \
   --input data.csv \
   --output results.csv \
-  --methods mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc \
+  --methods mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc bz \
   --loss-col both \
   --n-sims 5000 \
   --rho 0.3 \
@@ -156,8 +158,8 @@ python run_stochastic_reserving.py \
 --input FILE          Input CSV path (required)
 --output FILE         Output CSV path (default: results.csv)
 --methods ...         Space-separated list of methods to run.
-                        Default: mack odp odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc
-                        All 8: mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc
+                        Default: mack odp odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc bz
+                        All 9: mack odp odp_param odp_corr odp_bf odp_cc odp_corr_bf odp_corr_cc bz
 --loss-col VALUE      Loss column(s) to model (default: paid).
                         Single column:    --loss-col paid
                                           --loss-col case_incurred
@@ -174,6 +176,8 @@ python run_stochastic_reserving.py \
                         Choices: lognormal (default), odp, gamma, negbin
 --residual-dist DIST  Residual distribution for ODP path only (default: normal)
                         Choices: normal (default), t, skewt
+--bz-formula FORMULA  Patsy formula for bz over origin/development
+                        (default: C(origin)+C(development))
 --n-jobs INT          Parallel workers; >1 uses multiprocessing.Pool (default: 1)
 --random-seed INT     Random seed for reproducibility
 --save-samples PATH   Write parquet of total-IBNR samples per simulation (for
