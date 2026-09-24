@@ -221,7 +221,7 @@ scaled = boot.scale_to_target(target_ultimates, method="multiplicative")
 | Influential link ratios | `link_ratio_sensitivity`, `top_influential` | England, *Modus Operandi* |
 | Analytic RMSEP oracles | `mack_analytic_rmsep`, `odp_analytic_rmsep` | England & Verrall (2002) |
 | Scaling / incurred-to-paid | `scale_to_target`, `incurred_to_paid` | England, *Modus Operandi* |
-| Sample data | `load_england_sample("taylor_ashe" | "liability")` | England's repository |
+| Sample data | `load_england_sample("taylor_ashe")` / `load_england_sample("liability")` | England's repository |
 
 A worked 15-step example is in `docs/notebooks/modus_operandi.ipynb`. These
 features are adapted from Peter England's
