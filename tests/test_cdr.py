@@ -92,6 +92,17 @@ def test_drop_changes_period_zero_ultimate(odp):
     )
 
 
+def test_drop_propagates_to_future_period_masks(odp):
+    """``drop`` must also affect the t >= 1 volume-weighted refits, not just
+    the deterministic period-0 ultimate."""
+    base = claims_development_result(odp)
+    dropped = claims_development_result(odp, drop=[("2003", 72)])
+    assert not np.allclose(
+        base.ultimates.isel(future_period=1).values,
+        dropped.ultimates.isel(future_period=1).values,
+    )
+
+
 def test_requires_full_posterior():
     mack = MackChainLadder().fit(cl.load_sample("raa"))
     with pytest.raises(ValueError, match="per-cell"):

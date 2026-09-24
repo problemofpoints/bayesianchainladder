@@ -2,6 +2,7 @@
 
 import chainladder as cl
 import numpy as np
+import pandas as pd
 import pytest
 
 from bayesianchainladder._triangle_ops import (
@@ -106,3 +107,34 @@ def test_link_ratio_sigma_matches_mack_except_last(genins):
     assert sigma[-1] == pytest.approx(min(sigma[-2], sigma[-3]))
     assert resid.shape == (10, 9)
     assert np.isnan(resid[9, 0]) and np.isfinite(resid[0, 0])
+
+
+def test_cumulative_array_rejects_subannual_origin_grain():
+    # cl.load_sample("quarterly") has an annual origin grain (only its
+    # development grain is quarterly), so build a triangle with quarterly
+    # origins directly: _extract_period_value collapses each origin to its
+    # calendar year, producing duplicate integer labels.
+    rows = []
+    origins = pd.period_range("2020Q1", periods=4, freq="Q")
+    for oi, origin in enumerate(origins):
+        for d in range(4 - oi):
+            eval_period = origin + d
+            rows.append(
+                {
+                    "origin": origin.to_timestamp(),
+                    "dev": (d + 1) * 3,
+                    "value": 100.0 + oi * 10 + d * 5,
+                    "dev_date": eval_period.to_timestamp(how="end"),
+                }
+            )
+    df = pd.DataFrame(rows)
+    tri = cl.Triangle(
+        df,
+        origin="origin",
+        development="dev_date",
+        columns=["value"],
+        cumulative=True,
+    )
+    assert tri.origin_grain == "Q"
+    with pytest.raises(ValueError, match="annual origin grain"):
+        cumulative_array(tri)

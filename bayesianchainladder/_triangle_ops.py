@@ -28,6 +28,11 @@ def cumulative_array(triangle) -> tuple[np.ndarray, list[int], list[int]]:
             "cumulative_array expects a single-index, single-column triangle"
         )
     origins = [_extract_period_value(o) for o in triangle.origin]
+    if len(set(origins)) != len(origins):
+        raise ValueError(
+            "origin labels are not unique after conversion to integers; "
+            "these primitives require an annual origin grain"
+        )
     devs = [int(d) for d in triangle.development]
     return vals[0, 0].copy(), origins, devs
 

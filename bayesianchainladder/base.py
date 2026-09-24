@@ -260,7 +260,13 @@ class BaseStochasticReserve(ABC):
         if output == "reserves":
             data = res
         elif output == "ultimates":
-            paid = self._paid_to_date().reindex(origins).fillna(0.0).values
+            paid_series = self._paid_to_date()
+            missing = [o for o in origins if o not in paid_series.index]
+            if missing:
+                raise ValueError(
+                    f"triangle is missing paid-to-date for origin(s) {missing}"
+                )
+            paid = paid_series.reindex(origins).values
             data = res + paid[:, None]
         else:
             raise ValueError("output must be 'reserves' or 'ultimates'")
@@ -456,13 +462,11 @@ def incurred_to_paid(model: BaseStochasticReserve, paid_triangle) -> ReserveSamp
     origins = list(model.reserves_posterior_.coords["origin"].values)
     latest_incurred = model._paid_to_date().reindex(origins).fillna(0.0).values
     paid_df = triangle_to_dataframe(paid_triangle)
-    latest_paid = (
-        paid_df.groupby("origin", observed=True)["incremental"]
-        .sum()
-        .reindex(origins)
-        .fillna(0.0)
-        .values
-    )
+    latest_paid_series = paid_df.groupby("origin", observed=True)["incremental"].sum()
+    missing = [o for o in origins if o not in latest_paid_series.index]
+    if missing:
+        raise ValueError(f"paid triangle is missing origin(s) {missing}")
+    latest_paid = latest_paid_series.reindex(origins).values
     res = model.reserves_posterior_.transpose("origin", "sample").values
     reserves = res + (latest_incurred - latest_paid)[:, None]
     return ReserveSamples(

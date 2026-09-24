@@ -733,10 +733,17 @@ class TestFullCumulativePosteriorWrappers:
             # ultimates from the full posterior agree with the wrapper's own IBNR
             derived = model._reserves_from_full_posterior()
             np.testing.assert_allclose(
-                derived.mean("sample").values,
-                model.reserves_posterior_.mean("sample").values,
-                rtol=0.02,
+                derived.transpose("origin", "sample").values,
+                model.reserves_posterior_.transpose("origin", "sample").values,
+                rtol=1e-6,
+                atol=1e-6,
             )
+            # per-cell process noise: future incremental cells for the same
+            # origin must vary independently across simulations, not share a
+            # deterministic emergence-pattern back-fill.
+            incr = model.incremental_posterior()
+            ratio = incr.sel(origin=2010, dev=24) / incr.sel(origin=2010, dev=36)
+            assert float(ratio.std()) > 1e-6
 
     def test_mack_wrapper_has_no_full_posterior(self, raa_triangle):
         from bayesianchainladder.bootstrap import MackChainLadder

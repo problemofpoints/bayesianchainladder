@@ -346,7 +346,8 @@ def _full_posterior_from_chainladder(model_fitted, triangle):
     fixed single-draw attributes, not re-evaluated properties)::
 
         ultimate_pre = ultimate_ - process_variance_[..., -1:]   # undo the mutation
-        full_pre     = _get_full_triangle(X_, ultimate_pre)      # same emergence
+        full_pre     = _get_full_triangle(X_, ultimate_pre, X_.is_cumulative)
+                                                                  # same emergence
                                                                   # pattern, pre-noise
         obj          = full_pre + process_variance_              # the real noisy path
 
@@ -385,7 +386,9 @@ def _full_posterior_from_chainladder(model_fitted, triangle):
     process_var = getattr(model_fitted, "process_variance_", None)
     if process_var is not None:
         ultimate_pre = model_fitted.ultimate_ - process_var.iloc[..., -1:]
-        full_pre = _get_full_triangle(model_fitted.X_, ultimate_pre)
+        full_pre = _get_full_triangle(
+            model_fitted.X_, ultimate_pre, model_fitted.X_.is_cumulative
+        )
         obj = full_pre + process_var
         full = np.asarray(obj.values, dtype=float)[:, 0, :, :n_dev]
     else:
@@ -637,7 +640,13 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
     hat_adj : bool, default True
         Apply Shapland's hat-matrix adjustment to standardised residuals.
     drop, drop_high, drop_low, drop_valuation
-        Forwarded to ``chainladder.development.Development``.
+        Forwarded to ``chainladder.development.Development`` to exclude
+        specific (origin, development) link ratios from the fitted
+        expectation used for residuals and scale estimation; the
+        per-resample development factors are unrestricted (unlike
+        ``MackBootstrap``, ``claims_development_result``,
+        ``mack_analytic_rmsep`` and ``link_ratio_sensitivity``, where
+        ``drop`` changes the projection factors).
     random_state : int or numpy.random.RandomState, optional
         Seed/state for reproducibility.
     min_fitted_value : float, default 1.0
@@ -649,6 +658,12 @@ class CorrelatedBootstrapODPSample(DevelopmentBase):
         ``"nonconstant"`` computes a per-development-period dispersion
         ``scale_by_dev_`` from standardized Pearson residuals following
         England & Verrall's carry-forward and min-of-two conventions.
+        ``"nonconstant"`` changes the process-variance (forecast) stage
+        only and is numerically identical to
+        ``scale="constant", process_scale=sampler.scale_by_dev_``; the
+        resampling stage still draws from the globally pooled residuals
+        (England's column-wise rescaling of the residual pool itself is
+        not implemented).
     process_scale : array-like of shape (n_dev,), optional
         User-supplied per-development-period dispersion to use at the
         process-variance (forecast) stage instead of ``scale_by_dev_``.
@@ -1177,14 +1192,24 @@ class CorrelatedBootstrapChainLadder(BaseStochasticReserve):
         Dispersion assumption for process risk, forwarded to
         :class:`CorrelatedBootstrapODPSample`. ``"nonconstant"`` uses a
         per-development-period dispersion derived from standardized Pearson
-        residuals instead of the pooled scale.
+        residuals instead of the pooled scale. It changes the
+        process-variance (forecast) stage only and is numerically identical
+        to ``scale="constant", process_scale=sampler.scale_by_dev_``; the
+        resampling stage still draws from the globally pooled residuals
+        (England's column-wise rescaling of the residual pool itself is
+        not implemented).
     process_scale : array-like of shape (n_dev,), optional
         User-supplied per-development-period dispersion for the
         process-variance (forecast) stage, overriding ``scale_by_dev_``.
     drop : optional
         Forwarded to :class:`CorrelatedBootstrapODPSample` /
         ``chainladder.development.Development`` to exclude specific
-        (origin, development) link ratios from the LDF fit.
+        (origin, development) link ratios from the fitted expectation used
+        for residuals and scale estimation; the per-resample development
+        factors are unrestricted (unlike ``MackBootstrap``,
+        ``claims_development_result``, ``mack_analytic_rmsep`` and
+        ``link_ratio_sensitivity``, where ``drop`` changes the projection
+        factors).
 
     Attributes
     ----------

@@ -207,6 +207,8 @@ rm = cost_of_capital_risk_margin(cdr.summary().query("origin == 'Total' and futu
                                  profile / profile[0], coc_rate=0.06, discount_rate=0.03)
 
 # Scale to booked ultimates, preserving CoV
+paid = boot._paid_to_date().reindex(boot.reserves_posterior_.origin.values)
+target_ultimates = paid + 1.1 * boot.ibnr_["mean"]   # e.g. booked ultimates
 scaled = boot.scale_to_target(target_ultimates, method="multiplicative")
 ```
 
@@ -215,7 +217,7 @@ scaled = boot.scale_to_target(target_ultimates, method="multiplicative")
 | Mack / NegBin bootstraps (nonparametric, Gamma, Lognormal) | `MackBootstrap`, `NegativeBinomialBootstrap` | England & Verrall (2002, 2006) |
 | Bayesian link-ratio model | `BayesianMackChainLadder`, `build_link_ratio_model` | England & Verrall (2006) §6 |
 | Quasi-Poisson likelihood with per-dev dispersion | `build_quasi_poisson_model` | England & Verrall (2006) |
-| Non-constant scale, user-defined process variance | `CorrelatedBootstrapChainLadder(scale=, process_scale=)` | England & Verrall (2006) |
+| Non-constant scale, user-defined process variance | `CorrelatedBootstrapChainLadder(scale=, process_scale=)` — `scale="nonconstant"` changes the process-variance (forecast) stage only, equivalent to `scale="constant", process_scale=sampler.scale_by_dev_`; the resampling stage still uses the globally pooled residuals | England & Verrall (2006) |
 | One-year Claims Development Result | `claims_development_result` | England, Verrall & Wüthrich (2019) |
 | Discounting, capital profiles, cost-of-capital margin, VaR/TVaR/PHT | `bayesianchainladder.riskmeasures` | England, Verrall & Wüthrich (2019) |
 | Influential link ratios | `link_ratio_sensitivity`, `top_influential` | England, *Modus Operandi* |

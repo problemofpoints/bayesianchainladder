@@ -451,3 +451,14 @@ class TestScalingAndIncurredToPaid:
         np.testing.assert_allclose(
             converted.ibnr_["std"].values, model.ibnr_["std"].values, rtol=1e-9
         )
+
+    def test_incurred_to_paid_raises_on_missing_origin(self):
+        from bayesianchainladder.bootstrap import BootstrapODPChainLadder
+
+        clrd = cl.load_sample("clrd").groupby("LOB").sum().loc["wkcomp"]
+        incurred = clrd["IncurLoss"]
+        paid = clrd["CumPaidLoss"]
+        paid_missing_latest = paid[paid.origin < paid.origin.max()]
+        model = BootstrapODPChainLadder(n_sims=300, random_seed=8).fit(incurred)
+        with pytest.raises(ValueError, match="missing origin"):
+            incurred_to_paid(model, paid_missing_latest)
