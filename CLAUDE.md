@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-uv is required (`requires-python = ">=3.11,<3.13"`). Project metadata uses PEP 621 (`[project]`) with PEP 735 dev deps (`[dependency-groups]`); the build backend is `hatchling`.
+uv is required (`requires-python = ">=3.11,<3.13"`). Project metadata uses PEP 621 (`[project]`) with PEP 735 dev deps (`[dependency-groups]`); the build backend is `hatchling`. `chainladder>=0.10.1` is required (integer-month development ages, Mack sigma interpolation, lognormal BF/CC aprioris, BarnettZehnwirth).
 
 ```bash
 uv sync                                       # install package + dev deps (creates .venv, regenerates uv.lock if needed)
@@ -28,6 +28,8 @@ This package layers a scikit-learn-style estimator API on top of Bambi/PyMC for 
 
 1. **`BayesianChainLadderGLM`** — Bambi-based cross-classified chain ladder GLM. Formula-driven (Patsy/Bambi), supports `negativebinomial` / `poisson` / `gamma` / `gaussian` / `wald` (inverse-Gaussian) families, optional `C(calendar)` effects, and an optional log-exposure offset. The standard model is `log(μ_kj) = intercept + α_k + β_j [+ γ_{k+j-1}] [+ log(exposure)]`.
 2. **`BayesianCSR`** — Glenn Meyers' (CAS Monograph 1, 2015) Changing Settlement Rate model written directly in PyMC. Lognormal on **cumulative paid loss** with log-premium offset, plus a geometric `speedup[origin] = (1-gamma)^i` factor allowing settlement-rate drift across accident years. Premium must be supplied (`premium_triangle=` or `premium_value=`).
+
+`scripts/run_stochastic_reserving.py` is a standalone frequentist benchmark (no `bayesianchainladder` import) with nine methods including `bz` (Barnett-Zehnwirth). Its calibration back-tests live in `references/meyers-backtest/`: `16_build_meyers_long.py` (needs `reservetestr`, not a declared dependency) and `24_build_clrd2025_long.py` (needs only chainladder) produce the long CSVs; `22_final_calibration.py --dataset {meyers,clrd2025}` computes implied-percentile calibration. Results and figures are gitignored; the tables are copied into `STANDALONE_BACKTEST_README.md`.
 
 Both estimators expose the same fitted surface: `.idata`, `.ibnr_`, `.ultimate_`, `.reserves_posterior_`, `.summary()`, `.sample_reserves()`. The GLM additionally supports `.build_model()` + `.sample_prior_predictive()` for prior predictive checks before committing to a full fit (see [bayesianchainladder/estimators.py:700-876](bayesianchainladder/estimators.py#L700-L876)).
 
