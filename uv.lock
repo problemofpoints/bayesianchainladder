@@ -160,11 +160,11 @@ dev = [
 requires-dist = [
     { name = "arviz", specifier = ">=0.17.0" },
     { name = "bambi", specifier = ">=0.13.0" },
-    { name = "chainladder", specifier = ">=0.8.0" },
+    { name = "chainladder", specifier = ">=0.10.1" },
     { name = "formulae", specifier = ">=0.5.0" },
     { name = "ipython", specifier = ">=8.0.0" },
     { name = "matplotlib", specifier = ">=3.7.0" },
-    { name = "numpy", specifier = ">=1.24.0" },
+    { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "pymc", specifier = ">=5.10.0" },
     { name = "xarray", specifier = ">=2023.1.0" },
@@ -219,20 +219,20 @@ wheels = [
 
 [[package]]
 name = "chainladder"
-version = "0.9.1"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dill" },
     { name = "matplotlib" },
-    { name = "numba" },
+    { name = "numpy" },
     { name = "pandas" },
     { name = "patsy" },
     { name = "scikit-learn" },
     { name = "sparse" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9a/4b/a54fd143a0960eb5090225d6d1bbf04e7bb95bc3f49a3e9baf19a457a687/chainladder-0.9.1.tar.gz", hash = "sha256:34a3972bb5ec4b697e583c92acbf3686d0512a500ccbde5d4dc790251e54864c", size = 1295113, upload-time = "2026-01-30T19:40:56.948Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/81/2b38e9a4a8f12c20204f30fb4fa91fa00c0f41b80435863ba59e91e722db/chainladder-0.10.1.tar.gz", hash = "sha256:5346c942dcaa9cd4b5118c0fcb2db298de615eb066cde7a31f18b439c0e1fc15", size = 2155705, upload-time = "2026-09-15T23:34:55.697Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c5/89/3f1a089f37110957802a669e4d9b5a8362289aec19ea6d126f6f589111c8/chainladder-0.9.1-py3-none-any.whl", hash = "sha256:c85bcbe44ac440a88bca9cdec1728941a7756bede77a56aca5b2221275531af2", size = 1374555, upload-time = "2026-01-30T19:40:55.264Z" },
+    { url = "https://files.pythonhosted.org/packages/db/df/c0300f9229996e1f3ef8147c8239e0b72302a9e7ff3d21fd5c0a38d3c65c/chainladder-0.10.1-py3-none-any.whl", hash = "sha256:ca1181d80ef9df0668d0dec5d3d9442c03c07cba142d76a286cc3a9700922175", size = 2253761, upload-time = "2026-09-15T23:34:53.896Z" },
 ]
 
 [[package]]
