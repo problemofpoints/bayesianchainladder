@@ -326,11 +326,17 @@ chain-ladder point estimates closely, as expected.
 `BayesianMackChainLadder(model="negbin")` is the analogue of England's
 Negative Binomial MCMC model, whose output his EV 2006 notebook also does
 not show, so there is no published figure to compare its own posterior to
-directly. Its total mean comes out about 6% below the Mack bootstrap
+directly. Its total mean comes out several percent below the Mack bootstrap
 benchmark; this is a genuine model difference, not a discrepancy to
-reconcile — the negbin variant uses a log-log link and an `f(f-1)` variance
-weighting that pull the early development factors down (posterior mean
-about 3.453 on the first ratio versus the chain ladder's 3.491), which
+reconcile. The per-cell likelihood variances of the two variants are
+identical: `link_ratio_sigma` divides the residuals by `sqrt(f (f - 1))`
+when estimating sigma and `build_link_ratio_model` multiplies it back, so
+the `f (f - 1)` factor cancels. What differs is the parameterisation. The
+negbin variant places its Normal prior on `log(log f)` and maps it back
+through `exp(exp(.))`, which induces a different, asymmetric prior on the
+factors and a different Jensen shift in the posterior mean than the Mack
+variant's `exp(.)` map; the table above shows the resulting posterior mean
+factors sitting slightly below the Mack variant's on every ratio, which
 compounds into a lower total reserve.
 """)
 

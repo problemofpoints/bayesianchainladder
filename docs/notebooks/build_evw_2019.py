@@ -310,9 +310,10 @@ md(
     "### Is the +3% on the one-year VaR a calculation difference? (100,000-simulation check)"
 )
 code("""
-# The one-year VaR 99.5% is the opening capital for every cost-of-capital
-# margin below, so it is worth checking that its gap to England is noise
-# rather than method. Three pieces of evidence:
+# The one-year VaR 99.5% is the opening capital for the cost-of-capital
+# margins in Tables 8 and 9 and the solved-level columns of Tables 12 and 13,
+# so it is worth checking that its gap to England is noise rather than
+# method. Three pieces of evidence:
 #
 # 1. England's own code, re-run with his seed 101, reproduces his 4,771,636
 #    exactly; with seeds 1, 2, 3 it gives 4,879,375 / 4,871,765 / 5,021,002,
@@ -343,7 +344,7 @@ display(
 # Monte Carlo spread of a 10,000-simulation VaR 99.5%, from 200 subsamples of the 100k run
 rng = np.random.default_rng(0)
 sub = np.array(
-    [s.mean() - np.quantile(s, 0.005) for s in (rng.choice(cdr1_100k, 10_000, replace=False) for _ in range(200))]
+    [s.mean() - np.quantile(s, 0.005) for s in (rng.choice(cdr1_100k, 10_000, replace=True) for _ in range(200))]
 )
 print(
     f"VaR 99.5% at n=10,000: mean {sub.mean():,.0f}, SE {sub.std():,.0f} ({sub.std() / sub.mean() * 100:.1f}%), "
@@ -360,10 +361,14 @@ well under 1% on the one-year CDR standard deviation, its 99.5% VaR and its
 1% and 5% quantiles, so the bootstrap, the actuary-in-the-box re-reserving
 and the tail are computed the same way. A 99.5% VaR from 10,000 simulations
 rests on about 50 order statistics and has a relative standard error of
-roughly 1.6%, so two such runs routinely differ by 3%; England's published
-value and ours are on opposite sides of the centre. Because that single
-number is the opening capital for Tables 8, 9, 12 and 13, every
-cost-of-capital margin below inherits the same few-percent gap.
+close to 2% (estimated above by resampling 10,000 draws with replacement
+from the 100,000-draw run, so that no finite-population correction damps the
+spread), so two such runs routinely differ by 3%; England's published value
+and ours are on opposite sides of the centre. Because that single number is
+the opening capital for Tables 8 and 9 and for the solved-level columns of
+Tables 12 and 13, those cost-of-capital margins inherit the same
+few-percent gap; the fixed-99.5% margins in Tables 12 and 13 anchor on
+their own period-0 values and do not.
 """)
 
 md("## 7. Bootstrap total reserve distribution")
@@ -600,9 +605,12 @@ margin — the "64.5%" in his column header is a labelling slip (that cell of
 his notebook reuses the Table 11 `VAR_level` variable to print the header,
 but the column itself is computed at the level solved above, around 96.9%).
 Once solved against the right target, `var_at_solved` compares directly to
-England's published array with no rescaling needed, and all five margins —
-each anchored on that basis's own period-0 value, which by construction
-equals the opening capital — are within Monte Carlo error of his.
+England's published array with no rescaling needed. The first four margins
+(average, discounted SD, undiscounted SD, solved-level VaR) share the same
+opening capital, `var_at_solved[0]`, which by construction equals the
+one-year CDR VaR 99.5%; the fixed 99.5% column anchors on its own period-0
+value, `var_at_995[0]`, instead. All five are within Monte Carlo error of
+England's.
 """)
 
 md("## 14. Table 13: cost-of-capital margin from the reverse-cumulative CDR")
