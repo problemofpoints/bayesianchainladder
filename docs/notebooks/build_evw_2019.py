@@ -306,6 +306,66 @@ than the SD-based tables above because a single quantile estimate is
 noisier than a mean or a standard deviation.
 """)
 
+md(
+    "### Is the +3% on the one-year VaR a calculation difference? (100,000-simulation check)"
+)
+code("""
+# The one-year VaR 99.5% is the opening capital for every cost-of-capital
+# margin below, so it is worth checking that its gap to England is noise
+# rather than method. Three pieces of evidence:
+#
+# 1. England's own code, re-run with his seed 101, reproduces his 4,771,636
+#    exactly; with seeds 1, 2, 3 it gives 4,879,375 / 4,871,765 / 5,021,002,
+#    so his published figure sits at the low end of his own Monte Carlo spread.
+# 2. England's VaR is the order statistic at index floor(n p) + 1 of the
+#    sorted CDRs; ours is np.quantile. On the same samples that changes the
+#    figure by about 4,000 (0.1%).
+# 3. Both implementations at 100,000 simulations (England's code with seed 7,
+#    run outside this notebook on 2026-09-24; ours re-run here):
+ENGLAND_100K = {"sd": 1_775_444, "var_995": 4_872_897, "q1": -4_362_001, "q5": -3_005_640}
+
+boot_100k = MackBootstrap(n_sims=100_000, random_seed=7).fit(tri)
+cdr1_100k = claims_development_result(boot_100k, future_periods=1).total_cdr.isel(future_period=0).values
+ours_100k = {
+    "sd": float(np.std(cdr1_100k, ddof=1)),
+    "var_995": float(cdr1_100k.mean() - np.quantile(cdr1_100k, 0.005)),
+    "q1": float(np.quantile(cdr1_100k, 0.01)),
+    "q5": float(np.quantile(cdr1_100k, 0.05)),
+}
+display(
+    compare(
+        [ours_100k[k] for k in ENGLAND_100K],
+        [ENGLAND_100K[k] for k in ENGLAND_100K],
+        ["CDR(1) SD", "VaR 99.5%", "1% quantile", "5% quantile"],
+    ).style.format(COMPARE_FMT)
+)
+
+# Monte Carlo spread of a 10,000-simulation VaR 99.5%, from 200 subsamples of the 100k run
+rng = np.random.default_rng(0)
+sub = np.array(
+    [s.mean() - np.quantile(s, 0.005) for s in (rng.choice(cdr1_100k, 10_000, replace=False) for _ in range(200))]
+)
+print(
+    f"VaR 99.5% at n=10,000: mean {sub.mean():,.0f}, SE {sub.std():,.0f} ({sub.std() / sub.mean() * 100:.1f}%), "
+    f"95% band {np.quantile(sub, 0.025):,.0f} .. {np.quantile(sub, 0.975):,.0f}"
+)
+print(
+    f"England's published 4,771,636 is {(4_771_636 - sub.mean()) / sub.std():+.2f} SE from that centre; "
+    f"our 10,000-simulation value above is {(var_by_period_total[0] - sub.mean()) / sub.std():+.2f} SE."
+)
+""")
+md("""
+**Commentary.** At 100,000 simulations the two implementations agree to
+well under 1% on the one-year CDR standard deviation, its 99.5% VaR and its
+1% and 5% quantiles, so the bootstrap, the actuary-in-the-box re-reserving
+and the tail are computed the same way. A 99.5% VaR from 10,000 simulations
+rests on about 50 order statistics and has a relative standard error of
+roughly 1.6%, so two such runs routinely differ by 3%; England's published
+value and ours are on opposite sides of the centre. Because that single
+number is the opening capital for Tables 8, 9, 12 and 13, every
+cost-of-capital margin below inherits the same few-percent gap.
+""")
+
 md("## 7. Bootstrap total reserve distribution")
 code("""
 total_row = summary.loc["Total"]
