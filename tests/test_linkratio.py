@@ -101,3 +101,16 @@ def test_mack_bootstrap_handles_negative_incrementals():
     model = MackBootstrap(n_sims=500, random_seed=0).fit(raa)
     assert np.isfinite(model.total_summary().total_reserve_mean)
     assert np.isfinite(model.reserves_posterior_.values).all()
+
+
+@pytest.mark.slow
+def test_bayesian_mack_recovers_chain_ladder_factors(genins):
+    from bayesianchainladder.linkratio import BayesianMackChainLadder
+
+    model = BayesianMackChainLadder(draws=300, tune=300, chains=1, random_seed=42).fit(genins)
+    assert model.idata is not None
+    post_mean = model.factor_draws_.mean(axis=0)
+    np.testing.assert_allclose(post_mean, model.factors_, rtol=0.02)
+    assert model.total_summary().total_reserve_mean == pytest.approx(CL_RESERVE, rel=0.05)
+    assert model.full_cumulative_posterior_.shape[:2] == (10, 10)
+    assert model.full_cumulative_posterior_.shape[2] == model.factor_draws_.shape[0]

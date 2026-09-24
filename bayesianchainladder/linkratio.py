@@ -216,3 +216,74 @@ class NegativeBinomialBootstrap(_LinkRatioBootstrap):
                 stacklevel=2,
             )
         return super().fit(triangle)
+
+
+class BayesianMackChainLadder(BaseStochasticReserve):
+    """MCMC version of the Mack / Negative Binomial link-ratio model
+    (England & Verrall 2006, Section 6): posterior factor draws replace the
+    bootstrap pseudo-factors and are pushed through the same process-error
+    forecasting as :class:`MackBootstrap`."""
+
+    def __init__(
+        self,
+        model: str = "mack",
+        draws: int = 1000,
+        tune: int = 1000,
+        chains: int = 2,
+        forecast_dist: str = "gamma",
+        drop: DropList = None,
+        process_sigma=None,
+        random_seed: int | None = None,
+        target_accept: float = 0.9,
+    ) -> None:
+        super().__init__()
+        if model not in ("mack", "negbin"):
+            raise ValueError("model must be 'mack' or 'negbin'")
+        if forecast_dist not in ("gamma", "lognormal"):
+            raise ValueError("forecast_dist must be 'gamma' or 'lognormal' for the MCMC estimator")
+        self.model = model
+        self.draws, self.tune, self.chains = draws, tune, chains
+        self.forecast_dist = forecast_dist
+        self.drop = drop
+        self.process_sigma = None if process_sigma is None else np.asarray(process_sigma, float)
+        self.random_seed = random_seed
+        self.target_accept = target_accept
+        self.idata = None
+
+    def fit(self, triangle):
+        import pymc as pm
+
+        from .models import build_link_ratio_model
+
+        validate_triangle(triangle)
+        self.triangle_ = triangle.copy()
+        cum, origins, devs = cumulative_array(triangle)
+        mask = link_ratio_mask(cum, self.drop, origins, devs)
+        factors = volume_weighted_factors(cum, mask)
+        vf_fn = MackBootstrap.variance_factor_fn if self.model == "mack" else NegativeBinomialBootstrap.variance_factor_fn
+        sigma, _ = link_ratio_sigma(cum, mask, factors, vf_fn(factors))
+        if self.process_sigma is not None and self.process_sigma.shape != sigma.shape:
+            raise ValueError(f"process_sigma must have shape {sigma.shape}")
+
+        pymc_model = build_link_ratio_model(triangle, model=self.model, drop=self.drop, sigma=sigma)
+        with pymc_model:
+            self.idata = pm.sample(
+                draws=self.draws, tune=self.tune, chains=self.chains,
+                target_accept=self.target_accept, random_seed=self.random_seed,
+                progressbar=False,
+            )
+        draws = self.idata.posterior["factors"].stack(sample=["chain", "draw"]).transpose("sample", "dev_ratio").values
+
+        rng = np.random.default_rng(self.random_seed)
+        full = forecast_link_ratio_paths(
+            cum, draws, sigma if self.process_sigma is None else self.process_sigma,
+            vf_fn, self.forecast_dist, rng,
+        )
+        self.factors_, self.sigma_, self.factor_draws_ = factors, sigma, draws
+        self._set_full_cumulative_posterior(np.moveaxis(full, 0, -1), origins, devs)
+        # _is_fitted must be set before _reserves_from_full_posterior(), which
+        # requires it via BaseStochasticReserve._require_full_posterior().
+        self._is_fitted = True
+        self.reserves_posterior_ = self._reserves_from_full_posterior()
+        self._build_reserve_summaries()
+        return self

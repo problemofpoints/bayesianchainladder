@@ -1064,3 +1064,94 @@ def compute_prior_predictive_summary(
         summary_data[q_label] = pp_flat.quantile(q, dim="sample").values
 
     return pd.DataFrame(summary_data)
+
+
+def build_quasi_poisson_model(
+    data: pd.DataFrame,
+    response_col: str = "incremental",
+    origin_col: str = "origin",
+    dev_col: str = "dev",
+    scale=1.0,
+    coef_sigma: float = 10.0,
+) -> pm.Model:
+    """Cross-classified chain ladder with an over-dispersed Poisson
+    quasi-likelihood, ``sum((y log mu - mu) / phi_j)``, as a ``pm.Potential``.
+
+    ``scale`` is the plug-in dispersion: a scalar (constant scale) or one value
+    per development period (non-constant scale). This mirrors the ODP Stan
+    model in England & Verrall (2006) and lets non-integer, over-dispersed
+    increments be fitted with wide Normal priors on the log-linear effects.
+    """
+    y = data[response_col].to_numpy(dtype=float)
+    origin_codes, origin_levels = pd.factorize(data[origin_col], sort=True)
+    dev_codes, dev_levels = pd.factorize(data[dev_col], sort=True)
+    n_dev = len(dev_levels)
+    phi = np.asarray(scale, dtype=float)
+    if phi.ndim == 0:
+        phi = np.full(n_dev, float(phi))
+    elif phi.shape != (n_dev,):
+        raise ValueError(f"scale must be a scalar or have shape ({n_dev},), got {phi.shape}")
+    phi_obs = np.maximum(phi[dev_codes], 1e-12)
+
+    coords = {
+        "origin_raw": list(origin_levels[1:]),
+        "dev_raw": list(dev_levels[1:]),
+        "obs": np.arange(len(y)),
+    }
+    with pm.Model(coords=coords) as model:
+        intercept = pm.Normal("intercept", mu=np.log(max(y.mean(), 1e-8)), sigma=coef_sigma)
+        alpha_raw = pm.Normal("alpha_raw", mu=0.0, sigma=coef_sigma, dims="origin_raw")
+        beta_raw = pm.Normal("beta_raw", mu=0.0, sigma=coef_sigma, dims="dev_raw")
+        alpha = pt.concatenate([pt.zeros(1), alpha_raw])
+        beta = pt.concatenate([pt.zeros(1), beta_raw])
+        eta = intercept + alpha[origin_codes] + beta[dev_codes]
+        mu = pm.Deterministic("mu", pt.exp(eta), dims="obs")
+        pm.Potential("quasi_poisson", pt.sum((y * pt.log(mu) - mu) / phi_obs))
+    return model
+
+
+def build_link_ratio_model(
+    triangle,
+    model: str = "mack",
+    drop=None,
+    sigma=None,
+    coef_sigma: float = 10.0,
+) -> pm.Model:
+    """Bayesian link-ratio model: observed ratios F_ij ~ Normal(lambda_j,
+    sigma_j sqrt(v(f_j)) / sqrt(C_ij)). ``model='mack'`` uses a log link and
+    v = 1 (England & Verrall 2006 Mack Stan model); ``model='negbin'`` uses a
+    log-log link (factors > 1) and v = f (f - 1) with the chain-ladder factor
+    plugged into the variance."""
+    from ._triangle_ops import (
+        cumulative_array,
+        link_ratio_mask,
+        link_ratio_sigma,
+        volume_weighted_factors,
+    )
+
+    if model not in ("mack", "negbin"):
+        raise ValueError("model must be 'mack' or 'negbin'")
+    cum, origins, devs = cumulative_array(triangle)
+    mask = link_ratio_mask(cum, drop, origins, devs)
+    f0 = volume_weighted_factors(cum, mask)
+    vf = np.ones_like(f0) if model == "mack" else np.abs(f0 * (f0 - 1.0))
+    if sigma is None:
+        sigma, _ = link_ratio_sigma(cum, mask, f0, vf)
+    sigma = np.asarray(sigma, dtype=float)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratios = cum[:, 1:] / cum[:, :-1]
+    idx = np.argwhere(mask > 0)
+    rows, cols = idx[:, 0], idx[:, 1]
+    f_obs = ratios[rows, cols]
+    w_obs = cum[rows, cols]
+    sd_obs = np.maximum(sigma[cols] * np.sqrt(vf[cols]) / np.sqrt(np.abs(w_obs)), 1e-9)
+
+    coords = {"dev_ratio": [int(d) for d in devs[:-1]], "obs": np.arange(len(f_obs))}
+    start = np.log(f0) if model == "mack" else np.log(np.log(np.maximum(f0, 1.0 + 1e-6)))
+    with pm.Model(coords=coords) as pymc_model:
+        coefs = pm.Normal("coefs", mu=start, sigma=coef_sigma, dims="dev_ratio")
+        lam = pt.exp(coefs) if model == "mack" else pt.exp(pt.exp(coefs))
+        factors = pm.Deterministic("factors", lam, dims="dev_ratio")
+        pm.Normal("ratio", mu=factors[cols], sigma=sd_obs, observed=f_obs, dims="obs")
+    return pymc_model

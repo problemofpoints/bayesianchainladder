@@ -83,8 +83,9 @@ from .cdr import CDRResult, claims_development_result
 from .datasets import load_england_sample
 from .estimators import BayesianChainLadderGLM, BayesianCSR
 
-# Link-ratio bootstraps
+# Link-ratio models
 from .linkratio import (
+    BayesianMackChainLadder,
     MackBootstrap,
     NegativeBinomialBootstrap,
     draw_with_moments,
@@ -96,7 +97,9 @@ from .linkratio import (
 from .models import (
     build_bambi_model,
     build_csr_model,
+    build_link_ratio_model,
     build_pymc_model,
+    build_quasi_poisson_model,
     compute_loo,
     compute_prior_predictive_summary,
     compute_waic,
@@ -195,7 +198,8 @@ __all__ = [
     "claims_development_result",
     # Data
     "load_england_sample",
-    # Link-ratio bootstraps
+    # Link-ratio models
+    "BayesianMackChainLadder",
     "MackBootstrap",
     "NegativeBinomialBootstrap",
     "draw_with_moments",
@@ -204,7 +208,9 @@ __all__ = [
     # Model functions
     "build_bambi_model",
     "build_csr_model",
+    "build_link_ratio_model",
     "build_pymc_model",
+    "build_quasi_poisson_model",
     "fit_model",
     "predict_posterior",
     "posterior_predictive_check",
