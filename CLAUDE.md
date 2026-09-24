@@ -11,6 +11,7 @@ uv sync                                       # install package + dev deps (crea
 uv run pytest                                 # fast tests only — MCMC tests are skipped by default
 uv run pytest --run-slow                      # full suite including MCMC fits (slow)
 uv run pytest tests/test_models.py -k test_name --run-slow   # single test
+uv run pytest tests/test_notebooks.py --run-slow   # executes docs/notebooks (~10 min)
 uv run ruff check .                           # lint (rules: E, F, W, I, UP, B, C4)
 uv run black .                                # format
 uv run mypy bayesianchainladder               # type check
@@ -36,7 +37,14 @@ Both estimators expose the same fitted surface: `.idata`, `.ibnr_`, `.ultimate_`
 - [bayesianchainladder/utils.py](bayesianchainladder/utils.py) — Triangle ↔ DataFrame conversion. `prepare_model_data` splits a `chainladder.Triangle` into observed and future long-format DataFrames (with `origin`, `dev`, `calendar` columns); `prepare_csr_data` emits `cumulative` / `logloss` / `premium` / `logprem` for the CSR path. `validate_triangle` is the input gate.
 - [bayesianchainladder/models.py](bayesianchainladder/models.py) — Low-level builders (`build_bambi_model`, `build_pymc_model`, `build_csr_model`), MCMC driver (`fit_model`), prediction helpers (`predict_posterior`, `_predict_pymc`, `posterior_predictive_check`), prior predictive sampling (`sample_prior_predictive`), and information criteria (`compute_waic`, `compute_loo`).
 - [bayesianchainladder/estimators.py](bayesianchainladder/estimators.py) — `BayesianChainLadderGLM` and `BayesianCSR`. These are the user-facing classes; the rest of the package supports them.
-- [bayesianchainladder/plots.py](bayesianchainladder/plots.py) — Thin wrappers over ArviZ for standard MCMC diagnostics, plus reserve-specific plots (`plot_reserve_distribution`, `plot_heatmap_residuals`, `plot_actual_vs_fitted`) and an extensive prior predictive plotting suite (`plot_prior_predictive*`).
+- [bayesianchainladder/plots.py](bayesianchainladder/plots.py) — Thin wrappers over ArviZ for standard MCMC diagnostics, plus reserve-specific plots (`plot_reserve_distribution`, `plot_heatmap_residuals`, `plot_actual_vs_fitted`) and an extensive prior predictive plotting suite (`plot_prior_predictive*`); also the England & Verrall diagnostics (`plot_fan_chart`, `plot_scaled_residuals`, `plot_sensitivity_heatmap`, `plot_capital_profiles`).
+- [bayesianchainladder/_triangle_ops.py](bayesianchainladder/_triangle_ops.py) — Private numpy chain-ladder primitives operating on `(..., n_origin, n_dev)` arrays: `cumulative_array`, `cumulative_to_incremental`, `latest_diagonal`, `drop_mask`, `link_ratio_mask`, `volume_weighted_factors`, `project_cumulative`, `link_ratio_sigma`. Shared by every England & Verrall feature below.
+- [bayesianchainladder/linkratio.py](bayesianchainladder/linkratio.py) — `MackBootstrap`, `NegativeBinomialBootstrap`, and the Bayesian `BayesianMackChainLadder`, plus the shared `forecast_link_ratio_paths` forecasting function.
+- [bayesianchainladder/analytic.py](bayesianchainladder/analytic.py) — Analytic RMSEP oracles (`mack_analytic_rmsep`, `odp_analytic_rmsep`) used as ground truth in tests and for comparison against simulation-based reserve variability.
+- [bayesianchainladder/cdr.py](bayesianchainladder/cdr.py) — One-year Claims Development Result (`claims_development_result`, `CDRResult`).
+- [bayesianchainladder/riskmeasures.py](bayesianchainladder/riskmeasures.py) — VaR/TVaR/proportional-hazards transform, discounting, and cost-of-capital risk margin functions.
+- [bayesianchainladder/sensitivity.py](bayesianchainladder/sensitivity.py) — Leave-one-ratio-out influence analysis (`link_ratio_sensitivity`, `top_influential`).
+- [bayesianchainladder/datasets.py](bayesianchainladder/datasets.py) (+ [bayesianchainladder/data/](bayesianchainladder/data/)) — England's Taylor-Ashe and liability sample triangles plus the `load_england_sample` loader.
 
 ### Data flow (GLM path)
 
@@ -52,6 +60,11 @@ Both estimators expose the same fitted surface: `.idata`, `.ibnr_`, `.ultimate_`
 - **Process variance toggle for CSR**. `BayesianCSR(include_process_variance=True)` (default) samples `Normal(mu, sigma)` then exponentiates → full lognormal posterior predictive. `False` uses the lognormal mean correction `exp(mu + σ²/2)` (parameter uncertainty only). This is **not** equivalent to "drop sigma" — make sure to keep the correction when changing.
 - **CSR reserve indexing**. `_compute_predictions` evaluates `mu` at the *ultimate* development period (max of `dev_levels`), not at the next future cell — reserves are `exp(mu_ultimate) - last_observed_cumulative`. Don't try to sum incremental future cells; that's the GLM path.
 - **Public API surface**. Everything in [bayesianchainladder/__init__.py](bayesianchainladder/__init__.py)'s `__all__` is exported — when adding new functions, register them there or downstream users can't import them.
+- **Per-cell posterior contract.** Simulating estimators populate `full_cumulative_posterior_` (dims `origin, dev, sample`, cumulative, observed cells constant) via `_set_full_cumulative_posterior`; `reserves_posterior_` must equal `_reserves_from_full_posterior()` and tests assert it. `MackChainLadder` (normal approximation) leaves it `None`; `cdr`, `riskmeasures` and `plot_fan_chart` raise a "per-cell" `ValueError` in that case. For chainladder-backed wrappers the array is `full_triangle_ + process_variance_` sliced to the original `n_dev` columns — `full_triangle_` carries a placeholder tail column and the `9999` ultimate column beyond that.
+- **Two last-sigma conventions.** `link_ratio_sigma` (used by `MackBootstrap`, `NegativeBinomialBootstrap`, `BayesianMackChainLadder`, `odp_analytic_rmsep(scale="nonconstant")`, `CorrelatedBootstrapODPSample(scale="nonconstant")`) follows England: last period = min of the previous two, carry forward when n_j ≤ 1. chainladder's `Development` extrapolates log-linearly, so `mack_analytic_rmsep` (a chainladder wrapper) and the bootstraps differ by a few percent in total SD on triangles with a small last sigma. Don't "fix" one to match the other.
+- **`drop` syntax everywhere.** Link-ratio exclusions use chainladder's `(origin_label, dev_months)` with a *string* origin label naming the earlier cell of the ratio, e.g. `("2003", 72)` = the 72→84 ratio. `top_influential` returns this form; `_triangle_ops.drop_mask` consumes it. Origin labels assume annual origins (`str(int_year)`).
+- **Cash-flow timing is square-triangle only.** `riskmeasures.cash_flow_periods` requires `n_origin == n_dev` and assumes origin grain == development grain; `claims_development_result` has the same restriction. Non-annual or non-square triangles raise.
+- **Notebook is generated.** Edit `docs/notebooks/build_modus_operandi.py`, not the `.ipynb`; rebuild and re-execute (see `docs/notebooks/README.md`). `tests/test_notebooks.py` executes it under `--run-slow`.
 
 ### References for understanding the methodology
 
