@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
+    from .base import BaseStochasticReserve
     from .estimators import BayesianChainLadderGLM
 
 
@@ -1766,3 +1767,132 @@ def plot_prior_predictive_summary(
     fig.suptitle("Prior Predictive Check Summary", fontsize=14, y=0.98)
 
     return fig, [ax1, ax2, ax3, ax4]
+
+
+def plot_fan_chart(
+    model: BaseStochasticReserve,
+    origin,
+    bands: tuple[tuple[float, float], ...] = ((0.01, 0.99), (0.05, 0.95), (0.25, 0.75)),
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> tuple[Figure, Axes]:
+    """Reserve development ("fan") chart of simulated cumulative claims for one
+    origin, after England's ``fan_plot``: nested quantile bands, the mean path
+    and the observed cells."""
+    full = model._require_full_posterior()
+    data = full.sel(origin=origin).values  # (dev, sample)
+    devs = full.coords["dev"].values
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    for k, (lo, hi) in enumerate(sorted(bands, key=lambda b: b[1] - b[0], reverse=True)):
+        ax.fill_between(
+            devs, np.nanquantile(data, lo, axis=1), np.nanquantile(data, hi, axis=1),
+            color="tab:blue", alpha=0.15 + 0.2 * k, linewidth=0,
+            label=f"{lo * 100:g}%–{hi * 100:g}%",
+        )
+    ax.plot(devs, np.nanmean(data, axis=1), color="black", linewidth=2, label="Mean")
+    cum = np.asarray(model.triangle_.values, dtype=float)[0, 0]
+    origin_idx = list(full.coords["origin"].values).index(origin)
+    observed = cum[origin_idx]
+    ax.plot(devs[~np.isnan(observed)], observed[~np.isnan(observed)], "o", color="tab:red", label="Observed")
+    ax.set_title(f"Origin {origin}: simulated cumulative development")
+    ax.set_xlabel("Development (months)")
+    ax.set_ylabel("Cumulative claims")
+    ax.legend(loc="upper left")
+    ax.grid(alpha=0.3)
+    return fig, ax
+
+
+def plot_scaled_residuals(
+    residuals: np.ndarray,
+    by: str = "dev",
+    sigma: np.ndarray | None = None,
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+    title: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Scatter of (scaled) residuals by origin, development or calendar index,
+    with the per-index average and, optionally, the sigma / sqrt(scale) vector
+    on a twin axis (England's ``scatter_plot``). Indices are 1-based."""
+    resid = np.asarray(residuals, dtype=float)
+    n_o, n_c = resid.shape
+    i, j = np.indices(resid.shape)
+    if by == "origin":
+        x = i + 1
+    elif by == "dev":
+        x = j + 1
+    elif by == "calendar":
+        x = i + j + 1
+    else:
+        raise ValueError("by must be 'origin', 'dev' or 'calendar'")
+    ok = np.isfinite(resid)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    ax.axhline(0, color="black", linestyle="--", linewidth=1)
+    ax.scatter(x[ok], resid[ok], marker="x", color="tab:blue", label="Residual")
+    levels = np.unique(x[ok])
+    means = [resid[ok & (x == lv)].mean() for lv in levels]
+    ax.plot(levels, means, color="tab:green", linewidth=2, label="Average")
+    ax.set_xlabel(f"{by.capitalize()} period")
+    ax.set_ylabel("Scaled residual")
+    ax.set_title(title or f"Scaled residuals by {by} period")
+    ax.grid(alpha=0.3)
+    if sigma is not None and by == "dev":
+        ax2 = ax.twinx()
+        ax2.plot(np.arange(1, len(sigma) + 1), sigma, color="tab:orange", linewidth=2, label="Sigma")
+        ax2.set_ylabel("Sigma / sqrt(scale)")
+        ax2.legend(loc="upper right")
+    ax.legend(loc="upper left")
+    return fig, ax
+
+
+def plot_sensitivity_heatmap(
+    result: pd.DataFrame,
+    value: str = "sd_diff",
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> tuple[Figure, Axes]:
+    """Heatmap of a ``link_ratio_sensitivity`` column (origin × development)."""
+    pivot = result.pivot(index="origin", columns="dev", values=value)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    im = ax.imshow(pivot.values, cmap="RdBu", aspect="auto")
+    ax.set_xticks(range(pivot.shape[1]), [str(c) for c in pivot.columns])
+    ax.set_yticks(range(pivot.shape[0]), [str(r) for r in pivot.index])
+    ax.set_xlabel("Development (months) of link ratio")
+    ax.set_ylabel("Origin")
+    ax.set_title(f"Change in {value} when each link ratio is excluded")
+    for r in range(pivot.shape[0]):
+        for c in range(pivot.shape[1]):
+            v = pivot.values[r, c]
+            if np.isfinite(v):
+                ax.text(c, r, f"{v:,.0f}" if abs(v) >= 10 else f"{v:.3f}", ha="center", va="center", fontsize=7)
+    fig.colorbar(im, ax=ax)
+    return fig, ax
+
+
+def plot_capital_profiles(
+    profiles: dict[str, np.ndarray],
+    ax: Axes | None = None,
+    figsize: tuple[float, float] | None = None,
+) -> tuple[Figure, Axes]:
+    """Capital run-off profiles as a percentage of opening capital (EVW 2019 Fig. 1)."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize or (10, 6))
+    else:
+        fig = ax.figure
+    for label, prof in profiles.items():
+        p = np.asarray(prof, dtype=float)
+        ax.plot(np.arange(len(p)), 100 * p / p[0], marker="o", linewidth=2, label=label)
+    ax.set_xlabel("Future year")
+    ax.set_ylabel("Percent of opening capital")
+    ax.set_title("Capital profiles by year")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    return fig, ax

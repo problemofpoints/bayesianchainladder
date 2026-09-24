@@ -263,3 +263,53 @@ class TestCreateSummaryTable:
         """Test that invalid format raises error."""
         with pytest.raises(ValueError, match="Unknown format"):
             create_summary_table(fitted_model, format="invalid")
+
+
+class TestEnglandPlots:
+    @pytest.fixture(scope="class")
+    def mack_boot(self):
+        from bayesianchainladder.linkratio import MackBootstrap
+
+        return MackBootstrap(n_sims=200, random_seed=1).fit(cl.load_sample("genins"))
+
+    def test_fan_chart(self, mack_boot):
+        from bayesianchainladder.plots import plot_fan_chart
+
+        fig, ax = plot_fan_chart(mack_boot, origin=2005)
+        assert ax.get_title().startswith("Origin 2005")
+        assert len(ax.collections) >= 3  # one filled band per quantile pair
+        plt.close(fig)
+        from bayesianchainladder.bootstrap import MackChainLadder
+
+        with pytest.raises(ValueError, match="per-cell"):
+            plot_fan_chart(MackChainLadder().fit(cl.load_sample("raa")), origin=1981)
+
+    @pytest.mark.parametrize("by", ["origin", "dev", "calendar"])
+    def test_scaled_residuals(self, mack_boot, by):
+        from bayesianchainladder.plots import plot_scaled_residuals
+
+        fig, ax = plot_scaled_residuals(mack_boot.scaled_residuals_, by=by, sigma=mack_boot.sigma_)
+        assert ax.get_xlabel().lower().startswith(by)
+        assert len(fig.axes) == (2 if by == "dev" else 1)  # twin axis only where sigma applies
+        plt.close(fig)
+        with pytest.raises(ValueError):
+            plot_scaled_residuals(mack_boot.scaled_residuals_, by="weird")
+
+    def test_sensitivity_heatmap(self):
+        from bayesianchainladder.datasets import load_england_sample
+        from bayesianchainladder.plots import plot_sensitivity_heatmap
+        from bayesianchainladder.sensitivity import link_ratio_sensitivity
+
+        res = link_ratio_sensitivity(load_england_sample("liability"))
+        fig, ax = plot_sensitivity_heatmap(res, value="sd_diff")
+        assert len(ax.images) == 1
+        assert len(ax.texts) == len(res)  # every evaluated ratio annotated
+        plt.close(fig)
+
+    def test_capital_profiles(self):
+        from bayesianchainladder.plots import plot_capital_profiles
+
+        fig, ax = plot_capital_profiles({"best estimate": np.array([1.0, 0.6, 0.3]), "sd": np.array([1.0, 0.5, 0.2])})
+        assert len(ax.lines) == 2
+        assert ax.get_ylabel().startswith("Percent")
+        plt.close(fig)

@@ -111,8 +111,10 @@ from .models import (
 from .plots import (
     create_summary_table,
     plot_actual_vs_fitted,
+    plot_capital_profiles,
     plot_development_pattern,
     plot_energy,
+    plot_fan_chart,
     plot_forest,
     plot_heatmap_residuals,
     plot_posterior,
@@ -127,6 +129,8 @@ from .plots import (
     plot_rank,
     plot_reserve_distribution,
     plot_residuals,
+    plot_scaled_residuals,
+    plot_sensitivity_heatmap,
     plot_trace,
 )
 
@@ -231,6 +235,11 @@ __all__ = [
     "plot_prior_predictive_triangle",
     "plot_prior_predictive_summary",
     "plot_prior_vs_posterior",
+    # Plotting functions - England & Verrall diagnostics
+    "plot_fan_chart",
+    "plot_scaled_residuals",
+    "plot_sensitivity_heatmap",
+    "plot_capital_profiles",
     # Utility functions
     "triangle_to_dataframe",
     "get_future_dataframe",
